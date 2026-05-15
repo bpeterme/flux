@@ -154,12 +154,24 @@ The setup script offers to install these for you. To install manually,
 add the following to your `~/.zshrc` (or `~/.bash_profile` for bash):
 
 ```bash
-# flux aliases — unified Git + DVC workflow
-alias flux-commit="git add . && git commit"
-alias flux-push="git push && dvc push"
-alias flux-pull="git pull && dvc pull"
-alias flux-sync="git add . && git commit && git push && dvc push"
-alias flux-status="git status && echo '--- DVC ---' && dvc status"
+# flux — unified Git + DVC workflow
+# Functions (not aliases) so they check for a flux setup gracefully.
+_flux_check() {
+  local root
+  root=$(git rev-parse --show-toplevel 2>/dev/null) || {
+    echo "flux: not inside a Git repository."; return 1
+  }
+  if [[ ! -d "${root}/.dvc" ]]; then
+    echo "flux: no flux setup in this repo."
+    echo "      Run ./setup.sh from the repo root to initialise."
+    return 1
+  fi
+}
+flux-commit() { _flux_check || return 1; git add . && git commit "$@"; }
+flux-push()   { _flux_check || return 1; git push && dvc push; }
+flux-pull()   { _flux_check || return 1; git pull && dvc pull; }
+flux-sync()   { _flux_check || return 1; git add . && git commit "$@" && git push && dvc push; }
+flux-status() { _flux_check || return 1; git status && echo "--- DVC ---" && dvc status; }
 ```
 
 Then reload your shell:
