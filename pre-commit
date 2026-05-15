@@ -1,0 +1,405 @@
+#!/usr/bin/env bash
+# =============================================================================
+# pre-commit hook: auto-route files to DVC (R2) or Git (GitLab/GitHub/etc.)
+#
+# Routing rules (in order):
+#   1. Binary file (any size)  → DVC → Cloudflare R2
+#   2. Text file > SIZE_THRESHOLD → DVC → Cloudflare R2
+#   3. Text file ≤ SIZE_THRESHOLD → Git → any Git remote
+#
+# Edge cases handled automatically:
+#   - File grows past threshold: migrated cleanly from Git history to DVC
+#   - File shrinks below threshold: detected from .dvc list, migrated back to Git
+#   - File deleted: orphaned .dvc pointer staged for removal
+#   - File renamed: old .dvc pointer cleaned up; new name routed fresh
+#
+# .dvcignore is kept in sync with every .gitignore in the repo automatically.
+# Mental model: anything in .gitignore is invisible to both Git and DVC.
+#
+# Configuration (set via git config, applies per repo):
+#   git config dvc-router.size-threshold-mb 5   # default: 5 MB
+#   git config dvc-router.verbose true           # default: false
+#
+# DVC is located automatically — works with system Homebrew (/opt/homebrew),
+# Intel Homebrew (/usr/local), and user-local Homebrew (~/.homebrew etc.)
+# =============================================================================
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Locate DVC — checks all common Homebrew install locations before PATH
+# ---------------------------------------------------------------------------
+find_dvc() {
+  local candidates=(
+    "/opt/homebrew/bin/dvc"          # system Homebrew, Apple Silicon
+    "/usr/local/bin/dvc"             # system Homebrew, Intel
+    "${HOME}/.homebrew/bin/dvc"      # user-local Homebrew (common)
+    "${HOME}/homebrew/bin/dvc"       # user-local Homebrew (alternative)
+    "${HOME}/.linuxbrew/bin/dvc"     # Linuxbrew, just in case
+  )
+
+  for candidate in "${candidates[@]}"; do
+    if [[ -x "$candidate" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+
+  # Last resort: whatever is in PATH (e.g. pip-installed, conda, etc.)
+  if command -v dvc &>/dev/null; then
+    command -v dvc
+    return 0
+  fi
+
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+SIZE_THRESHOLD_MB=$(git config --get dvc-router.size-threshold-mb 2>/dev/null || echo "5")
+SIZE_THRESHOLD_BYTES=$(( SIZE_THRESHOLD_MB * 1024 * 1024 ))
+VERBOSE=$(git config --get dvc-router.verbose 2>/dev/null || echo "false")
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+log() {
+  if [[ "$VERBOSE" == "true" ]]; then
+    echo "[dvc-router] $*"
+  fi
+}
+
+info() {
+  echo "[dvc-router] $*"
+}
+
+# ---------------------------------------------------------------------------
+# Sync every .dvcignore from its sibling .gitignore
+#
+# Strips comments and blank lines from each .gitignore found in the repo
+# and writes the result to a sibling .dvcignore, then stages it.
+# Runs after file routing so DVC-added .gitignore entries are also captured.
+#
+# Mental model: anything in .gitignore is invisible to both Git and DVC.
+# ---------------------------------------------------------------------------
+sync_dvcignore() {
+  local repo_root
+  repo_root=$(git rev-parse --show-toplevel)
+
+  # Find every .gitignore in the repo, excluding .git/ internals
+  while IFS= read -r gitignore_path; do
+    local dir dvcignore_path
+    dir=$(dirname "$gitignore_path")
+    dvcignore_path="${dir}/.dvcignore"
+
+    # Strip comment lines and blank lines; an empty result is still valid
+    grep -v '^\s*#' "$gitignore_path" | grep -v '^\s*$' > "$dvcignore_path" || true
+
+    git add "$dvcignore_path"
+    log "Synced: $dvcignore_path ← $gitignore_path"
+  done < <(find "$repo_root" -name ".gitignore" -not -path "*/.git/*" 2>/dev/null)
+}
+
+# ---------------------------------------------------------------------------
+# Clean up orphaned .dvc pointer files
+#
+# Handles two cases that Git can't see on its own (because the actual data
+# files are .gitignore'd):
+#
+#   Delete: user removes a DVC-tracked file from disk. The .dvc pointer still
+#     exists in Git — this stages it for removal.
+#
+#   Rename: user moves a DVC-tracked file. The old .dvc pointer is orphaned
+#     (its target is gone) — this removes it. The new filename will be picked
+#     up by the staging loop below and routed fresh.
+#
+# In both cases the DVC-added entry in the sibling .gitignore is also cleaned
+# up so .gitignore doesn't accumulate stale entries.
+# ---------------------------------------------------------------------------
+cleanup_orphaned_dvc_pointers() {
+  local cleaned=()
+
+  # Iterate over every .dvc pointer file currently tracked by Git
+  while IFS= read -r dvc_file; do
+    [[ -z "$dvc_file" ]] && continue
+
+    # Parse the target path from the .dvc YAML (path: field, first occurrence)
+    local target_rel
+    target_rel=$(grep '^\s*path:' "$dvc_file" 2>/dev/null \
+      | head -1 \
+      | sed 's/.*path:[[:space:]]*//' \
+      | tr -d '"' \
+      | tr -d "'")
+    [[ -z "$target_rel" ]] && continue
+
+    # Target path is relative to the directory containing the .dvc file
+    local dvc_dir target_abs
+    dvc_dir=$(dirname "$dvc_file")
+    target_abs="${dvc_dir}/${target_rel}"
+
+    # If the target still exists, the pointer is healthy — nothing to do
+    [[ -e "$target_abs" ]] && continue
+
+    log "Orphaned .dvc pointer: $dvc_file (target missing: $target_abs)"
+
+    # Stage the .dvc pointer for deletion
+    git rm --cached "$dvc_file" &>/dev/null || true
+
+    # Remove the DVC-added entry from the sibling .gitignore so it doesn't
+    # accumulate stale entries (and so .dvcignore stays clean after sync)
+    local gitignore_path="${dvc_dir}/.gitignore"
+    if [[ -f "$gitignore_path" ]]; then
+      local target_name
+      target_name=$(basename "$target_rel")
+      # DVC adds entries in the form /filename — remove that exact line
+      sed -i '' "/^\/${target_name}$/d" "$gitignore_path"
+      git add "$gitignore_path"
+    fi
+
+    cleaned+=("$dvc_file")
+  done < <(git ls-files '*.dvc' 2>/dev/null)
+
+  if (( ${#cleaned[@]} > 0 )); then
+    info "Cleaned up orphaned DVC pointers (${#cleaned[@]}):"
+    for f in "${cleaned[@]}"; do
+      info "  ✦ $f (target deleted or renamed)"
+    done
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Migrate DVC-tracked files back to Git if they now fall below the threshold
+#
+# Scans every .dvc pointer file known to Git. For each, checks the current
+# on-disk state of the target file:
+#   - Still binary → stays in DVC
+#   - Still above threshold → stays in DVC
+#   - Now text AND below threshold → migrated to Git
+#
+# Uses dvc remove to cleanly delete the pointer and its .gitignore entry,
+# then stages the file so it flows through the routing loop as a normal Git
+# file. This is the authoritative approach: reading .dvc files directly means
+# we catch every DVC-tracked file regardless of what is or isn't in .gitignore.
+#
+# Note: dvc gc --cloud --all-branches runs automatically after any migration
+# to purge now-unreferenced R2 data while preserving data on other branches.
+# ---------------------------------------------------------------------------
+migrate_dvc_to_git() {
+  local migrated=()
+
+  while IFS= read -r dvc_file; do
+    [[ -z "$dvc_file" ]] && continue
+
+    # Parse the target path from the .dvc YAML (path: field, first occurrence)
+    local target_rel
+    target_rel=$(grep '^\s*path:' "$dvc_file" 2>/dev/null \
+      | head -1 \
+      | sed 's/.*path:[[:space:]]*//' \
+      | tr -d '"' \
+      | tr -d "'")
+    [[ -z "$target_rel" ]] && continue
+
+    local dvc_dir target_abs
+    dvc_dir=$(dirname "$dvc_file")
+    target_abs="${dvc_dir}/${target_rel}"
+
+    # Skip missing targets — handled by cleanup_orphaned_dvc_pointers
+    [[ ! -f "$target_abs" ]] && continue
+
+    # Check binary status — binary files always stay in DVC regardless of size
+    if ! grep -qI . "$target_abs" 2>/dev/null; then
+      log "Still binary, keeping in DVC: $target_abs"
+      continue
+    fi
+
+    # Check size — still above threshold, stays in DVC
+    local file_size
+    file_size=$(wc -c < "$target_abs" | tr -d ' ')
+    if (( file_size > SIZE_THRESHOLD_BYTES )); then
+      log "Still above threshold ($(( file_size / 1024 / 1024 )) MB), keeping in DVC: $target_abs"
+      continue
+    fi
+
+    # File is now text AND below threshold → migrate back to Git
+    info "Migrating DVC → Git (now $(( file_size / 1024 )) KB, below ${SIZE_THRESHOLD_MB} MB threshold): $target_abs"
+
+    # dvc remove deletes the .dvc pointer and removes the entry from .gitignore
+    # --keep-outs ensures the actual file is NOT deleted from disk
+    "$DVC" remove "$dvc_file" --keep-outs --quiet 2>/dev/null || {
+      warn "  dvc remove failed for $dvc_file — skipping migration"
+      continue
+    }
+
+    # Stage the file — it's no longer gitignored, so git add works now
+    git add "$target_abs"
+
+    migrated+=("$target_abs")
+  done < <(git ls-files '*.dvc' 2>/dev/null)
+
+  if (( ${#migrated[@]} > 0 )); then
+    info "Migrated DVC → Git (${#migrated[@]} file(s)):"
+    for f in "${migrated[@]}"; do
+      info "  ✦ $f"
+    done
+    info ""
+    info "  Cleaning up unreferenced R2 data..."
+    "$DVC" gc --cloud --all-branches --force --quiet 2>/dev/null && \
+      info "  R2 cleanup complete." || \
+      warn "  R2 cleanup failed — run 'dvc gc --cloud --all-branches' manually."
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Resolve DVC binary
+# ---------------------------------------------------------------------------
+DVC=$(find_dvc) || {
+  echo "[dvc-router] ERROR: dvc not found in any known location."
+  echo ""
+  echo "  System Homebrew (Apple Silicon / Intel):"
+  echo "    brew install dvc && pip install dvc-s3"
+  echo ""
+  echo "  User-local Homebrew:"
+  echo "    <your-brew> install dvc && pip install dvc-s3"
+  echo ""
+  echo "  Or set your Homebrew bin directory in PATH before committing."
+  exit 1
+}
+
+log "Using DVC at: $DVC"
+
+# ---------------------------------------------------------------------------
+# Cleanup orphaned .dvc pointers (deleted / renamed DVC-tracked files)
+# Runs before staged file processing so stale .gitignore entries are cleared
+# before .dvcignore is regenerated
+# ---------------------------------------------------------------------------
+cleanup_orphaned_dvc_pointers
+
+# ---------------------------------------------------------------------------
+# Migrate DVC-tracked files that now fall below the threshold back to Git
+# Runs after cleanup (so deleted targets are already gone) and before staged
+# files are collected (so migrated files appear in the staging loop)
+# ---------------------------------------------------------------------------
+migrate_dvc_to_git
+
+# ---------------------------------------------------------------------------
+# Get staged files (Added, Copied, Modified — not Deleted or Renamed)
+# ---------------------------------------------------------------------------
+staged_files=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)
+
+if [[ -z "$staged_files" ]]; then
+  log "No staged files to process."
+  # Still sync .dvcignore in case cleanup or migration modified any .gitignore files
+  sync_dvcignore
+  exit 0
+fi
+
+dvc_routed=()
+git_kept=()
+
+# ---------------------------------------------------------------------------
+# Process each staged file
+# ---------------------------------------------------------------------------
+while IFS= read -r file; do
+  # Skip files that don't exist on disk (e.g. submodules, symlinks to nowhere)
+  if [[ ! -f "$file" ]]; then
+    log "Skipping non-regular file: $file"
+    continue
+  fi
+
+  # Skip files already tracked by DVC (have a corresponding .dvc file)
+  if [[ -f "${file}.dvc" ]]; then
+    log "Already DVC-tracked, skipping: $file"
+    continue
+  fi
+
+  # ------------------------------------------------------------------
+  # Binary detection: grep -qI reads the file and exits non-zero if
+  # it contains binary (non-text) content — same heuristic Git uses.
+  # ------------------------------------------------------------------
+  is_binary=false
+  if ! grep -qI . "$file" 2>/dev/null; then
+    is_binary=true
+  fi
+
+  # Size in bytes
+  file_size=$(wc -c < "$file" | tr -d ' ')
+
+  # ------------------------------------------------------------------
+  # Routing decision
+  # ------------------------------------------------------------------
+  if [[ "$is_binary" == "true" ]]; then
+    log "Binary file detected → DVC: $file"
+    route="dvc"
+  elif (( file_size > SIZE_THRESHOLD_BYTES )); then
+    log "Large text file ($(( file_size / 1024 / 1024 )) MB > ${SIZE_THRESHOLD_MB} MB threshold) → DVC: $file"
+    route="dvc"
+  else
+    log "Text file → Git: $file"
+    route="git"
+  fi
+
+  # ------------------------------------------------------------------
+  # Execute routing
+  # ------------------------------------------------------------------
+  if [[ "$route" == "dvc" ]]; then
+    # Detect Git → DVC transition: file previously committed to Git history
+    # but has now grown or changed type past the routing threshold.
+    # git rm --cached removes it from the index cleanly in both cases
+    # (whether it was tracked or merely staged), so no separate branch needed.
+    if git ls-files --error-unmatch "$file" &>/dev/null 2>&1; then
+      info "Migrating Git → DVC (crossed threshold): $file"
+      info "  Note: old version remains in Git history. Run 'dvc gc' periodically"
+      info "  to clean up orphaned R2 data, and 'git filter-repo' if you need to"
+      info "  scrub history entirely."
+    fi
+
+    # Unstage from Git (handles both newly staged and previously tracked files)
+    git rm --cached "$file" &>/dev/null || true
+
+    # Hand off to DVC — creates <file>.dvc and updates .gitignore
+    "$DVC" add "$file" --quiet
+
+    # Stage the DVC pointer and the updated .gitignore for the commit
+    git add "${file}.dvc"
+
+    # Stage the nearest .gitignore that DVC updated
+    gitignore_path="$(dirname "$file")/.gitignore"
+    if [[ -f "$gitignore_path" ]]; then
+      git add "$gitignore_path"
+    fi
+
+    dvc_routed+=("$file")
+  else
+    git_kept+=("$file")
+  fi
+
+done <<< "$staged_files"
+
+# ---------------------------------------------------------------------------
+# Sync .dvcignore files from .gitignore files
+# Runs after routing so DVC-added .gitignore entries are included
+# ---------------------------------------------------------------------------
+sync_dvcignore
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+if (( ${#dvc_routed[@]} > 0 )); then
+  info "Routed to DVC / Cloudflare R2 (${#dvc_routed[@]} file(s)):"
+  for f in "${dvc_routed[@]}"; do
+    info "  ✦ $f"
+  done
+  info ""
+  info "Remember to push DVC data after committing:"
+  info "  dvc push"
+fi
+
+if (( ${#git_kept[@]} > 0 )); then
+  log "Kept in Git (${#git_kept[@]} file(s)):"
+  for f in "${git_kept[@]}"; do
+    log "  · $f"
+  done
+fi
+
+exit 0

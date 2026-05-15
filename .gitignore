@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Shell
+*.swp
+*.swo
+.envrc
+
+# Test artifacts (for when bats-core tests are added)
+tests/tmp/
+tests/fixtures/repos/
+
+# If flux is ever used to manage its own repo (meta!)
+.dvc/config.local
+.dvc/tmp/
+.dvc/cache/
