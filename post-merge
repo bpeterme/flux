@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# =============================================================================
+# post-merge hook: auto-increment minor version when dev is merged into main
+#
+# Fires automatically after every successful merge. Only acts when:
+#   1. The current branch is main
+#   2. The merge commit message matches Git's default "Merge branch 'dev'"
+#
+# On a qualifying merge it:
+#   - Reads VERSION="x.y.z" from setup.sh
+#   - Increments y and resets z to 0
+#   - Commits the change as "chore: bump version to x.(y+1).0"
+#
+# Major version bumps (x) are manual — edit VERSION in setup.sh by hand.
+# =============================================================================
+
+set -euo pipefail
+
+current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+[[ "$current_branch" != "main" ]] && exit 0
+
+# Only act on merges from dev (matches Git's default merge commit subject)
+if ! git log -1 --format="%s" | grep -q "Merge branch 'dev'"; then
+  exit 0
+fi
+
+repo_root=$(git rev-parse --show-toplevel)
+setup_sh="${repo_root}/setup.sh"
+
+if [[ ! -f "$setup_sh" ]]; then
+  echo "[flux] post-merge: setup.sh not found — skipping version bump." >&2
+  exit 0
+fi
+
+current_version=$(grep '^VERSION=' "$setup_sh" | head -1 | cut -d'"' -f2)
+if [[ -z "$current_version" ]]; then
+  echo "[flux] post-merge: VERSION not found in setup.sh — skipping." >&2
+  exit 0
+fi
+
+IFS='.' read -r major minor _patch <<< "$current_version"
+minor=$(( minor + 1 ))
+new_version="${major}.${minor}.0"
+
+sed -i.bak "s/^VERSION=\"[^\"]*\"/VERSION=\"${new_version}\"/" "$setup_sh" \
+  && rm -f "${setup_sh}.bak"
+
+git add "$setup_sh"
+# --no-verify prevents the DVC pre-commit hook from running on this automated
+# internal commit (no user files are being routed; skipping it is intentional).
+git commit -m "chore: bump version to ${new_version}" --no-verify
+
+echo "[flux] Version bumped to ${new_version} (minor release)"

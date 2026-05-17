@@ -74,6 +74,40 @@ info() {
   echo "[dvc-router] $*"
 }
 
+warn() {
+  echo "[dvc-router] WARNING: $*" >&2
+}
+
+# ---------------------------------------------------------------------------
+# Auto-increment patch version in setup.sh when committing on dev branch
+#
+# Reads VERSION="x.y.z" from setup.sh at the repo root, increments z, writes
+# it back, and stages the file. Runs only on the dev branch so main and other
+# branches are never touched by automatic version bumps.
+# ---------------------------------------------------------------------------
+bump_version() {
+  local branch
+  branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+  [[ "$branch" != "dev" ]] && return 0
+
+  local setup_sh
+  setup_sh="$(git rev-parse --show-toplevel)/setup.sh"
+  [[ ! -f "$setup_sh" ]] && return 0
+
+  local current_version major minor patch new_version
+  current_version=$(grep '^VERSION=' "$setup_sh" | head -1 | cut -d'"' -f2)
+  [[ -z "$current_version" ]] && return 0
+
+  IFS='.' read -r major minor patch <<< "$current_version"
+  patch=$(( patch + 1 ))
+  new_version="${major}.${minor}.${patch}"
+
+  sed -i.bak "s/^VERSION=\"[^\"]*\"/VERSION=\"${new_version}\"/" "$setup_sh" \
+    && rm -f "${setup_sh}.bak"
+  git add "$setup_sh"
+  info "Version bumped to ${new_version}"
+}
+
 # ---------------------------------------------------------------------------
 # Sync every .dvcignore from its sibling .gitignore
 #
@@ -153,7 +187,7 @@ cleanup_orphaned_dvc_pointers() {
       local target_name
       target_name=$(basename "$target_rel")
       # DVC adds entries in the form /filename — remove that exact line
-      sed -i '' "/^\/${target_name}$/d" "$gitignore_path"
+      sed -i.bak "/^\/${target_name}$/d" "$gitignore_path" && rm -f "${gitignore_path}.bak"
       git add "$gitignore_path"
     fi
 
@@ -401,5 +435,10 @@ if (( ${#git_kept[@]} > 0 )); then
     log "  · $f"
   done
 fi
+
+# ---------------------------------------------------------------------------
+# Auto-increment patch version on dev branch
+# ---------------------------------------------------------------------------
+bump_version
 
 exit 0

@@ -13,7 +13,9 @@
 
 set -euo pipefail
 
-HOOK_SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hooks/pre-commit"
+HOOK_SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pre-commit"
+POST_MERGE_SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/post-merge"
+VERSION="0.0.0"
 
 # ---------------------------------------------------------------------------
 # Colours
@@ -32,6 +34,7 @@ echo ""
 echo "╔══════════════════════════════════════════╗"
 echo "║   DVC + Cloudflare R2 + Git Setup        ║"
 echo "╚══════════════════════════════════════════╝"
+echo "   flux v${VERSION}"
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -334,24 +337,29 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 7. Install the pre-commit hook
+# 8. Install git hooks (pre-commit and post-merge)
 # ---------------------------------------------------------------------------
 echo ""
-echo "── Installing pre-commit hook ──"
+echo "── Installing git hooks ──"
 
 HOOKS_DIR="$(git rev-parse --git-dir)/hooks"
-HOOK_DEST="${HOOKS_DIR}/pre-commit"
 
 if [[ ! -f "$HOOK_SOURCE" ]]; then
-  fail "hooks/pre-commit not found at: $HOOK_SOURCE"
+  fail "pre-commit not found at: $HOOK_SOURCE"
 fi
+cp "$HOOK_SOURCE" "${HOOKS_DIR}/pre-commit"
+chmod +x "${HOOKS_DIR}/pre-commit"
+ok "pre-commit hook installed."
 
-cp "$HOOK_SOURCE" "$HOOK_DEST"
-chmod +x "$HOOK_DEST"
-ok "pre-commit hook installed at: $HOOK_DEST"
+if [[ ! -f "$POST_MERGE_SOURCE" ]]; then
+  fail "post-merge not found at: $POST_MERGE_SOURCE"
+fi
+cp "$POST_MERGE_SOURCE" "${HOOKS_DIR}/post-merge"
+chmod +x "${HOOKS_DIR}/post-merge"
+ok "post-merge hook installed."
 
 # ---------------------------------------------------------------------------
-# 8. Update .gitignore
+# 9. Update .gitignore
 # ---------------------------------------------------------------------------
 echo ""
 echo "── Updating .gitignore ──"
@@ -373,7 +381,7 @@ for entry in "${entries[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
-# 9. Commit initial DVC config
+# 10. Commit initial DVC config
 # ---------------------------------------------------------------------------
 echo ""
 echo "── Committing DVC configuration ──"
