@@ -15,7 +15,7 @@ set -euo pipefail
 
 HOOK_SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pre-commit"
 POST_MERGE_SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/post-merge"
-VERSION="0.0.1"
+VERSION="0.0.2"
 
 # ---------------------------------------------------------------------------
 # Colours
