@@ -95,7 +95,8 @@ bump_version() {
   [[ ! -f "$setup_sh" ]] && return 0
 
   local current_version major minor patch new_version
-  current_version=$(grep '^VERSION=' "$setup_sh" | head -1 | cut -d'"' -f2)
+  # || true prevents pipefail from aborting the hook when grep finds no match
+  current_version=$(grep '^VERSION=' "$setup_sh" 2>/dev/null | head -1 | cut -d'"' -f2 || true)
   [[ -z "$current_version" ]] && return 0
 
   IFS='.' read -r major minor patch <<< "$current_version"
@@ -303,6 +304,14 @@ DVC=$(find_dvc) || {
 log "Using DVC at: $DVC"
 
 # ---------------------------------------------------------------------------
+# Capture the user's originally staged files BEFORE cleanup or migration
+# run — both may stage their own bookkeeping files (.gitignore edits, pointer
+# deletions, migrated data files) which must not be re-processed by the
+# routing loop below.
+# ---------------------------------------------------------------------------
+staged_files=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)
+
+# ---------------------------------------------------------------------------
 # Cleanup orphaned .dvc pointers (deleted / renamed DVC-tracked files)
 # Runs before staged file processing so stale .gitignore entries are cleared
 # before .dvcignore is regenerated
@@ -311,15 +320,10 @@ cleanup_orphaned_dvc_pointers
 
 # ---------------------------------------------------------------------------
 # Migrate DVC-tracked files that now fall below the threshold back to Git
-# Runs after cleanup (so deleted targets are already gone) and before staged
-# files are collected (so migrated files appear in the staging loop)
+# Runs after cleanup (so deleted targets are already gone) and before the
+# routing loop (so the routing loop only sees the user's original staged set)
 # ---------------------------------------------------------------------------
 migrate_dvc_to_git
-
-# ---------------------------------------------------------------------------
-# Get staged files (Added, Copied, Modified — not Deleted or Renamed)
-# ---------------------------------------------------------------------------
-staged_files=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)
 
 if [[ -z "$staged_files" ]]; then
   log "No staged files to process."
