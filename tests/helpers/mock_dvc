@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Mock DVC binary for flux tests.
+# Simulates the DVC behaviour that the pre-commit hook depends on:
+#   add  — creates <file>.dvc, appends /<basename> to sibling .gitignore
+#   remove — removes <file>.dvc, deletes the .gitignore entry
+#   gc, init, remote, status, push, pull — no-ops (exit 0)
+#
+# Every invocation is appended to $MOCK_DVC_LOG for assertions.
+
+set -euo pipefail
+
+LOG="${MOCK_DVC_LOG:-/dev/null}"
+echo "$*" >> "$LOG"
+
+case "${1:-}" in
+  add)
+    shift
+    file=""
+    while [[ $# -gt 0 ]]; do
+      [[ "$1" == --* ]] && { shift; continue; }
+      file="$1"; shift
+    done
+    [[ -z "$file" ]] && exit 0
+
+    dir=$(dirname "$file")
+    base=$(basename "$file")
+
+    cat > "${file}.dvc" << EOF
+outs:
+- md5: deadbeefdeadbeef00000000000000000
+  path: ${base}
+EOF
+
+    gitignore="${dir}/.gitignore"
+    if ! grep -qF "/${base}" "$gitignore" 2>/dev/null; then
+      echo "/${base}" >> "$gitignore"
+    fi
+    ;;
+
+  remove)
+    shift
+    dvc_file=""
+    while [[ $# -gt 0 ]]; do
+      [[ "$1" == --* ]] && { shift; continue; }
+      dvc_file="$1"; shift
+    done
+    [[ -z "$dvc_file" ]] && exit 0
+
+    target=$(grep '^\s*path:' "$dvc_file" 2>/dev/null \
+      | head -1 | sed 's/.*path:[[:space:]]*//')
+    dir=$(dirname "$dvc_file")
+
+    gitignore="${dir}/.gitignore"
+    if [[ -f "$gitignore" && -n "$target" ]]; then
+      sed -i.bak "/^\/${target}$/d" "$gitignore" \
+        && rm -f "${gitignore}.bak"
+    fi
+
+    rm -f "$dvc_file"
+    ;;
+
+  gc|init|remote|status|push|pull|version)
+    exit 0
+    ;;
+
+  *)
+    echo "mock_dvc: unhandled command: $*" >&2
+    exit 1
+    ;;
+esac
