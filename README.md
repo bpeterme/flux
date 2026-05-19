@@ -64,11 +64,27 @@ also skip them.
   Works with GitLab, GitHub, or any other Git host — mix freely across repos.
 - A Cloudflare R2 bucket created in the Cloudflare dashboard with an API token.
 
-### Run the setup script
+### Install flux
+
+**Via Homebrew (recommended):**
+```bash
+brew tap bpeterme/flux
+brew install bpeterme/flux/flux
+```
+
+This installs `flux-setup` as a system-wide command.
+
+**From source:**
+```bash
+git clone https://github.com/bpeterme/flux.git
+```
+
+### Run setup in your repo
 
 ```bash
-chmod +x setup.sh
-./setup.sh
+flux-setup              # if installed via Homebrew
+# or
+./path/to/flux/setup.sh # if running from source
 ```
 
 The script will:
@@ -80,14 +96,14 @@ The script will:
 5. Ask for your preferred size threshold (default: 5 MB)
 6. Optionally enable verbose hook output
 7. Optionally install flux shell aliases
-8. Install the pre-commit and post-merge hooks
+8. Install the pre-commit hook
 9. Update `.gitignore` with DVC-specific entries
 10. Commit the initial DVC configuration to Git
 
 
 ## Credentials
 
-flux resolves R2 credentials in this order on every `setup.sh` run:
+flux resolves R2 credentials in this order on every `flux-setup` run:
 
 | Priority | Source | Notes |
 |---|---|---|
@@ -191,7 +207,7 @@ _flux_check() {
   }
   if [[ ! -d "${root}/.dvc" ]]; then
     echo "flux: no flux setup in this repo."
-    echo "      Run ./setup.sh from the repo root to initialise."
+    echo "      Run flux-setup from the repo root to initialise."
     return 1
   fi
 }
@@ -207,8 +223,8 @@ Then reload your shell:
 source ~/.zshrc   # or source ~/.bash_profile
 ```
 
-`flux-doctor` is installed by setup.sh but is too long to paste here — run
-`setup.sh` or copy it from the alias block in `setup.sh`.
+`flux-doctor` is installed by `flux-setup` but is too long to paste here — run
+`flux-setup` or copy it from the alias block in `setup.sh`.
 
 Adjust settings without editing any files:
 
@@ -276,17 +292,21 @@ my-project/
 
 ## Setting up on another machine
 
-After cloning on another machine:
+Install flux on the new machine first (if not already):
+```bash
+brew tap bpeterme/flux
+brew install bpeterme/flux/flux
+```
 
+Then clone and run setup:
 ```bash
 git clone <your-remote-url>
 cd <repo>
-chmod +x setup.sh
-./setup.sh
+flux-setup
 ```
 
 If you already ran setup on the first machine, your R2 credentials are in that
-machine's secret store but not yet on the new one. The script will detect they
+machine's secret store but not yet on the new one. `flux-setup` will detect they
 are missing and prompt once — then store them locally so all subsequent repos
 on that machine are automatic.
 
@@ -342,7 +362,7 @@ the cleanup and the re-routing.
 ### Documented — handle manually if needed
 
 **Pre-existing large/binary files**
-Files already committed to Git before `setup.sh` was run are never touched
+Files already committed to Git before `flux-setup` was run are never touched
 by the hook. Run this one-time to migrate them:
 
 ```bash
@@ -430,7 +450,7 @@ secret-tool clear service dvc-r2 account r2-secret-key
 
 CI / headless Linux (no secret store):
 ```bash
-# Set environment variables — setup.sh reads these at highest priority
+# Set environment variables — flux-setup reads these at highest priority
 export FLUX_R2_BUCKET='your-bucket'
 export FLUX_R2_ACCOUNT_ID='your-account-id'
 export FLUX_R2_ACCESS_KEY_ID='your-key-id'
@@ -464,21 +484,24 @@ dvc gc                          # also cleans local cache
 ## Running tests
 
 flux has a bats-core test suite covering the core hook logic (routing, migration,
-orphan cleanup, `.dvcignore` sync, version bumping). Tests use a mock DVC binary
-so no real DVC installation or R2 credentials are needed.
+orphan cleanup, and `.dvcignore` sync). Tests use a mock DVC binary so no real
+DVC installation or R2 credentials are needed.
 
 ```bash
 # Install bats-core first
 brew install bats-core        # macOS
 sudo apt-get install bats     # Linux
 
+# Run unit tests (hook logic — fast, no dependencies)
+./tests/run.sh tests/unit.bats
+
+# Run integration tests (CLI flow)
+./tests/run.sh tests/integration.bats
+
 # Run all tests
 ./tests/run.sh
-
-# Run a single file
-./tests/run.sh tests/routing.bats
 ```
 
-Tests run automatically on every push to `dev` and on every pull request
-targeting `main` via GitHub Actions. A passing test run is required before
-any merge to `main`.
+Tests run automatically on every push to `dev` and `main`, and on pull requests
+targeting `main`, via GitHub Actions (`test.yml`). The release workflow
+(`release.yml`) runs tests as a gate before tagging and publishing.
