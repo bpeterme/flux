@@ -148,7 +148,9 @@ PYEOF
 
   export REAL_HOME="$HOME"
   export REAL_PATH="$PATH"
+  export REAL_XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-}"
   export HOME="$MOCK_HOME"
+  export XDG_CONFIG_HOME="$MOCK_HOME/.config"
   export PATH="$MOCK_BIN:$PATH"
   export MOCK_DVC_LOG="$TEST_REPO/dvc_calls.log"
 
@@ -172,6 +174,11 @@ teardown_flux_test() {
   cd /tmp
   export HOME="$REAL_HOME"
   export PATH="$REAL_PATH"
+  if [[ -n "${REAL_XDG_CONFIG_HOME:-}" ]]; then
+    export XDG_CONFIG_HOME="$REAL_XDG_CONFIG_HOME"
+  else
+    unset XDG_CONFIG_HOME
+  fi
   rm -rf "$TEST_REPO" "$MOCK_HOME" "$MOCK_BIN"
-  unset TEST_REPO MOCK_HOME MOCK_BIN REAL_HOME REAL_PATH MOCK_DVC_LOG
+  unset TEST_REPO MOCK_HOME MOCK_BIN REAL_HOME REAL_PATH REAL_XDG_CONFIG_HOME MOCK_DVC_LOG
 }

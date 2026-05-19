@@ -28,7 +28,7 @@ teardown() { teardown_flux_test; }
 @test "setup.sh fails when config file is absent" {
   local empty_home
   empty_home=$(mktemp -d)
-  run env HOME="$empty_home" bash "$REPO_ROOT/setup.sh"
+  run env HOME="$empty_home" XDG_CONFIG_HOME="$empty_home/.config" bash "$REPO_ROOT/setup.sh"
   [ "$status" -ne 0 ]
   [[ "$output" == *"flux.env"* ]]
   rm -rf "$empty_home"
@@ -40,7 +40,7 @@ teardown() { teardown_flux_test; }
   mkdir -p "$partial_home/.config/flux"
   printf 'FLUX_R2_BUCKET=b\nFLUX_R2_ACCOUNT_ID=a\nFLUX_R2_ACCESS_KEY_ID=k\n' \
     > "$partial_home/.config/flux/flux.env"
-  run env HOME="$partial_home" bash "$REPO_ROOT/setup.sh"
+  run env HOME="$partial_home" XDG_CONFIG_HOME="$partial_home/.config" bash "$REPO_ROOT/setup.sh"
   [ "$status" -ne 0 ]
   [[ "$output" == *"FLUX_R2_SECRET_KEY"* ]]
   rm -rf "$partial_home"
@@ -49,7 +49,7 @@ teardown() { teardown_flux_test; }
 @test "setup.sh fails when not inside a git repo" {
   local no_git
   no_git=$(mktemp -d)
-  run bash -c "cd '$no_git' && HOME='$MOCK_HOME' PATH='$PATH' bash '$REPO_ROOT/setup.sh'"
+  run bash -c "cd '$no_git' && HOME='$MOCK_HOME' XDG_CONFIG_HOME='$MOCK_HOME/.config' PATH='$PATH' bash '$REPO_ROOT/setup.sh'"
   [ "$status" -ne 0 ]
   [[ "$output" == *"Git repository"* ]]
   rm -rf "$no_git"
