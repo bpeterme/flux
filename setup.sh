@@ -13,9 +13,11 @@
 
 set -euo pipefail
 
-HOOK_SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pre-commit"
-POST_MERGE_SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/post-merge"
-VERSION="0.0.2"
+_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# When installed via Homebrew, hooks live in share/flux/; otherwise next to setup.sh
+HOOK_SOURCE="${_script_dir}/../share/flux/pre-commit"
+[[ -f "$HOOK_SOURCE" ]] || HOOK_SOURCE="${_script_dir}/pre-commit"
+VERSION="dev..1"
 
 # ---------------------------------------------------------------------------
 # Colours
@@ -416,7 +418,6 @@ flux-doctor() {
     && _fd_ok "dvc-s3 plugin available" \
     || _fd_fail "dvc-s3 not found — pip install dvc-s3"
   [[ -x "${root}/.git/hooks/pre-commit" ]]  && _fd_ok "pre-commit hook installed"  || _fd_fail "pre-commit hook missing — run setup.sh"
-  [[ -x "${root}/.git/hooks/post-merge" ]]  && _fd_ok "post-merge hook installed"  || _fd_fail "post-merge hook missing — run setup.sh"
   if [[ -n "${dvc_bin:-}" ]]; then
     local remote
     remote=$("$dvc_bin" remote list 2>/dev/null | head -1 || true)
@@ -467,13 +468,6 @@ fi
 cp "$HOOK_SOURCE" "${HOOKS_DIR}/pre-commit"
 chmod +x "${HOOKS_DIR}/pre-commit"
 ok "pre-commit hook installed."
-
-if [[ ! -f "$POST_MERGE_SOURCE" ]]; then
-  fail "post-merge not found at: $POST_MERGE_SOURCE"
-fi
-cp "$POST_MERGE_SOURCE" "${HOOKS_DIR}/post-merge"
-chmod +x "${HOOKS_DIR}/post-merge"
-ok "post-merge hook installed."
 
 # ---------------------------------------------------------------------------
 # 9. Update .gitignore

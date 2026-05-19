@@ -46,9 +46,6 @@ setup_test_repo() {
     || git branch -m main 2>/dev/null \
     || true
 
-  # setup.sh with VERSION — required by bump_version() in the hook.
-  echo 'VERSION="0.0.0"' > setup.sh
-  git add setup.sh
   git commit --allow-empty -m "initial" --no-verify -q
 
   cp "$REPO_ROOT/pre-commit" .git/hooks/pre-commit

@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install bats-core
+        run: |
+          git clone --depth 1 https://github.com/bats-core/bats-core.git /tmp/bats-core
+          sudo /tmp/bats-core/install.sh /usr/local
+
+      - name: Run tests
+        run: |
+          bats tests/unit.bats
+          bats tests/integration.bats
+
+      - name: Generate CalVer tag
+        id: calver
+        run: |
+          DATE=$(date -u +%Y.%m.%d)
+          LATEST=$(git tag --list "${DATE}.*" | sort -t. -k4 -n | tail -1)
+          if [[ -z "$LATEST" ]]; then
+            N=0
+          else
+            N=$(( ${LATEST##*.} + 1 ))
+          fi
+          TAG="${DATE}.${N}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.calver.outputs.tag }}"
+          git push origin "${{ steps.calver.outputs.tag }}"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.calver.outputs.tag }}
+          name: ${{ steps.calver.outputs.tag }}
+          generate_release_notes: true
+
+      - name: Compute tarball SHA256
+        id: sha
+        run: |
+          TAG="${{ steps.calver.outputs.tag }}"
+          URL="https://github.com/${{ github.repository }}/archive/refs/tags/${TAG}.tar.gz"
+          SHA=$(curl -sL "$URL" | sha256sum | cut -d' ' -f1)
+          echo "sha256=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "url=${URL}" >> "$GITHUB_OUTPUT"
+
+      - name: Update Homebrew tap
+        env:
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.calver.outputs.tag }}"
+          SHA="${{ steps.sha.outputs.sha256 }}"
+          URL="${{ steps.sha.outputs.url }}"
+
+          git clone "https://x-access-token:${TAP_GITHUB_TOKEN}@github.com/bpeterme/homebrew-flux.git" /tmp/homebrew-flux
+          cd /tmp/homebrew-flux
+
+          sed -i "s|url \".*\"|url \"${URL}\"|" Formula/flux.rb
+          sed -i "s|sha256 \".*\"|sha256 \"${SHA}\"|" Formula/flux.rb
+          sed -i "s|version \".*\"|version \"${TAG}\"|" Formula/flux.rb
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/flux.rb
+          git commit -m "flux ${TAG}"
+          git push
