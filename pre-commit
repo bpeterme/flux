@@ -31,11 +31,10 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 find_dvc() {
   local candidates=(
-    "/opt/homebrew/bin/dvc"          # system Homebrew, Apple Silicon
-    "/usr/local/bin/dvc"             # system Homebrew, Intel
-    "${HOME}/.homebrew/bin/dvc"      # user-local Homebrew (common)
-    "${HOME}/homebrew/bin/dvc"       # user-local Homebrew (alternative)
-    "${HOME}/.linuxbrew/bin/dvc"     # Linuxbrew, just in case
+    "/opt/homebrew/bin/dvc"      # system Homebrew, Apple Silicon
+    "/usr/local/bin/dvc"         # system Homebrew, Intel
+    "${HOME}/.homebrew/bin/dvc"  # user-local Homebrew (common)
+    "${HOME}/homebrew/bin/dvc"   # user-local Homebrew (alternative)
   )
 
   for candidate in "${candidates[@]}"; do

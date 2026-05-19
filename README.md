@@ -34,9 +34,9 @@ Binary detection uses the same heuristic as Git itself (`grep -qI`): if a file
 contains null bytes, it's binary. This catches `.mp4`, `.psd`, `.db`, `.zip`,
 `.dmg`, and any future format automatically — no extension list to maintain.
 
-The hook locates DVC automatically, checking all common Homebrew and Linuxbrew
-install locations before falling back to PATH. No hardcoded paths, no
-per-machine configuration needed.
+The hook locates DVC automatically, checking all common Homebrew install
+locations before falling back to PATH. No hardcoded paths, no per-machine
+configuration needed.
 
 
 ## .gitignore and .dvcignore stay in sync automatically
@@ -58,7 +58,7 @@ also skip them.
 
 ### Prerequisites
 
-- Homebrew (macOS) or Linuxbrew (Linux).
+- macOS with Homebrew.
 - A Cloudflare R2 bucket with an API token.
 - A Git remote configured on the repo (`git remote add origin ...`).
 
@@ -67,97 +67,73 @@ also skip them.
 ```bash
 brew tap bpeterme/flux
 brew install bpeterme/flux/flux
+pip install "dvc[s3]"
 ```
 
-Homebrew installs `flux-setup` and pulls in `dvc` automatically as a dependency.
-
-**From source:** clone the repo and run `./setup.sh` directly.
-
-### 2. Create your config (once per machine)
+### 2. Configure flux (once per machine)
 
 ```bash
-mkdir -p ~/.config/flux
-cp "$(brew --prefix)/share/flux/flux.env.example" ~/.config/flux/flux.env
+flux config
 ```
 
-Edit `~/.config/flux/flux.env` and fill in your R2 credentials:
+`flux config` prompts for your R2 bucket, account ID, access key, and secret key.
+Non-sensitive values are saved to `~/.config/flux/flux.env`; credentials go
+directly into macOS Keychain — nothing secret ever touches a file.
 
-```bash
-FLUX_R2_BUCKET=my-r2-bucket
-FLUX_R2_ACCOUNT_ID=your-cloudflare-account-id
-FLUX_R2_ACCESS_KEY_ID=your-r2-access-key-id
-FLUX_R2_SECRET_KEY=your-r2-secret-access-key
-```
+On subsequent runs `flux config` shows your current settings and lets you
+update or remove them.
 
-Optional settings (uncomment to override defaults):
-```bash
-# FLUX_R2_FOLDER=my-project      # default: derived from git remote URL
-# FLUX_SIZE_THRESHOLD_MB=5       # default: 5
-# FLUX_VERBOSE=false             # default: false
-```
-
-### 3. Run setup in each repo
+### 3. Add flux to each repo
 
 ```bash
 cd your-project
-flux-setup
+flux add
 ```
 
-That's it. `flux-setup` reads your config, initialises DVC, wires up the
-pre-commit hook, and makes an initial commit. No prompts.
+`flux add` reads global config, initialises DVC, configures the R2 remote, and
+installs the pre-commit hook. Run it once per repo.
+
+## Managing config
+
+```bash
+flux config           # show current settings (or run initial setup if unconfigured)
+```
+
+Config is split by sensitivity:
+
+| Setting | Storage |
+|---|---|
+| R2 bucket, account ID | `~/.config/flux/flux.env` |
+| Access key ID, secret key | macOS Keychain |
+| R2 folder, threshold, verbose | per-repo `git config` |
 
 ## Credentials and CI
 
-Credentials live in `~/.config/flux/flux.env` on each machine — never committed
-to any repo. To update them, edit the file and re-run `flux-setup` in any
-affected repos to re-apply the DVC remote configuration.
-
-For CI or headless environments where a home directory config isn't practical,
-`flux-setup` also accepts credentials via environment variables — the same names
-as in the config file:
+For CI or headless environments, configure the DVC remote directly using
+credentials from your CI secrets store:
 
 ```bash
-FLUX_R2_BUCKET=my-bucket \
-FLUX_R2_ACCOUNT_ID=abc123 \
-FLUX_R2_ACCESS_KEY_ID=key \
-FLUX_R2_SECRET_KEY=secret \
-flux-setup
+dvc remote modify --local r2remote access_key_id     "$R2_ACCESS_KEY_ID"
+dvc remote modify --local r2remote secret_access_key "$R2_SECRET_KEY"
 ```
 
 
 ## Daily workflow
 
-### With flux aliases (recommended)
-
-```bash
-flux-commit -m "your message"   # stage all, commit — hook routes automatically
-flux-push                        # git push + dvc push in one step
-flux-pull                        # git pull + dvc pull in one step
-flux-status                      # git status + dvc status combined
-```
-
-Or to stage, commit, and push in one shot:
-```bash
-flux-sync -m "your message"     # add + commit + git push + dvc push
-```
-
-### Without aliases (raw commands)
-
 ```bash
 git add .
 git commit -m "your message"   # hook fires, routes files automatically
-git push                        # sends Git content → GitLab / GitHub
-dvc push                        # sends large/binary files → Cloudflare R2
+flux sync                       # git pull + dvc pull + git push + dvc push
+flux pull                       # download the latest (git pull + dvc pull)
 ```
 
-### Pulling on the other machine
+Or broken out manually:
 
 ```bash
-flux-pull       # recommended: git pull + dvc pull in one step
-
-# or manually:
-git pull        # fetches Git content from remote
-dvc pull        # fetches large/binary files from R2
+git push   # sends Git content → GitLab / GitHub
+dvc push   # sends large/binary files → Cloudflare R2
+git pull   # fetches Git content from remote
+dvc pull   # fetches large/binary files from R2
 ```
 
 ### Using GitHub Desktop
@@ -167,64 +143,8 @@ finds DVC automatically regardless of which Homebrew install you have, so
 commits work as expected from the GUI.
 
 The one limitation: `dvc push` and `dvc pull` are not Git commands, so GitHub
-Desktop has no concept of them. You need a terminal for those two steps:
-
-```bash
-dvc push   # run after pushing via GitHub Desktop
-dvc pull   # run after pulling via GitHub Desktop
-```
-
-Everything else — branching, diffs, commit history, git push/pull — can stay
-in GitHub Desktop as normal.
-
-
-## Flux aliases
-
-The aliases unify the split `git` / `dvc` command pair into a single
-consistent interface. Install them once per machine.
-
-| Alias | What it does |
-|---|---|
-| `flux-commit` | `git add . && git commit` — hook routes files automatically |
-| `flux-push` | `git push && dvc push` — both remotes in one step |
-| `flux-pull` | `git pull && dvc pull` — both remotes in one step |
-| `flux-sync` | `git add . && git commit && git push && dvc push` — full sync |
-| `flux-status` | `git status && dvc status` — combined view |
-| `flux-doctor` | diagnose the flux setup in the current repo |
-
-### Installation
-
-The setup script offers to install these for you. To install manually,
-add the following to your `~/.zshrc` (or `~/.bash_profile` for bash):
-
-```bash
-# flux — unified Git + DVC workflow
-# Functions (not aliases) so they check for a flux setup gracefully.
-_flux_check() {
-  local root
-  root=$(git rev-parse --show-toplevel 2>/dev/null) || {
-    echo "flux: not inside a Git repository."; return 1
-  }
-  if [[ ! -d "${root}/.dvc" ]]; then
-    echo "flux: no flux setup in this repo."
-    echo "      Run flux-setup from the repo root to initialise."
-    return 1
-  fi
-}
-flux-commit() { _flux_check || return 1; git add . && git commit "$@"; }
-flux-push()   { _flux_check || return 1; git push && dvc push; }
-flux-pull()   { _flux_check || return 1; git pull && dvc pull; }
-flux-sync()   { _flux_check || return 1; git add . && git commit "$@" && git push && dvc push; }
-flux-status() { _flux_check || return 1; git status && echo "--- DVC ---" && dvc status; }
-```
-
-Then reload your shell:
-```bash
-source ~/.zshrc   # or source ~/.bash_profile
-```
-
-`flux-doctor` is installed by `flux-setup` but is too long to paste here — run
-`flux-setup` to reinstall it, or copy it from `setup.sh` in the source repo.
+Desktop has no concept of them. Use `flux sync` or `flux pull` from a terminal
+for those steps.
 
 Adjust settings without editing any files:
 
@@ -257,7 +177,7 @@ per repo in `.dvc/config`. The Git remote is whatever `git push` points to.
 
 ## Homebrew: system vs user-local
 
-The hook and setup script check these locations in order:
+The hook checks these DVC locations in order:
 
 | Location | When used |
 |---|---|
@@ -265,10 +185,9 @@ The hook and setup script check these locations in order:
 | `/usr/local/bin/` | System Homebrew, Intel Mac |
 | `~/.homebrew/bin/` | User-local Homebrew (common) |
 | `~/homebrew/bin/` | User-local Homebrew (alternative) |
-| `~/.linuxbrew/bin/` | Linuxbrew |
 | `PATH` fallback | pip-installed, conda, or anything else |
 
-No configuration needed — whichever install exists on a given machine is used.
+No configuration needed — whichever install exists on your machine is used.
 
 
 ## File structure after first use
@@ -295,16 +214,15 @@ my-project/
 ```bash
 # 1. Install flux (if not already)
 brew tap bpeterme/flux && brew install bpeterme/flux/flux
+pip install "dvc[s3]"
 
-# 2. Create your config (once per machine)
-mkdir -p ~/.config/flux
-cp "$(brew --prefix)/share/flux/flux.env.example" ~/.config/flux/flux.env
-# edit ~/.config/flux/flux.env with your R2 credentials
+# 2. Configure flux (stores credentials in macOS Keychain)
+flux config
 
-# 3. Clone and set up the repo
+# 3. Clone and add flux to the repo
 git clone <your-remote-url>
 cd <repo>
-flux-setup
+flux add
 
 # 4. Pull large files from R2
 dvc pull
@@ -354,7 +272,7 @@ the cleanup and the re-routing.
 ### Documented — handle manually if needed
 
 **Pre-existing large/binary files**
-Files already committed to Git before `flux-setup` was run are never touched
+Files already committed to Git before `flux add` was run are never touched
 by the hook. Run this one-time to migrate them:
 
 ```bash
@@ -390,8 +308,7 @@ git commit -m "resolve DVC merge conflict"
 
 
 **Hook not firing**
-Run `flux-doctor` first — it checks hook installation and prints a clear
-pass/fail for each item. For a quick manual check:
+For a quick manual check:
 ```bash
 ls -la .git/hooks/pre-commit   # must exist and be executable
 chmod +x .git/hooks/pre-commit
