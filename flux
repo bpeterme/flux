@@ -44,6 +44,8 @@ _flux_setup() {
   echo "  flux ${VERSION} — setup"
   echo ""
 
+  command -v dvc >/dev/null || fail 'dvc is not installed. Run: pip install "dvc[s3]"'
+
   [[ -f "$FLUX_CONFIG" ]] || fail "Config not found: $FLUX_CONFIG
   Copy flux.env.example to $FLUX_CONFIG and fill in your R2 credentials."
 
@@ -60,14 +62,6 @@ _flux_setup() {
 
   git rev-parse --git-dir &>/dev/null || fail "Not inside a Git repository — run 'git init' first."
   ok "Git repository found."
-
-  if ! python3 -c "import dvc_s3" 2>/dev/null; then
-    warn "dvc-s3 not found — installing via pip..."
-    pip3 install --quiet dvc-s3 2>/dev/null \
-      || pip3 install --quiet dvc-s3 --break-system-packages \
-      || fail "Could not install dvc-s3. Try: pip install dvc-s3"
-  fi
-  ok "dvc-s3 available."
 
   if [[ ! -d .dvc ]]; then
     dvc init --quiet

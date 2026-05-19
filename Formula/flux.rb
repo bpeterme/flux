@@ -8,8 +8,6 @@ class Flux < Formula
   # sha256 "..."
   # version "YYYY.MM.DD.N"
 
-  depends_on "dvc"
-
   head "https://github.com/bpeterme/flux.git", branch: "dev"
 
   def install
@@ -23,6 +21,9 @@ class Flux < Formula
 
   def caveats
     <<~EOS
+      flux requires dvc — install it if you haven't already:
+        pip install "dvc[s3]"
+
       Before running flux setup for the first time, create your config:
         mkdir -p ~/.config/flux
         cp #{share}/flux/flux.env.example ~/.config/flux/flux.env
