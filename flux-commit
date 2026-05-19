@@ -1,4 +1,0 @@
-#!/usr/bin/env bash
-# flux-commit — git commit; the pre-commit hook routes files to DVC automatically.
-set -euo pipefail
-git commit "$@"

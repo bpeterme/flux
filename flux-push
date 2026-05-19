@@ -1,4 +1,0 @@
-#!/usr/bin/env bash
-# flux-push — git push then dvc push.
-set -euo pipefail
-git push "$@" && dvc push
