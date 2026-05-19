@@ -17,7 +17,7 @@ _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # When installed via Homebrew, hooks live in share/flux/; otherwise next to setup.sh
 HOOK_SOURCE="${_script_dir}/../share/flux/pre-commit"
 [[ -f "$HOOK_SOURCE" ]] || HOOK_SOURCE="${_script_dir}/pre-commit"
-VERSION="dev..1"
+VERSION="dev"
 
 # ---------------------------------------------------------------------------
 # Colours
