@@ -2,7 +2,7 @@ name: Tests
 
 on:
   push:
-    branches: [dev]
+    branches: [dev, main]
   pull_request:
     branches: [main]
 
@@ -18,5 +18,8 @@ jobs:
           git clone --depth 1 https://github.com/bats-core/bats-core.git /tmp/bats-core
           sudo /tmp/bats-core/install.sh /usr/local
 
-      - name: Run tests
-        run: bats tests/*.bats
+      - name: Run unit tests
+        run: bats tests/unit.bats
+
+      - name: Run integration tests
+        run: bats tests/integration.bats

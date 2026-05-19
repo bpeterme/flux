@@ -58,55 +58,71 @@ also skip them.
 
 ### Prerequisites
 
-- Homebrew (macOS) or Linuxbrew (Linux) — system-wide or user-local, both
-  detected automatically.
-- A Git remote already configured (`git remote add origin ...`).
-  Works with GitLab, GitHub, or any other Git host — mix freely across repos.
-- A Cloudflare R2 bucket created in the Cloudflare dashboard with an API token.
+- Homebrew (macOS) or Linuxbrew (Linux).
+- A Cloudflare R2 bucket with an API token.
+- A Git remote configured on the repo (`git remote add origin ...`).
 
-### Run the setup script
+### 1. Install flux
 
 ```bash
-chmod +x setup.sh
-./setup.sh
+brew tap bpeterme/flux
+brew install bpeterme/flux/flux
 ```
 
-The script will:
-1. Detect your Homebrew/Linuxbrew installation automatically
-2. Install `dvc` via Homebrew and `dvc-s3` via pip (the S3/R2 plugin)
-3. Read R2 credentials — from environment variables, platform secret store,
-   or interactive prompt (see [Credentials](#credentials) below)
-4. Auto-detect the R2 folder name from your Git remote URL, ask to confirm
-5. Ask for your preferred size threshold (default: 5 MB)
-6. Optionally enable verbose hook output
-7. Optionally install flux shell aliases
-8. Install the pre-commit and post-merge hooks
-9. Update `.gitignore` with DVC-specific entries
-10. Commit the initial DVC configuration to Git
+Homebrew installs `flux-setup` and pulls in `dvc` automatically as a dependency.
 
+**From source:** clone the repo and run `./setup.sh` directly.
 
-## Credentials
+### 2. Create your config (once per machine)
 
-flux resolves R2 credentials in this order on every `setup.sh` run:
-
-| Priority | Source | Notes |
-|---|---|---|
-| 1 | `FLUX_R2_*` environment variables | Best for CI/automation — no prompts |
-| 2 | Platform secret store | macOS Keychain or Linux secret service |
-| 3 | Interactive prompt | Credentials saved to secret store if available |
-
-**Environment variables** (set these to skip all prompts):
 ```bash
-export FLUX_R2_BUCKET='your-bucket'
-export FLUX_R2_ACCOUNT_ID='your-account-id'
-export FLUX_R2_ACCESS_KEY_ID='your-key-id'
-export FLUX_R2_SECRET_KEY='your-secret'
+mkdir -p ~/.config/flux
+cp "$(brew --prefix)/share/flux/flux.env.example" ~/.config/flux/flux.env
 ```
 
-**Platform secret store** — enter credentials once, reused for all future repos:
-- macOS: Keychain (via `security`)
-- Linux desktop: GNOME Keyring / KWallet (via `secret-tool`)
-- Headless Linux / CI: no persistent store — use env vars instead
+Edit `~/.config/flux/flux.env` and fill in your R2 credentials:
+
+```bash
+FLUX_R2_BUCKET=my-r2-bucket
+FLUX_R2_ACCOUNT_ID=your-cloudflare-account-id
+FLUX_R2_ACCESS_KEY_ID=your-r2-access-key-id
+FLUX_R2_SECRET_KEY=your-r2-secret-access-key
+```
+
+Optional settings (uncomment to override defaults):
+```bash
+# FLUX_R2_FOLDER=my-project      # default: derived from git remote URL
+# FLUX_SIZE_THRESHOLD_MB=5       # default: 5
+# FLUX_VERBOSE=false             # default: false
+```
+
+### 3. Run setup in each repo
+
+```bash
+cd your-project
+flux-setup
+```
+
+That's it. `flux-setup` reads your config, initialises DVC, wires up the
+pre-commit hook, and makes an initial commit. No prompts.
+
+## Credentials and CI
+
+Credentials live in `~/.config/flux/flux.env` on each machine — never committed
+to any repo. To update them, edit the file and re-run `flux-setup` in any
+affected repos to re-apply the DVC remote configuration.
+
+For CI or headless environments where a home directory config isn't practical,
+`flux-setup` also accepts credentials via environment variables — the same names
+as in the config file:
+
+```bash
+FLUX_R2_BUCKET=my-bucket \
+FLUX_R2_ACCOUNT_ID=abc123 \
+FLUX_R2_ACCESS_KEY_ID=key \
+FLUX_R2_SECRET_KEY=secret \
+flux-setup
+```
 
 
 ## Daily workflow
@@ -191,7 +207,7 @@ _flux_check() {
   }
   if [[ ! -d "${root}/.dvc" ]]; then
     echo "flux: no flux setup in this repo."
-    echo "      Run ./setup.sh from the repo root to initialise."
+    echo "      Run flux-setup from the repo root to initialise."
     return 1
   fi
 }
@@ -207,8 +223,8 @@ Then reload your shell:
 source ~/.zshrc   # or source ~/.bash_profile
 ```
 
-`flux-doctor` is installed by setup.sh but is too long to paste here — run
-`setup.sh` or copy it from the alias block in `setup.sh`.
+`flux-doctor` is installed by `flux-setup` but is too long to paste here — run
+`flux-setup` to reinstall it, or copy it from `setup.sh` in the source repo.
 
 Adjust settings without editing any files:
 
@@ -276,25 +292,21 @@ my-project/
 
 ## Setting up on another machine
 
-After cloning on another machine:
-
 ```bash
+# 1. Install flux (if not already)
+brew tap bpeterme/flux && brew install bpeterme/flux/flux
+
+# 2. Create your config (once per machine)
+mkdir -p ~/.config/flux
+cp "$(brew --prefix)/share/flux/flux.env.example" ~/.config/flux/flux.env
+# edit ~/.config/flux/flux.env with your R2 credentials
+
+# 3. Clone and set up the repo
 git clone <your-remote-url>
 cd <repo>
-chmod +x setup.sh
-./setup.sh
-```
+flux-setup
 
-If you already ran setup on the first machine, your R2 credentials are in that
-machine's secret store but not yet on the new one. The script will detect they
-are missing and prompt once — then store them locally so all subsequent repos
-on that machine are automatic.
-
-If you're on headless Linux with no secret store, set the `FLUX_R2_*`
-environment variables before running setup to skip the prompt entirely.
-
-Then pull the large files:
-```bash
+# 4. Pull large files from R2
 dvc pull
 ```
 
@@ -342,7 +354,7 @@ the cleanup and the re-routing.
 ### Documented — handle manually if needed
 
 **Pre-existing large/binary files**
-Files already committed to Git before `setup.sh` was run are never touched
+Files already committed to Git before `flux-setup` was run are never touched
 by the hook. Run this one-time to migrate them:
 
 ```bash
@@ -399,44 +411,6 @@ dvc remote list                                               # verify remote is
 dvc remote modify --local r2remote secret_access_key <key>   # re-add secret if missing
 ```
 
-**Inspect or update stored credentials**
-
-macOS (Keychain):
-```bash
-# View stored values
-security find-generic-password -s "dvc-r2" -a "r2-bucket" -w
-security find-generic-password -s "dvc-r2" -a "r2-account-id" -w
-security find-generic-password -s "dvc-r2" -a "r2-access-key-id" -w
-
-# Force re-entry on next setup run
-security delete-generic-password -s "dvc-r2" -a "r2-bucket"
-security delete-generic-password -s "dvc-r2" -a "r2-account-id"
-security delete-generic-password -s "dvc-r2" -a "r2-access-key-id"
-security delete-generic-password -s "dvc-r2" -a "r2-secret-key"
-```
-
-Linux (secret-tool):
-```bash
-# View stored values
-secret-tool lookup service dvc-r2 account r2-bucket
-secret-tool lookup service dvc-r2 account r2-access-key-id
-
-# Force re-entry on next setup run
-secret-tool clear service dvc-r2 account r2-bucket
-secret-tool clear service dvc-r2 account r2-account-id
-secret-tool clear service dvc-r2 account r2-access-key-id
-secret-tool clear service dvc-r2 account r2-secret-key
-```
-
-CI / headless Linux (no secret store):
-```bash
-# Set environment variables — setup.sh reads these at highest priority
-export FLUX_R2_BUCKET='your-bucket'
-export FLUX_R2_ACCOUNT_ID='your-account-id'
-export FLUX_R2_ACCESS_KEY_ID='your-key-id'
-export FLUX_R2_SECRET_KEY='your-secret'
-```
-
 **File ended up in Git that should be in DVC**
 ```bash
 dvc add path/to/bigfile
@@ -464,21 +438,24 @@ dvc gc                          # also cleans local cache
 ## Running tests
 
 flux has a bats-core test suite covering the core hook logic (routing, migration,
-orphan cleanup, `.dvcignore` sync, version bumping). Tests use a mock DVC binary
-so no real DVC installation or R2 credentials are needed.
+orphan cleanup, and `.dvcignore` sync). Tests use a mock DVC binary so no real
+DVC installation or R2 credentials are needed.
 
 ```bash
 # Install bats-core first
 brew install bats-core        # macOS
 sudo apt-get install bats     # Linux
 
+# Run unit tests (hook logic — fast, no dependencies)
+./tests/run.sh tests/unit.bats
+
+# Run integration tests (CLI flow)
+./tests/run.sh tests/integration.bats
+
 # Run all tests
 ./tests/run.sh
-
-# Run a single file
-./tests/run.sh tests/routing.bats
 ```
 
-Tests run automatically on every push to `dev` and on every pull request
-targeting `main` via GitHub Actions. A passing test run is required before
-any merge to `main`.
+Tests run automatically on every push to `dev` and `main`, and on pull requests
+targeting `main`, via GitHub Actions (`test.yml`). The release workflow
+(`release.yml`) runs tests as a gate before tagging and publishing.
