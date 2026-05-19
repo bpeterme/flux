@@ -59,7 +59,13 @@ EOF
     rm -f "$dvc_file"
     ;;
 
-  gc|init|remote|status|push|pull|version)
+  init)
+    # Create minimal .dvc/config so setup.sh can stage it
+    mkdir -p .dvc
+    printf '' > .dvc/config
+    ;;
+
+  gc|remote|status|push|pull|version)
     exit 0
     ;;
 
