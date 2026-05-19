@@ -17,6 +17,8 @@ class Flux < Formula
     (share/"flux").install "pre-commit"
     (share/"flux").install "flux.env.example"
     bin.install "setup.sh" => "flux-setup"
+    bin.install_symlink bin/"flux-setup" => "flux"
+    bin.install "flux-commit", "flux-push", "flux-pull"
   end
 
   def caveats

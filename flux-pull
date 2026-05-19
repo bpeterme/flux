@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# flux-pull — git pull then dvc pull.
+set -euo pipefail
+git pull "$@" && dvc pull
