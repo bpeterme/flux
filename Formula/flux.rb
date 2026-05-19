@@ -8,19 +8,26 @@ class Flux < Formula
   # sha256 "..."
   # version "YYYY.MM.DD.N"
 
+  depends_on "dvc"
+
   head "https://github.com/bpeterme/flux.git", branch: "main"
 
   def install
     # Hooks live in share/flux/ so setup.sh can find them after installation.
     (share/"flux").install "pre-commit"
+    (share/"flux").install "flux.env.example"
     bin.install "setup.sh" => "flux-setup"
   end
 
   def caveats
     <<~EOS
-      Run flux-setup once inside each Git repo you want to manage:
-        cd your-repo
-        flux-setup
+      Before running flux-setup for the first time, create your config:
+        mkdir -p ~/.config/flux
+        cp #{share}/flux/flux.env.example ~/.config/flux/flux.env
+        # edit ~/.config/flux/flux.env with your R2 credentials
+
+      Then run flux-setup once inside each Git repo you want to manage:
+        cd your-repo && flux-setup
     EOS
   end
 
