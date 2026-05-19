@@ -34,6 +34,6 @@ class Flux < Formula
   end
 
   test do
-    assert_match "flux HEAD-", shell_output("#{bin}/flux version")
+    assert_match "flux ", shell_output("#{bin}/flux version")
   end
 end

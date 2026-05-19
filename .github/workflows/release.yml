@@ -72,9 +72,13 @@ jobs:
           git clone "https://x-access-token:${TAP_GITHUB_TOKEN}@github.com/bpeterme/homebrew-flux.git" /tmp/homebrew-flux
           cd /tmp/homebrew-flux
 
-          sed -i "s|url \".*\"|url \"${URL}\"|" Formula/flux.rb
-          sed -i "s|sha256 \".*\"|sha256 \"${SHA}\"|" Formula/flux.rb
-          sed -i "s|version \".*\"|version \"${TAG}\"|" Formula/flux.rb
+          # Copy the whole formula — tap is a mirror, flux repo is the source of truth
+          cp "$GITHUB_WORKSPACE/Formula/flux.rb" Formula/flux.rb
+
+          # Uncomment and fill in the stable release fields
+          sed -i "s|# url    \".*\"|url    \"${URL}\"|" Formula/flux.rb
+          sed -i "s|# sha256 \".*\"|sha256  \"${SHA}\"|" Formula/flux.rb
+          sed -i "s|# version \".*\"|version \"${TAG}\"|" Formula/flux.rb
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
