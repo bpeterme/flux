@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Mock for macOS 'security' CLI.
+# Simulates Keychain get/set/delete using files in MOCK_KEYCHAIN_DIR.
+
+KC_DIR="${MOCK_KEYCHAIN_DIR:-${HOME}/.mock-keychain}"
+mkdir -p "$KC_DIR"
+
+subcmd="${1:-}"; shift
+
+# Sanitise a service name to a safe filename (replace dots with underscores).
+kc_file() { echo "${KC_DIR}/${1//./_}"; }
+
+case "$subcmd" in
+  find-generic-password)
+    service=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in -s) service="$2"; shift 2 ;; *) shift ;; esac
+    done
+    f=$(kc_file "$service")
+    [[ -f "$f" ]] && cat "$f" && exit 0
+    exit 1
+    ;;
+  add-generic-password)
+    service="" value=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        -s) service="$2"; shift 2 ;;
+        -w) value="$2";   shift 2 ;;
+        *)  shift ;;
+      esac
+    done
+    printf '%s' "$value" > "$(kc_file "$service")"
+    exit 0
+    ;;
+  delete-generic-password)
+    service=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in -s) service="$2"; shift 2 ;; *) shift ;; esac
+    done
+    rm -f "$(kc_file "$service")"
+    exit 0
+    ;;
+  *)
+    echo "mock_security: unhandled subcommand: $subcmd" >&2
+    exit 1
+    ;;
+esac

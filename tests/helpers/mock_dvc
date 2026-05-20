@@ -65,7 +65,27 @@ EOF
     printf '' > .dvc/config
     ;;
 
-  gc|remote|status|push|pull|version)
+  remote)
+    shift
+    remote_subcmd="${1:-}"; shift || true
+    if [[ "$remote_subcmd" == "add" ]]; then
+      remote_name="" remote_url=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          -f|--quiet|--local) shift ;;
+          *) [[ -z "$remote_name" ]] && remote_name="$1" || remote_url="$1"; shift ;;
+        esac
+      done
+      if [[ -n "$remote_name" ]]; then
+        mkdir -p .dvc
+        printf '[core]\n    remote = %s\n[%s]\n    url = %s\n' \
+          "$remote_name" "$remote_name" "${remote_url:-}" >> .dvc/config
+      fi
+    fi
+    exit 0
+    ;;
+
+  gc|status|push|pull|version)
     exit 0
     ;;
 

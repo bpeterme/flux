@@ -112,34 +112,37 @@ assert_dvc_not_called() {
 # ---------------------------------------------------------------------------
 # setup_flux_test / teardown_flux_test
 #
-# Creates an isolated environment for testing setup.sh:
-#   - Temp HOME with ~/.config/flux/flux.env (all required vars set)
-#   - Mock dvc and python3 prepended to PATH (setup.sh calls both directly)
+# Creates an isolated environment for integration-testing the flux CLI:
+#   - Mock dvc, security (Keychain), uname, and python3 prepended to PATH
+#   - Mock Keychain pre-populated with all required R2 credentials
 #   - Isolated git repo with a remote and git user configured
 #   - Working directory set to the test repo
 #
-# Exports: TEST_REPO, MOCK_HOME, MOCK_BIN, REAL_HOME, REAL_PATH, MOCK_DVC_LOG
+# Exports: TEST_REPO, MOCK_HOME, MOCK_BIN, MOCK_KEYCHAIN_DIR,
+#          REAL_HOME, REAL_PATH, MOCK_DVC_LOG
 # ---------------------------------------------------------------------------
 setup_flux_test() {
   TEST_REPO=$(mktemp -d)
   MOCK_HOME=$(mktemp -d)
   MOCK_BIN=$(mktemp -d)
+  MOCK_KEYCHAIN_DIR=$(mktemp -d)
 
-  # Flux config with all required vars plus FLUX_R2_FOLDER to skip git-remote detection
-  mkdir -p "$MOCK_HOME/.config/flux"
-  cat > "$MOCK_HOME/.config/flux/flux.env" << 'EOF'
-FLUX_R2_BUCKET=test-bucket
-FLUX_R2_ACCOUNT_ID=test-account-id
-FLUX_R2_ACCESS_KEY_ID=test-key-id
-FLUX_R2_SECRET_KEY=test-secret-key
-FLUX_R2_FOLDER=test-project
-EOF
-
-  # Mock dvc — setup.sh calls dvc directly (not via find_dvc), so it must be in PATH
+  # Mock dvc — flux calls dvc directly, so it must be in PATH
   cp "$REPO_ROOT/tests/helpers/mock_dvc" "$MOCK_BIN/dvc"
   chmod +x "$MOCK_BIN/dvc"
 
-  # Mock python3 — always exits 0 so the "import dvc_s3" check passes
+  # Mock security — simulates macOS Keychain using MOCK_KEYCHAIN_DIR
+  cp "$REPO_ROOT/tests/helpers/mock_security" "$MOCK_BIN/security"
+  chmod +x "$MOCK_BIN/security"
+
+  # Mock uname — returns "Darwin" for the macOS guard in flux
+  cat > "$MOCK_BIN/uname" << 'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-s" ]]; then echo "Darwin"; else /usr/bin/uname "$@"; fi
+EOF
+  chmod +x "$MOCK_BIN/uname"
+
+  # Mock python3 — always exits 0
   cat > "$MOCK_BIN/python3" << 'PYEOF'
 #!/usr/bin/env bash
 exit 0
@@ -153,6 +156,22 @@ PYEOF
   export XDG_CONFIG_HOME="$MOCK_HOME/.config"
   export PATH="$MOCK_BIN:$PATH"
   export MOCK_DVC_LOG="$TEST_REPO/dvc_calls.log"
+  export MOCK_KEYCHAIN_DIR
+
+  # Write non-sensitive global config to flux.env (bucket, account ID, routing).
+  mkdir -p "$MOCK_HOME/.config/flux"
+  cat > "$MOCK_HOME/.config/flux/flux.env" << 'EOF'
+FLUX_R2_BUCKET="test-bucket"
+FLUX_R2_ACCOUNT_ID="test-account-id"
+FLUX_SIZE_THRESHOLD_MB=5
+FLUX_VERBOSE=false
+EOF
+
+  # Pre-populate mock Keychain with credentials only (access key + secret).
+  MOCK_KEYCHAIN_DIR="$MOCK_KEYCHAIN_DIR" "$MOCK_BIN/security" \
+    add-generic-password -U -s "flux.r2.access-key-id" -w "test-key-id"
+  MOCK_KEYCHAIN_DIR="$MOCK_KEYCHAIN_DIR" "$MOCK_BIN/security" \
+    add-generic-password -U -s "flux.r2.secret-key"    -w "test-secret-key"
 
   cd "$TEST_REPO"
 
@@ -179,6 +198,7 @@ teardown_flux_test() {
   else
     unset XDG_CONFIG_HOME
   fi
-  rm -rf "$TEST_REPO" "$MOCK_HOME" "$MOCK_BIN"
-  unset TEST_REPO MOCK_HOME MOCK_BIN REAL_HOME REAL_PATH REAL_XDG_CONFIG_HOME MOCK_DVC_LOG
+  rm -rf "$TEST_REPO" "$MOCK_HOME" "$MOCK_BIN" "$MOCK_KEYCHAIN_DIR"
+  unset TEST_REPO MOCK_HOME MOCK_BIN MOCK_KEYCHAIN_DIR \
+        REAL_HOME REAL_PATH REAL_XDG_CONFIG_HOME MOCK_DVC_LOG
 }
