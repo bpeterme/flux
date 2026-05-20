@@ -129,8 +129,8 @@ Help:
   flux -h
 
 Companion tools:
-  claudebox             Claude Code container runtime
-  claudedot             Config + history sync across machines
+  cbox                  claudebox — Claude Code container runtime
+  cdot                  claudedot — Config + history sync across machines
 EOF
 }
 
@@ -489,20 +489,22 @@ flux() {
     doctor)            _flux_doctor ;;
     version)           echo "flux ${VERSION}" ;;
     help|--help|-h|"") _flux_help ;;
-    claudebox)
+    cbox)
       if command -v cbox >/dev/null 2>&1; then
-        echo "claudebox is installed. Use: cbox help"
+        cbox help
       else
         echo "claudebox is not installed."
         echo "Install: brew tap bpeterme/claudebox && brew install bpeterme/claudebox/claudebox"
+        return 1
       fi
       ;;
-    claudedot)
+    cdot)
       if command -v cdot >/dev/null 2>&1; then
-        echo "claudedot is installed. Use: cdot help"
+        cdot help
       else
         echo "claudedot is not installed."
         echo "Install: brew tap bpeterme/claudedot && brew install bpeterme/claudedot/claudedot"
+        return 1
       fi
       ;;
     *)
