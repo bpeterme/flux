@@ -376,6 +376,18 @@ _flux_sync() {
 }
 
 # ---------------------------------------------------------------------------
+# _flux_doctor_inline — single-line status for embedding in other tools
+# ---------------------------------------------------------------------------
+
+_flux_doctor_inline() {
+  if _flux_is_configured 2>/dev/null; then
+    echo "✔ flux configured (bucket: ${FLUX_R2_BUCKET})"
+  else
+    echo "✘ flux not configured — run: flux config"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # doctor — environment diagnostics
 # ---------------------------------------------------------------------------
 
@@ -484,6 +496,9 @@ flux() {
     add)               _flux_add ;;
     remove)            _flux_remove ;;
     sync|"")           _flux_sync ;;
+    _pull)             git pull && dvc pull ;;
+    _push)             dvc push && git push ;;
+    _doctor)           _flux_doctor_inline ;;
     pull)              git pull "$@" && dvc pull ;;
     config)            _flux_config ;;
     doctor)            _flux_doctor ;;
