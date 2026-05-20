@@ -2,7 +2,7 @@
 # flux — Git + DVC auto-router for Cloudflare R2
 # Requires macOS — credentials are stored in macOS Keychain.
 # Install via Homebrew:
-#   brew tap bpeterme/homebrew-flux && brew install flux
+#   brew tap bpeterme/flux && brew install bpeterme/flux/flux
 
 set -euo pipefail
 
@@ -127,6 +127,10 @@ Help:
   flux help
   flux --help
   flux -h
+
+Companion tools:
+  claudebox             Claude Code container runtime
+  claudedot             Config + history sync across machines
 EOF
 }
 
@@ -485,6 +489,22 @@ flux() {
     doctor)            _flux_doctor ;;
     version)           echo "flux ${VERSION}" ;;
     help|--help|-h|"") _flux_help ;;
+    claudebox)
+      if command -v cbox >/dev/null 2>&1; then
+        echo "claudebox is installed. Use: cbox help"
+      else
+        echo "claudebox is not installed."
+        echo "Install: brew tap bpeterme/claudebox && brew install bpeterme/claudebox/claudebox"
+      fi
+      ;;
+    claudedot)
+      if command -v cdot >/dev/null 2>&1; then
+        echo "claudedot is installed. Use: cdot help"
+      else
+        echo "claudedot is not installed."
+        echo "Install: brew tap bpeterme/claudedot && brew install bpeterme/claudedot/claudedot"
+      fi
+      ;;
     *)
       echo "Unknown command: $cmd"
       echo
