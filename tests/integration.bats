@@ -112,7 +112,7 @@ teardown() { teardown_flux_test; }
 @test "flux help prints all three sections" {
   run bash "$REPO_ROOT/flux" help
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Sync (Project Folder)"* ]]
+  [[ "$output" == *"Usage"* ]]
   [[ "$output" == *"Maintenance"* ]]
   [[ "$output" == *"Help"* ]]
   [[ "$output" == *"flux doctor"* ]]

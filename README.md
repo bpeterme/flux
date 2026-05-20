@@ -86,7 +86,7 @@ Config is split by sensitivity:
 ```bash
 git add .
 git commit -m "your message"   # hook fires, routes files automatically
-flux sync                       # git pull + dvc pull + git push + dvc push
+flux                            # git pull + dvc pull + git push + dvc push
 flux pull                       # download the latest (git pull + dvc pull)
 ```
 
@@ -114,7 +114,7 @@ The pre-commit hook fires normally when you commit from GitHub Desktop. The hook
 finds DVC automatically regardless of Homebrew install location.
 
 The one limitation: `dvc push` and `dvc pull` are not Git commands, so GitHub
-Desktop has no concept of them. Use `flux sync` or `flux pull` from a terminal
+Desktop has no concept of them. Use `flux` or `flux pull` from a terminal
 for those steps.
 
 ## Command reference
@@ -124,7 +124,7 @@ for those steps.
 | `flux add` | Opt current project into sync |
 | `flux remove` | Detach flux from current project |
 | `flux pull` | Download the latest (`git pull` + `dvc pull`) |
-| `flux sync` | Sync both ways (pull then push) |
+| `flux` | Sync both ways (pull then push) |
 | `flux config` | Configure or update global settings |
 | `flux doctor` | Run environment diagnostics |
 | `flux version` | Show version |

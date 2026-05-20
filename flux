@@ -328,7 +328,7 @@ _flux_add() {
   echo "  flux added. Your workflow:"
   echo ""
   echo "    git commit -m 'your message'   # hook routes files automatically"
-  echo "    flux sync                       # sync everything"
+  echo "    flux                            # sync everything"
   echo "    flux pull                       # download the latest"
   echo ""
 }
