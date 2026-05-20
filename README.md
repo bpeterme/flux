@@ -1,11 +1,8 @@
 # flux — Git + DVC Auto-Router
 
-Automatic file routing between any Git remote (GitLab, GitHub, etc.) and
-Cloudflare R2 (via DVC) based on binary/text detection and file size —
-no manual decisions, no extension lists to maintain.
-
-**flux** gives you a single mental model and a set of simple aliases that
-replace the split `git` / `dvc` command pair with one unified workflow.
+Automatic file routing between any Git remote and Cloudflare R2 via DVC, based
+on binary detection and file size. No manual decisions, no extension lists to
+maintain — one `git commit` does everything.
 
 ## How it works
 
@@ -31,38 +28,19 @@ git add .  &&  git commit -m "..."
 ```
 
 Binary detection uses the same heuristic as Git itself (`grep -qI`): if a file
-contains null bytes, it's binary. This catches `.mp4`, `.psd`, `.db`, `.zip`,
-`.dmg`, and any future format automatically — no extension list to maintain.
+contains null bytes it's binary. This catches `.mp4`, `.psd`, `.db`, `.zip`,
+`.dmg`, and any future format automatically.
 
-The hook locates DVC automatically, checking all common Homebrew install
-locations before falling back to PATH. No hardcoded paths, no per-machine
-configuration needed.
+## Key features
 
+- **Zero routing decisions** — binary files and large text files go to R2 automatically
+- **Any Git remote** — works with GitHub, GitLab, Forgejo, or any self-hosted remote
+- **Credentials in Keychain** — nothing secret ever touches a file on disk
+- **`.dvcignore` stays in sync** — regenerated from `.gitignore` on every commit; never edit it manually
+- **Automatic migration** — files that grow past or shrink below the threshold are re-routed in place
+- **Orphan cleanup** — deleted or renamed DVC-tracked files are detected and cleaned up automatically
 
-## .gitignore and .dvcignore stay in sync automatically
-
-At the end of every commit, the hook scans all `.gitignore` files in the repo
-and regenerates a sibling `.dvcignore` next to each one. You never touch
-`.dvcignore` manually.
-
-**Mental model: anything in `.gitignore` is invisible to both Git and DVC.**
-Nothing listed there will be pushed to any remote — Git or R2.
-
-This includes entries DVC itself adds to `.gitignore` when it takes over a
-binary file (e.g. `/clip.mp4` in `footage/.gitignore`) — those are immediately
-mirrored to `footage/.dvcignore` in the same commit, so DVC directory scans
-also skip them.
-
-
-## One-time setup
-
-### Prerequisites
-
-- macOS with Homebrew.
-- A Cloudflare R2 bucket with an API token.
-- A Git remote configured on the repo (`git remote add origin ...`).
-
-### 1. Install flux
+## Installation
 
 ```bash
 brew tap bpeterme/flux
@@ -70,34 +48,30 @@ brew install bpeterme/flux/flux
 pip install "dvc[s3]"
 ```
 
-### 2. Configure flux (once per machine)
+Prerequisites: macOS with Homebrew, a Cloudflare R2 bucket with an API token,
+and a Git remote configured on each repo you want to manage.
+
+## Configuration
+
+### One-time per machine
 
 ```bash
 flux config
 ```
 
-`flux config` prompts for your R2 bucket, account ID, access key, and secret key.
-Non-sensitive values are saved to `~/.config/flux/flux.env`; credentials go
-directly into macOS Keychain — nothing secret ever touches a file.
-
-On subsequent runs `flux config` shows your current settings and lets you
+Prompts for your R2 bucket, account ID, access key, and secret key. Non-sensitive
+values are saved to `~/.config/flux/flux.env`; credentials go directly into macOS
+Keychain. On subsequent runs `flux config` shows current settings and lets you
 update or remove them.
 
-### 3. Add flux to each repo
+### One-time per repo
 
 ```bash
 cd your-project
 flux add
 ```
 
-`flux add` reads global config, initialises DVC, configures the R2 remote, and
-installs the pre-commit hook. Run it once per repo.
-
-## Managing config
-
-```bash
-flux config           # show current settings (or run initial setup if unconfigured)
-```
+Initialises DVC, configures the R2 remote, and installs the pre-commit hook.
 
 Config is split by sensitivity:
 
@@ -106,17 +80,6 @@ Config is split by sensitivity:
 | R2 bucket, account ID | `~/.config/flux/flux.env` |
 | Access key ID, secret key | macOS Keychain |
 | R2 folder, threshold, verbose | per-repo `git config` |
-
-## Credentials and CI
-
-For CI or headless environments, configure the DVC remote directly using
-credentials from your CI secrets store:
-
-```bash
-dvc remote modify --local r2remote access_key_id     "$R2_ACCESS_KEY_ID"
-dvc remote modify --local r2remote secret_access_key "$R2_SECRET_KEY"
-```
-
 
 ## Daily workflow
 
@@ -136,59 +99,58 @@ git pull   # fetches Git content from remote
 dvc pull   # fetches large/binary files from R2
 ```
 
-### Using GitHub Desktop
+### Adjusting settings
 
-GitHub Desktop fires the pre-commit hook normally when you commit. The hook
-finds DVC automatically regardless of which Homebrew install you have, so
-commits work as expected from the GUI.
+```bash
+git config dvc-router.size-threshold-mb 10   # change size threshold (default: 5 MB)
+git config dvc-router.verbose true            # verbose hook output for debugging
+```
+
+Settings are stored in the repo's local `.git/config` and never committed.
+
+### GitHub Desktop
+
+The pre-commit hook fires normally when you commit from GitHub Desktop. The hook
+finds DVC automatically regardless of Homebrew install location.
 
 The one limitation: `dvc push` and `dvc pull` are not Git commands, so GitHub
 Desktop has no concept of them. Use `flux sync` or `flux pull` from a terminal
 for those steps.
 
-Adjust settings without editing any files:
+## Command reference
+
+| Command | Description |
+|---|---|
+| `flux add` | Opt current project into sync |
+| `flux remove` | Detach flux from current project |
+| `flux pull` | Download the latest (`git pull` + `dvc pull`) |
+| `flux sync` | Sync both ways (pull then push) |
+| `flux config` | Configure or update global settings |
+| `flux doctor` | Run environment diagnostics |
+| `flux version` | Show version |
+| `flux claudebox` | Check claudebox install status |
+| `flux claudedot` | Check claudedot install status |
+
+## Credentials and CI
+
+For CI or headless environments, configure the DVC remote directly from your
+CI secrets store:
 
 ```bash
-# Change the size threshold (default: 5 MB)
-git config dvc-router.size-threshold-mb 10
-
-# Enable verbose output from the hook (useful for debugging)
-git config dvc-router.verbose true
-
-# Disable verbose output
-git config dvc-router.verbose false
+dvc remote modify --local r2remote access_key_id     "$R2_ACCESS_KEY_ID"
+dvc remote modify --local r2remote secret_access_key "$R2_SECRET_KEY"
 ```
 
-These settings are stored in the repo's local `.git/config` so they apply
-per-repo and are never committed.
+## Setting up on another machine
 
-
-## Works with any Git remote
-
-The hook is completely Git-remote-agnostic. You can have:
-
-- Some repos on GitLab, some on GitHub
-- A self-hosted Forgejo or Gitea instance
-- Any mix across machines
-
-The only thing that's repo-specific is the DVC remote (R2), configured once
-per repo in `.dvc/config`. The Git remote is whatever `git push` points to.
-
-
-## Homebrew: system vs user-local
-
-The hook checks these DVC locations in order:
-
-| Location | When used |
-|---|---|
-| `/opt/homebrew/bin/` | System Homebrew, Apple Silicon |
-| `/usr/local/bin/` | System Homebrew, Intel Mac |
-| `~/.homebrew/bin/` | User-local Homebrew (common) |
-| `~/homebrew/bin/` | User-local Homebrew (alternative) |
-| `PATH` fallback | pip-installed, conda, or anything else |
-
-No configuration needed — whichever install exists on your machine is used.
-
+```bash
+brew tap bpeterme/flux && brew install bpeterme/flux/flux
+pip install "dvc[s3]"
+flux config          # stores credentials in macOS Keychain
+git clone <remote-url> && cd <repo>
+flux add
+dvc pull             # fetch large files from R2
+```
 
 ## File structure after first use
 
@@ -200,7 +162,6 @@ my-project/
 ├── .gitignore          ← you maintain this; source of truth for ignores
 ├── .dvcignore          ← auto-generated from .gitignore, never edit manually
 ├── src/                ← tracked by Git → GitLab / GitHub
-├── configs/            ← tracked by Git → GitLab / GitHub
 └── footage/
     ├── .gitignore      ← DVC adds /clip.mp4 here automatically
     ├── .dvcignore      ← auto-generated from footage/.gitignore
@@ -208,75 +169,40 @@ my-project/
     └── clip.mp4.dvc    ← tiny pointer file, tracked by Git
 ```
 
-
-## Setting up on another machine
-
-```bash
-# 1. Install flux (if not already)
-brew tap bpeterme/flux && brew install bpeterme/flux/flux
-pip install "dvc[s3]"
-
-# 2. Configure flux (stores credentials in macOS Keychain)
-flux config
-
-# 3. Clone and add flux to the repo
-git clone <your-remote-url>
-cd <repo>
-flux add
-
-# 4. Pull large files from R2
-dvc pull
-```
-
-
 ## Edge cases
 
 ### Handled automatically by the hook
 
 **File grows past threshold (Git → DVC)**
-If a file was previously committed to Git and then grows above the size
-threshold (or becomes binary), the hook detects the transition, removes it
-from the Git index cleanly, and hands it off to DVC. The old small version
-remains in Git history — run `git filter-repo` if you need to scrub it
-entirely (rare, and a one-off manual operation).
+If a file was previously in Git and then grows above the threshold (or becomes
+binary), the hook detects the transition, removes it from the Git index cleanly,
+and hands it off to DVC. The old small version remains in Git history — run
+`git filter-repo` to scrub it if needed.
 
 **File shrinks below threshold (DVC → Git)**
-At the start of every commit the hook reads the full list of DVC-tracked
-files directly from `git ls-files '*.dvc'` — the authoritative source,
-independent of `.gitignore`. For each, it checks the current on-disk size
-and binary status. If a file is now text and below the threshold (e.g. a
-database that has been compacted, or a file that was regenerated smaller),
-it is automatically migrated back to Git: `dvc remove` cleans up the pointer
-and `.gitignore` entry, and the file is staged as a normal Git file in the
-same commit.
-
-Note: `dvc gc --cloud --all-branches` runs automatically after migration
-to purge the now-unreferenced R2 data. The `--all-branches` flag ensures
-data referenced by other branches is preserved.
+At the start of every commit the hook reads the full list of DVC-tracked files
+from `git ls-files '*.dvc'`. For each, it checks the current on-disk size and
+binary status. If a file is now text and below the threshold it is automatically
+migrated back to Git in the same commit. `dvc gc --cloud --all-branches` runs
+automatically after migration to purge the now-unreferenced R2 data.
 
 **File deleted**
-When a DVC-tracked file is deleted from disk, its `.dvc` pointer file would
-otherwise remain in Git as a broken reference. The hook scans all tracked
-`.dvc` pointers at the start of every commit, detects missing targets, and
-stages the pointer for deletion automatically. The stale entry in `.gitignore`
-is also cleaned up so it doesn't accumulate.
+The hook scans all tracked `.dvc` pointers at the start of every commit, detects
+missing targets, and stages the pointer for deletion automatically. The stale
+entry in `.gitignore` is also cleaned up.
 
 **File renamed**
-Same mechanism as deletion — the old `.dvc` pointer's target is gone, so the
-hook removes it. The file at its new name gets staged normally, routed fresh
-by the hook, and a new `.dvc` pointer is created. One commit handles both
-the cleanup and the re-routing.
+Same mechanism as deletion — the old pointer's target is gone so the hook removes
+it. The file at its new name gets staged normally, routed fresh, and a new `.dvc`
+pointer is created. One commit handles both the cleanup and the re-routing.
 
----
-
-### Documented — handle manually if needed
+### Handle manually if needed
 
 **Pre-existing large/binary files**
-Files already committed to Git before `flux add` was run are never touched
-by the hook. Run this one-time to migrate them:
+Files already committed to Git before `flux add` are never touched by the hook.
+Migrate them manually:
 
 ```bash
-# Find all Git-tracked files that would now be routed to DVC
 git ls-files | while read -r f; do
   size=$(wc -c < "$f" | tr -d ' ')
   if ! grep -qI . "$f" 2>/dev/null || (( size > 5242880 )); then
@@ -290,89 +216,74 @@ git commit -m "migrate pre-existing large/binary files to DVC"
 ```
 
 **Merge conflicts on DVC-tracked files**
-If both machines modify the same DVC-tracked binary file, `git pull` may
-produce a conflict in the `.dvc` pointer file (which is plain text). The
-actual binary content in R2 is safe — both versions exist there. To resolve:
+Both versions exist safely in R2. To resolve the pointer conflict:
 
 ```bash
-# Keep your local version
-git checkout --ours footage/clip.mp4.dvc
-git add footage/clip.mp4.dvc
-
-# Or keep the remote version
-git checkout --theirs footage/clip.mp4.dvc
-dvc pull                            # fetch whichever version you kept
+git checkout --ours footage/clip.mp4.dvc    # keep your local version
+# or
+git checkout --theirs footage/clip.mp4.dvc  # keep the remote version
+dvc pull
 git add footage/clip.mp4.dvc
 git commit -m "resolve DVC merge conflict"
 ```
 
+**Common troubleshooting**
 
-**Hook not firing**
-For a quick manual check:
 ```bash
+# Hook not firing
 ls -la .git/hooks/pre-commit   # must exist and be executable
 chmod +x .git/hooks/pre-commit
-```
 
-**DVC not found by the hook**
-Enable verbose mode to see which path is being resolved:
-```bash
+# DVC not found by hook — enable verbose to see path resolution
 git config dvc-router.verbose true
-```
-If DVC is installed somewhere not in the candidate list, add its directory
-to your shell's PATH before committing, or symlink it to `~/.homebrew/bin/`.
 
-**DVC push/pull failing**
-```bash
-dvc remote list                                               # verify remote is configured
-dvc remote modify --local r2remote secret_access_key <key>   # re-add secret if missing
-```
+# DVC push/pull failing
+dvc remote list                                               # verify remote
+dvc remote modify --local r2remote secret_access_key <key>  # re-add secret if missing
 
-**File ended up in Git that should be in DVC**
-```bash
+# File ended up in Git that should be in DVC
 dvc add path/to/bigfile
 git rm --cached path/to/bigfile
 git add path/to/bigfile.dvc .gitignore
 git commit -m "move bigfile to DVC"
 dvc push
-```
 
-**Check what DVC is tracking**
-```bash
-dvc status       # local vs cache differences
-dvc status -c    # local vs remote (R2) differences
-```
+# Check what DVC is tracking
+dvc status      # local vs cache
+dvc status -c   # local vs R2
 
-**Clean up unreferenced R2 data**
-This runs automatically after any DVC → Git migration. If it ever fails
-or you need to run it manually (e.g. after manually removing a `.dvc` file):
-```bash
-dvc gc --cloud --all-branches   # preserves data referenced by any branch
-dvc gc                          # also cleans local cache
+# Clean up unreferenced R2 data (runs automatically after migration)
+dvc gc --cloud --all-branches
+dvc gc
 ```
-
 
 ## Running tests
 
-flux has a bats-core test suite covering the core hook logic (routing, migration,
-orphan cleanup, and `.dvcignore` sync). Tests use a mock DVC binary so no real
-DVC installation or R2 credentials are needed.
+flux has a bats-core test suite covering hook routing, migration, orphan cleanup,
+and `.dvcignore` sync. Tests use a mock DVC binary — no real DVC or R2 credentials
+needed.
 
 ```bash
-# Install bats-core first
-brew install bats-core        # macOS
-sudo apt-get install bats     # Linux
+brew install bats-core   # macOS
+# sudo apt-get install bats   # Linux
 
-# Run unit tests (hook logic — fast, no dependencies)
-./tests/run.sh tests/unit.bats
-
-# Run integration tests (CLI flow)
-./tests/run.sh tests/integration.bats
-
-# Run all tests
-./tests/run.sh
+./tests/run.sh tests/unit.bats         # hook logic — fast, no dependencies
+./tests/run.sh tests/integration.bats  # CLI flow
+./tests/run.sh                         # all tests
 ```
 
 Tests run automatically on every push to `dev` and `main`, and on pull requests
-targeting `main`, via GitHub Actions (`test.yml`). The release workflow
-(`release.yml`) runs tests as a gate before tagging and publishing.
+targeting `main`, via GitHub Actions. The release workflow runs tests as a gate
+before tagging.
+
+## Companion tools
+
+| Tool | Description | Install |
+|---|---|---|
+| [claudebox](https://github.com/bpeterme/claudebox) | Claude Code container runtime — runs Claude in an isolated container per project, with normal and sandboxed modes | `brew tap bpeterme/claudebox && brew install bpeterme/claudebox/claudebox` |
+| [claudedot](https://github.com/bpeterme/claudedot) | Config and history sync — keeps your Claude configuration consistent across machines via git | `brew tap bpeterme/claudedot && brew install bpeterme/claudedot/claudedot` |
+
+```bash
+flux claudebox   # check claudebox install status
+flux claudedot   # check claudedot install status
+```
