@@ -112,11 +112,11 @@ _flux_help() {
   cat <<'EOF'
 flux - Git + DVC auto-router for Cloudflare R2
 
-Sync (Project Folder):
+Usage:
+  flux                  Sync both ways (pull then push)
   flux add              Opt current project into sync
   flux remove           Stop syncing current project
   flux pull             Download the latest (git pull + dvc pull)
-  flux sync             Sync both ways (pull then push)
 
 Maintenance:
   flux config           Configure flux (set up or manage global settings)
@@ -483,12 +483,12 @@ flux() {
   case "$cmd" in
     add)               _flux_add ;;
     remove)            _flux_remove ;;
-    sync)              _flux_sync ;;
+    sync|"")           _flux_sync ;;
     pull)              git pull "$@" && dvc pull ;;
     config)            _flux_config ;;
     doctor)            _flux_doctor ;;
     version)           echo "flux ${VERSION}" ;;
-    help|--help|-h|"") _flux_help ;;
+    help|--help|-h)    _flux_help ;;
     cbox)
       if command -v cbox >/dev/null 2>&1; then
         cbox help
