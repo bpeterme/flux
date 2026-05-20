@@ -156,7 +156,8 @@ cleanup_orphaned_dvc_pointers() {
       local target_name
       target_name=$(basename "$target_rel")
       # DVC adds entries in the form /filename — remove that exact line
-      sed -i.bak "/^\/${target_name}$/d" "$gitignore_path" && rm -f "${gitignore_path}.bak"
+      grep -vxF "/$target_name" "$gitignore_path" > "${gitignore_path}.tmp" || true
+      mv "${gitignore_path}.tmp" "$gitignore_path"
       git add "$gitignore_path"
     fi
 
