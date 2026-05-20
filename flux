@@ -496,6 +496,7 @@ flux() {
     add)               _flux_add ;;
     remove)            _flux_remove ;;
     sync|"")           _flux_sync ;;
+    _api-version)      echo "1" ;;
     _pull)             git pull && dvc pull ;;
     _push)             dvc push && git push ;;
     _doctor)           _flux_doctor_inline ;;
