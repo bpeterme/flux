@@ -48,7 +48,9 @@ _kc_del() {
 _flux_write_config() {
   local bucket="$1" account_id="$2" threshold="$3" verbose="$4"
   mkdir -p "$(dirname "$FLUX_CONFIG")"
-  cat > "$FLUX_CONFIG" << EOF
+  local tmp
+  tmp=$(mktemp)
+  cat > "$tmp" << EOF
 # flux configuration — managed by 'flux config'.
 
 # ── cloudflare R2 ─────────────────────────────────────────────────────────────
@@ -59,7 +61,10 @@ FLUX_R2_ACCOUNT_ID="${account_id}"
 FLUX_SIZE_THRESHOLD_MB=${threshold}
 FLUX_VERBOSE=${verbose}
 EOF
-  chmod 600 "$FLUX_CONFIG"
+  chmod 600 "$tmp"
+  # cp follows symlinks — writes to the real file, preserving any symlink at $FLUX_CONFIG
+  cp "$tmp" "$FLUX_CONFIG"
+  rm -f "$tmp"
 }
 
 # ---------------------------------------------------------------------------
