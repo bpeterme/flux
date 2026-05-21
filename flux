@@ -159,6 +159,7 @@ Usage:
   flux remove           Stop syncing current project
   flux pull             Download the latest (git pull + dvc pull)
   flux dry-run          Preview how staged files would be routed
+  flux threshold [N|--reset]  Show or set per-project size threshold (MB)
 
 Maintenance:
   flux config           Configure flux (set up or manage global settings)
@@ -345,7 +346,13 @@ _flux_add() {
   "$DVC" remote modify --local r2remote secret_access_key "$secret_key"    --quiet
   ok "DVC remote ${remote_verb}: s3://${bucket}/${FLUX_R2_FOLDER}"
 
-  git config dvc-router.size-threshold-mb "$threshold"
+  local existing_project_threshold
+  existing_project_threshold=$(git config --get dvc-router.size-threshold-mb 2>/dev/null || true)
+  if [[ -z "$existing_project_threshold" ]]; then
+    git config dvc-router.size-threshold-mb "$threshold"
+  else
+    threshold="$existing_project_threshold"
+  fi
   git config dvc-router.verbose           "$verbose"
   git config flux.r2-folder              "$FLUX_R2_FOLDER"
 
@@ -572,6 +579,55 @@ _flux_dry_run() {
 }
 
 # ---------------------------------------------------------------------------
+# threshold — show or set the per-project file size threshold
+# ---------------------------------------------------------------------------
+
+_flux_threshold() {
+  git rev-parse --git-dir &>/dev/null \
+    || fail "Not inside a Git repository."
+
+  _flux_is_configured \
+    || fail "Not configured. Run 'flux config' to set up."
+
+  local global_threshold="${FLUX_SIZE_THRESHOLD_MB:-5}"
+  local project_threshold
+  project_threshold=$(git config --get dvc-router.size-threshold-mb 2>/dev/null || true)
+
+  local arg="${1:-}"
+
+  if [[ -z "$arg" ]]; then
+    echo ""
+    if [[ -n "$project_threshold" ]]; then
+      printf "  %-18s %s MB\n"       "Global default:" "$global_threshold"
+      printf "  %-18s %s MB  ← active\n" "Per-project:" "$project_threshold"
+    else
+      printf "  %-18s %s MB  ← active\n" "Global default:" "$global_threshold"
+      printf "  %-18s %s\n"          "Per-project:" "(not set)"
+    fi
+    echo ""
+    return 0
+  fi
+
+  if [[ "$arg" == "--reset" ]]; then
+    git config --unset dvc-router.size-threshold-mb 2>/dev/null || true
+    ok "Per-project threshold removed — global default (${global_threshold} MB) is now active."
+    return 0
+  fi
+
+  if ! [[ "$arg" =~ ^[1-9][0-9]*$ ]]; then
+    fail "Invalid value '${arg}' — provide a positive integer (MB), e.g.: flux threshold 20"
+  fi
+
+  git config dvc-router.size-threshold-mb "$arg"
+  ok "Per-project threshold set to ${arg} MB."
+  if [[ ! -d ".dvc" ]]; then
+    ok "Will take effect when 'flux add' initialises this project."
+  else
+    ok "Takes effect on the next commit."
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # _flux_doctor_inline — single-line status for embedding in other tools
 # ---------------------------------------------------------------------------
 
@@ -717,6 +773,7 @@ flux() {
     _doctor)           _flux_doctor_inline ;;
     pull)              _flux_pull "$@" ;;
     dry-run)           _flux_dry_run ;;
+    threshold)         _flux_threshold "$@" ;;
     config)            _flux_config ;;
     doctor)            _flux_doctor ;;
     version)           echo "flux ${VERSION}" ;;

@@ -270,3 +270,68 @@ EOF
   [[ "$output" == *"medium.txt"* ]]
   [[ "$output" == *"threshold: 1 MB"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# flux threshold
+# ---------------------------------------------------------------------------
+
+@test "flux threshold shows global default as active when no per-project override is set" {
+  run bash "$REPO_ROOT/flux" threshold
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Global default:"*"5 MB"* ]]
+  [[ "$output" == *"← active"* ]]
+  [[ "$output" == *"(not set)"* ]]
+}
+
+@test "flux threshold shows per-project override as active when set" {
+  git config dvc-router.size-threshold-mb 20
+  run bash "$REPO_ROOT/flux" threshold
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Global default:"*"5 MB"* ]]
+  [[ "$output" == *"Per-project:"*"20 MB"* ]]
+  [[ "$output" == *"← active"* ]]
+}
+
+@test "flux threshold N sets the per-project threshold in git config" {
+  run bash "$REPO_ROOT/flux" threshold 20
+  [ "$status" -eq 0 ]
+  [ "$(git config --get dvc-router.size-threshold-mb)" = "20" ]
+}
+
+@test "flux threshold --reset removes the per-project override" {
+  git config dvc-router.size-threshold-mb 20
+  run bash "$REPO_ROOT/flux" threshold --reset
+  [ "$status" -eq 0 ]
+  run git config --get dvc-router.size-threshold-mb
+  [ "$status" -ne 0 ]
+}
+
+@test "flux threshold rejects zero" {
+  run bash "$REPO_ROOT/flux" threshold 0
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Invalid value"* ]]
+}
+
+@test "flux threshold rejects non-numeric input" {
+  run bash "$REPO_ROOT/flux" threshold abc
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Invalid value"* ]]
+}
+
+@test "flux threshold fails outside a git repo" {
+  local no_git
+  no_git=$(mktemp -d)
+  run bash -c "cd '$no_git' && HOME='$MOCK_HOME' XDG_CONFIG_HOME='$MOCK_HOME/.config' MOCK_KEYCHAIN_DIR='$MOCK_KEYCHAIN_DIR' PATH='$PATH' bash '$REPO_ROOT/flux' threshold"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Git repository"* ]]
+  rm -rf "$no_git"
+}
+
+@test "flux threshold set before flux add is preserved by flux add" {
+  bash "$REPO_ROOT/flux" threshold 20
+
+  run bash "$REPO_ROOT/flux" add
+  [ "$status" -eq 0 ]
+
+  [ "$(git config --get dvc-router.size-threshold-mb)" = "20" ]
+}
