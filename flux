@@ -77,7 +77,7 @@ _kc_del() {
 # ---------------------------------------------------------------------------
 
 _flux_write_config() {
-  local bucket="$1" account_id="$2" threshold="$3" verbose="$4"
+  local bucket="$1" account_id="$2" cap="$3" verbose="$4"
   mkdir -p "$(dirname "$FLUX_CONFIG")"
   local tmp
   tmp=$(mktemp)
@@ -89,7 +89,7 @@ FLUX_R2_BUCKET="${bucket}"
 FLUX_R2_ACCOUNT_ID="${account_id}"
 
 # ── routing ───────────────────────────────────────────────────────────────────
-FLUX_SIZE_THRESHOLD_MB=${threshold}
+FLUX_SIZE_CAP_MB=${cap}
 FLUX_VERBOSE=${verbose}
 EOF
   chmod 600 "$tmp"
@@ -159,7 +159,7 @@ Usage:
   flux remove           Stop syncing current project
   flux pull             Download the latest (git pull + dvc pull)
   flux dry-run          Preview how staged files would be routed
-  flux threshold [N|--reset]  Show or set per-project size threshold (MB)
+  flux cap [N|--reset]        Show or set per-project size cap (MB)
 
 Maintenance:
   flux config           Configure flux (set up or manage global settings)
@@ -185,13 +185,13 @@ _flux_config() {
   _flux_require_macos
 
   # Always pre-load whatever partial config exists before deciding which branch.
-  local bucket="" account_id="" threshold="5" verbose="false"
+  local bucket="" account_id="" cap="5" verbose="false"
   if [[ -f "$FLUX_CONFIG" ]]; then
     # shellcheck source=/dev/null
     source "$FLUX_CONFIG" 2>/dev/null || true
     bucket="${FLUX_R2_BUCKET:-}"
     account_id="${FLUX_R2_ACCOUNT_ID:-}"
-    threshold="${FLUX_SIZE_THRESHOLD_MB:-5}"
+    cap="${FLUX_SIZE_CAP_MB:-5}"
     verbose="${FLUX_VERBOSE:-false}"
   fi
   local access_key_id secret_key
@@ -213,7 +213,7 @@ _flux_config() {
     _flux_prompt_value "Account ID"        "$account_id"    false; account_id="$FLUX_VALUE"
     _flux_prompt_value "Access Key ID"     "$access_key_id" false; access_key_id="$FLUX_VALUE"
     _flux_prompt_value "Secret Key"        "$secret_key"    true;  secret_key="$FLUX_VALUE"
-    _flux_prompt_value "Size threshold MB" "$threshold"     false; threshold="$FLUX_VALUE"
+    _flux_prompt_value "Size cap MB"        "$cap"           false; cap="$FLUX_VALUE"
     _flux_prompt_value "Verbose"           "$verbose"       false; verbose="$FLUX_VALUE"
 
     echo ""
@@ -222,7 +222,7 @@ _flux_config() {
     [[ -n "$access_key_id" ]] || fail "R2 access key ID is required."
     [[ -n "$secret_key" ]]    || fail "R2 secret key is required."
 
-    _flux_write_config "$bucket" "$account_id" "$threshold" "$verbose"
+    _flux_write_config "$bucket" "$account_id" "$cap" "$verbose"
     ok "Config saved: $FLUX_CONFIG"
 
     _kc_set "r2.access-key-id" "$access_key_id"
@@ -240,7 +240,7 @@ _flux_config() {
     printf "  %-22s %s\n" "Account ID:"     "$account_id"
     printf "  %-22s %s\n" "Access Key ID:"  "$access_key_id"
     printf "  %-22s %s\n" "Secret Key:"     "****  (Keychain)"
-    printf "  %-22s %s\n" "Size Threshold:" "${threshold} MB"
+    printf "  %-22s %s\n" "Size Cap:"       "${cap} MB"
     printf "  %-22s %s\n" "Verbose:"        "$verbose"
     echo ""
 
@@ -254,10 +254,10 @@ _flux_config() {
         _flux_prompt_value "Account ID"        "$account_id"    false; account_id="$FLUX_VALUE"
         _flux_prompt_value "Access Key ID"     "$access_key_id" false; access_key_id="$FLUX_VALUE"
         _flux_prompt_value "Secret Key"        "$secret_key"    true;  secret_key="$FLUX_VALUE"
-        _flux_prompt_value "Size threshold MB" "$threshold"     false; threshold="$FLUX_VALUE"
+        _flux_prompt_value "Size cap MB"        "$cap"           false; cap="$FLUX_VALUE"
         _flux_prompt_value "Verbose"           "$verbose"       false; verbose="$FLUX_VALUE"
         echo ""
-        _flux_write_config "$bucket" "$account_id" "$threshold" "$verbose"
+        _flux_write_config "$bucket" "$account_id" "$cap" "$verbose"
         ok "Config saved: $FLUX_CONFIG"
         _kc_set "r2.access-key-id" "$access_key_id"
         _kc_set "r2.secret-key"    "$secret_key"
@@ -301,7 +301,7 @@ _flux_add() {
   # Values available after _flux_is_configured sourced flux.env
   local bucket="${FLUX_R2_BUCKET:-}"
   local account_id="${FLUX_R2_ACCOUNT_ID:-}"
-  local threshold="${FLUX_SIZE_THRESHOLD_MB:-5}"
+  local cap="${FLUX_SIZE_CAP_MB:-5}"
   local verbose="${FLUX_VERBOSE:-false}"
   local access_key_id secret_key
   access_key_id=$(_kc_get "r2.access-key-id")
@@ -346,12 +346,12 @@ _flux_add() {
   "$DVC" remote modify --local r2remote secret_access_key "$secret_key"    --quiet
   ok "DVC remote ${remote_verb}: s3://${bucket}/${FLUX_R2_FOLDER}"
 
-  local existing_project_threshold
-  existing_project_threshold=$(git config --get dvc-router.size-threshold-mb 2>/dev/null || true)
-  if [[ -z "$existing_project_threshold" ]]; then
-    git config dvc-router.size-threshold-mb "$threshold"
+  local existing_project_cap
+  existing_project_cap=$(git config --get dvc-router.size-cap-mb 2>/dev/null || true)
+  if [[ -z "$existing_project_cap" ]]; then
+    git config dvc-router.size-cap-mb "$cap"
   else
-    threshold="$existing_project_threshold"
+    cap="$existing_project_cap"
   fi
   git config dvc-router.verbose           "$verbose"
   git config flux.r2-folder              "$FLUX_R2_FOLDER"
@@ -444,7 +444,7 @@ _flux_remove() {
   "$DVC" remote remove r2remote 2>/dev/null && ok "DVC remote removed." || true
 
   git config --unset flux.r2-folder               2>/dev/null || true
-  git config --unset dvc-router.size-threshold-mb  2>/dev/null || true
+  git config --unset dvc-router.size-cap-mb  2>/dev/null || true
   git config --unset dvc-router.verbose            2>/dev/null || true
 
   echo ""
@@ -499,9 +499,9 @@ _flux_dry_run() {
   git rev-parse --git-dir &>/dev/null \
     || fail "Not inside a Git repository."
 
-  local SIZE_THRESHOLD_MB SIZE_THRESHOLD_BYTES
-  SIZE_THRESHOLD_MB=$(git config --get dvc-router.size-threshold-mb 2>/dev/null || echo "5")
-  SIZE_THRESHOLD_BYTES=$(( SIZE_THRESHOLD_MB * 1024 * 1024 ))
+  local SIZE_CAP_MB SIZE_CAP_BYTES
+  SIZE_CAP_MB=$(git config --get dvc-router.size-cap-mb 2>/dev/null || echo "5")
+  SIZE_CAP_BYTES=$(( SIZE_CAP_MB * 1024 * 1024 ))
 
   local staged_files
   staged_files=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)
@@ -530,7 +530,7 @@ _flux_dry_run() {
     local file_size
     file_size=$(wc -c < "$file" | tr -d ' ')
 
-    if [[ "$is_binary" == "true" ]] || (( file_size > SIZE_THRESHOLD_BYTES )); then
+    if [[ "$is_binary" == "true" ]] || (( file_size > SIZE_CAP_BYTES )); then
       dvc_files+=("$file")
       dvc_bytes=$(( dvc_bytes + file_size ))
       if git ls-files --error-unmatch "$file" &>/dev/null 2>&1; then
@@ -543,7 +543,7 @@ _flux_dry_run() {
   done <<< "$staged_files"
 
   echo ""
-  echo "  flux dry-run — routing preview (threshold: ${SIZE_THRESHOLD_MB} MB)"
+  echo "  flux dry-run — routing preview (cap: ${SIZE_CAP_MB} MB)"
 
   if (( ${#git_files[@]} > 0 )); then
     echo ""
@@ -579,29 +579,29 @@ _flux_dry_run() {
 }
 
 # ---------------------------------------------------------------------------
-# threshold — show or set the per-project file size threshold
+# cap — show or set the per-project file size cap
 # ---------------------------------------------------------------------------
 
-_flux_threshold() {
+_flux_cap() {
   git rev-parse --git-dir &>/dev/null \
     || fail "Not inside a Git repository."
 
   _flux_is_configured \
     || fail "Not configured. Run 'flux config' to set up."
 
-  local global_threshold="${FLUX_SIZE_THRESHOLD_MB:-5}"
-  local project_threshold
-  project_threshold=$(git config --get dvc-router.size-threshold-mb 2>/dev/null || true)
+  local global_cap="${FLUX_SIZE_CAP_MB:-5}"
+  local project_cap
+  project_cap=$(git config --get dvc-router.size-cap-mb 2>/dev/null || true)
 
   local arg="${1:-}"
 
   if [[ -z "$arg" ]]; then
     echo ""
-    if [[ -n "$project_threshold" ]]; then
-      printf "  %-18s %s MB\n"       "Global default:" "$global_threshold"
-      printf "  %-18s %s MB  ← active\n" "Per-project:" "$project_threshold"
+    if [[ -n "$project_cap" ]]; then
+      printf "  %-18s %s MB\n"       "Global default:" "$global_cap"
+      printf "  %-18s %s MB  ← active\n" "Per-project:" "$project_cap"
     else
-      printf "  %-18s %s MB  ← active\n" "Global default:" "$global_threshold"
+      printf "  %-18s %s MB  ← active\n" "Global default:" "$global_cap"
       printf "  %-18s %s\n"          "Per-project:" "(not set)"
     fi
     echo ""
@@ -609,17 +609,17 @@ _flux_threshold() {
   fi
 
   if [[ "$arg" == "--reset" ]]; then
-    git config --unset dvc-router.size-threshold-mb 2>/dev/null || true
-    ok "Per-project threshold removed — global default (${global_threshold} MB) is now active."
+    git config --unset dvc-router.size-cap-mb 2>/dev/null || true
+    ok "Per-project cap removed — global default (${global_cap} MB) is now active."
     return 0
   fi
 
   if ! [[ "$arg" =~ ^[1-9][0-9]*$ ]]; then
-    fail "Invalid value '${arg}' — provide a positive integer (MB), e.g.: flux threshold 20"
+    fail "Invalid value '${arg}' — provide a positive integer (MB), e.g.: flux cap 20"
   fi
 
-  git config dvc-router.size-threshold-mb "$arg"
-  ok "Per-project threshold set to ${arg} MB."
+  git config dvc-router.size-cap-mb "$arg"
+  ok "Per-project cap set to ${arg} MB."
   if [[ ! -d ".dvc" ]]; then
     ok "Will take effect when 'flux add' initialises this project."
   else
@@ -773,7 +773,7 @@ flux() {
     _doctor)           _flux_doctor_inline ;;
     pull)              _flux_pull "$@" ;;
     dry-run)           _flux_dry_run ;;
-    threshold)         _flux_threshold "$@" ;;
+    cap)               _flux_cap "$@" ;;
     config)            _flux_config ;;
     doctor)            _flux_doctor ;;
     version)           echo "flux ${VERSION}" ;;

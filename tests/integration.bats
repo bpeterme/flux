@@ -200,7 +200,7 @@ teardown() { teardown_flux_test; }
 }
 
 @test "flux dry-run shows large text file routed to DVC" {
-  # threshold in setup_flux_test is 5 MB; make a 6 MB file
+  # cap in setup_flux_test is 5 MB; make a 6 MB file
   printf '%*s' $(( 6 * 1024 * 1024 + 1 )) '' | tr ' ' 'a' > big.txt
   git add big.txt
 
@@ -242,7 +242,7 @@ EOF
   [[ "$output" == *"asset.bin"* ]]
 }
 
-@test "flux dry-run flags Git-tracked file that now exceeds threshold as migrating" {
+@test "flux dry-run flags Git-tracked file that now exceeds cap as migrating" {
   echo "small" > growing.txt
   git add growing.txt
   git commit -m "small file" --no-verify -q
@@ -256,11 +256,11 @@ EOF
   [[ "$output" == *"growing.txt"* ]]
 }
 
-@test "flux dry-run respects per-repo size threshold from git config" {
-  git config dvc-router.size-threshold-mb 1
-  # File is 2 KB — above 1 KB but well below default 5 MB; should go to Git at 5 MB threshold
-  # but with a 1 MB threshold it still goes to Git (2 KB < 1 MB).
-  # Use a file just over 1 MB to verify the threshold is read correctly.
+@test "flux dry-run respects per-repo size cap from git config" {
+  git config dvc-router.size-cap-mb 1
+  # File is 2 KB — above 1 KB but well below default 5 MB; should go to Git at 5 MB cap
+  # but with a 1 MB cap it still goes to Git (2 KB < 1 MB).
+  # Use a file just over 1 MB to verify the cap is read correctly.
   printf '%*s' $(( 1024 * 1024 + 1 )) '' | tr ' ' 'a' > medium.txt
   git add medium.txt
 
@@ -268,70 +268,70 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"→ DVC / R2"* ]]
   [[ "$output" == *"medium.txt"* ]]
-  [[ "$output" == *"threshold: 1 MB"* ]]
+  [[ "$output" == *"cap: 1 MB"* ]]
 }
 
 # ---------------------------------------------------------------------------
-# flux threshold
+# flux cap
 # ---------------------------------------------------------------------------
 
-@test "flux threshold shows global default as active when no per-project override is set" {
-  run bash "$REPO_ROOT/flux" threshold
+@test "flux cap shows global default as active when no per-project override is set" {
+  run bash "$REPO_ROOT/flux" cap
   [ "$status" -eq 0 ]
   [[ "$output" == *"Global default:"*"5 MB"* ]]
   [[ "$output" == *"← active"* ]]
   [[ "$output" == *"(not set)"* ]]
 }
 
-@test "flux threshold shows per-project override as active when set" {
-  git config dvc-router.size-threshold-mb 20
-  run bash "$REPO_ROOT/flux" threshold
+@test "flux cap shows per-project override as active when set" {
+  git config dvc-router.size-cap-mb 20
+  run bash "$REPO_ROOT/flux" cap
   [ "$status" -eq 0 ]
   [[ "$output" == *"Global default:"*"5 MB"* ]]
   [[ "$output" == *"Per-project:"*"20 MB"* ]]
   [[ "$output" == *"← active"* ]]
 }
 
-@test "flux threshold N sets the per-project threshold in git config" {
-  run bash "$REPO_ROOT/flux" threshold 20
+@test "flux cap N sets the per-project cap in git config" {
+  run bash "$REPO_ROOT/flux" cap 20
   [ "$status" -eq 0 ]
-  [ "$(git config --get dvc-router.size-threshold-mb)" = "20" ]
+  [ "$(git config --get dvc-router.size-cap-mb)" = "20" ]
 }
 
-@test "flux threshold --reset removes the per-project override" {
-  git config dvc-router.size-threshold-mb 20
-  run bash "$REPO_ROOT/flux" threshold --reset
+@test "flux cap --reset removes the per-project override" {
+  git config dvc-router.size-cap-mb 20
+  run bash "$REPO_ROOT/flux" cap --reset
   [ "$status" -eq 0 ]
-  run git config --get dvc-router.size-threshold-mb
+  run git config --get dvc-router.size-cap-mb
   [ "$status" -ne 0 ]
 }
 
-@test "flux threshold rejects zero" {
-  run bash "$REPO_ROOT/flux" threshold 0
+@test "flux cap rejects zero" {
+  run bash "$REPO_ROOT/flux" cap 0
   [ "$status" -ne 0 ]
   [[ "$output" == *"Invalid value"* ]]
 }
 
-@test "flux threshold rejects non-numeric input" {
-  run bash "$REPO_ROOT/flux" threshold abc
+@test "flux cap rejects non-numeric input" {
+  run bash "$REPO_ROOT/flux" cap abc
   [ "$status" -ne 0 ]
   [[ "$output" == *"Invalid value"* ]]
 }
 
-@test "flux threshold fails outside a git repo" {
+@test "flux cap fails outside a git repo" {
   local no_git
   no_git=$(mktemp -d)
-  run bash -c "cd '$no_git' && HOME='$MOCK_HOME' XDG_CONFIG_HOME='$MOCK_HOME/.config' MOCK_KEYCHAIN_DIR='$MOCK_KEYCHAIN_DIR' PATH='$PATH' bash '$REPO_ROOT/flux' threshold"
+  run bash -c "cd '$no_git' && HOME='$MOCK_HOME' XDG_CONFIG_HOME='$MOCK_HOME/.config' MOCK_KEYCHAIN_DIR='$MOCK_KEYCHAIN_DIR' PATH='$PATH' bash '$REPO_ROOT/flux' cap"
   [ "$status" -ne 0 ]
   [[ "$output" == *"Git repository"* ]]
   rm -rf "$no_git"
 }
 
-@test "flux threshold set before flux add is preserved by flux add" {
-  bash "$REPO_ROOT/flux" threshold 20
+@test "flux cap set before flux add is preserved by flux add" {
+  bash "$REPO_ROOT/flux" cap 20
 
   run bash "$REPO_ROOT/flux" add
   [ "$status" -eq 0 ]
 
-  [ "$(git config --get dvc-router.size-threshold-mb)" = "20" ]
+  [ "$(git config --get dvc-router.size-cap-mb)" = "20" ]
 }

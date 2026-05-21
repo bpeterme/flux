@@ -57,7 +57,7 @@ teardown() { teardown_test_repo; }
   [ -z "$output" ]
 }
 
-@test "file at exactly the threshold boundary stays in Git" {
+@test "file at exactly the cap boundary stays in Git" {
   printf '%1048576s' '' | tr ' ' 'a' > boundary.txt
   git add boundary.txt
 
@@ -68,7 +68,7 @@ teardown() { teardown_test_repo; }
   assert_dvc_not_called "add boundary.txt"
 }
 
-@test "file one byte over threshold is routed to DVC" {
+@test "file one byte over cap is routed to DVC" {
   printf '%1048577s' '' | tr ' ' 'a' > over.txt
   git add over.txt
 
@@ -124,7 +124,7 @@ EOF
 # Migration — Git ↔ DVC transitions
 # ---------------------------------------------------------------------------
 
-@test "git-tracked file that grows past threshold is migrated to DVC" {
+@test "git-tracked file that grows past cap is migrated to DVC" {
   echo "small" > growing.txt
   git add growing.txt
   git commit -m "small file" --no-verify -q
@@ -145,7 +145,7 @@ EOF
   [[ "$output" == *"growing.txt.dvc"* ]]
 }
 
-@test "DVC-tracked file that shrinks below threshold is migrated to Git" {
+@test "DVC-tracked file that shrinks below cap is migrated to Git" {
   make_large_text_file big.txt
   cat > big.txt.dvc << 'EOF'
 outs:
