@@ -135,8 +135,14 @@ teardown() { teardown_flux_test; }
   [ ! -f ".git/hooks/pre-commit" ]
 }
 
-@test "flux remove warns when no pre-commit hook is present" {
+@test "flux remove fails with clear error in a non-flux git repo" {
   run bash "$REPO_ROOT/flux" remove
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"flux add"* ]]
+}
+
+@test "flux remove git warns when no pre-commit hook is present" {
+  run bash "$REPO_ROOT/flux" remove git
   [ "$status" -eq 0 ]
   [[ "$output" == *"No pre-commit hook"* ]]
 }

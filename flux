@@ -494,11 +494,13 @@ _flux_remove_git() {
     warn "No pre-commit hook found."
   fi
 
-  local keys removed=0
-  mapfile -t keys < <(_flux_registry_read git_config)
+  local -a keys=()
+  while IFS= read -r line; do [[ -n "$line" ]] && keys+=("$line"); done \
+    < <(_flux_registry_read git_config)
   if (( ${#keys[@]} == 0 )); then
     keys=(flux.r2-folder dvc-router.size-cap-mb dvc-router.verbose)
   fi
+  local removed=0
   for key in "${keys[@]}"; do
     if git config --unset "$key" 2>/dev/null; then
       _flux_registry_delete git_config "$key"
@@ -560,8 +562,9 @@ _flux_remove_dvc() {
   _flux_registry_delete dvc_remote r2remote
 
   # Remove *.dvc pointer files from git index and disk
-  local ptrs=()
-  mapfile -t ptrs < <(find . -type f -name "*.dvc" -not -path "./.git/*" -not -path "./.dvc/*" 2>/dev/null || true)
+  local -a ptrs=()
+  while IFS= read -r line; do [[ -n "$line" ]] && ptrs+=("$line"); done \
+    < <(find . -type f -name "*.dvc" -not -path "./.git/*" -not -path "./.dvc/*" 2>/dev/null)
   if (( ${#ptrs[@]} > 0 )); then
     git rm --cached -q "${ptrs[@]}" 2>/dev/null || true
     rm -f "${ptrs[@]}"
@@ -569,8 +572,9 @@ _flux_remove_dvc() {
   fi
 
   # Remove .dvcignore files from git index and disk
-  local dvcignores=()
-  mapfile -t dvcignores < <(find . -type f -name ".dvcignore" -not -path "./.git/*" -not -path "./.dvc/*" 2>/dev/null || true)
+  local -a dvcignores=()
+  while IFS= read -r line; do [[ -n "$line" ]] && dvcignores+=("$line"); done \
+    < <(find . -type f -name ".dvcignore" -not -path "./.git/*" -not -path "./.dvc/*" 2>/dev/null)
   if (( ${#dvcignores[@]} > 0 )); then
     git rm --cached -q "${dvcignores[@]}" 2>/dev/null || true
     rm -f "${dvcignores[@]}"
@@ -585,8 +589,10 @@ _flux_remove_dvc() {
 
   # Clean flux-written .gitignore entries
   if [[ -f ".gitignore" ]]; then
-    local entries removed_gi=0
-    mapfile -t entries < <(_flux_registry_read gitignore)
+    local -a entries=()
+    while IFS= read -r line; do [[ -n "$line" ]] && entries+=("$line"); done \
+      < <(_flux_registry_read gitignore)
+    local removed_gi=0
     for entry in "${entries[@]}"; do
       if grep -qxF "$entry" .gitignore 2>/dev/null; then
         local tmp; tmp=$(mktemp)
@@ -612,6 +618,8 @@ _flux_remove() {
     dvc)   shift || true; _flux_remove_dvc "$@" ;;
     "")
       git rev-parse --git-dir &>/dev/null || fail "Not inside a Git repository."
+      [[ -d ".dvc" ]] \
+        || fail "Not a flux-managed project (no .dvc/ found). Run 'flux add' to initialise."
       echo ""
       echo "  flux remove — full detach"
       echo ""
