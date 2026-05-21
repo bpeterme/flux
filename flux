@@ -818,7 +818,7 @@ _flux_dry_run_histogram() {
   echo "  Size distribution  (all tracked files)"
   echo ""
 
-  local bar bar_len j count size_str
+  local bar bar_len bar_pad j count size_str
   for (( i=0; i<=display_last; i++ )); do
     lo="${boundaries[$i]}"
     hi="${boundaries[$((i+1))]}"
@@ -833,13 +833,15 @@ _flux_dry_run_histogram() {
       printf "    %*s - %-*s" "$max_lo_width" "$(_flux_size_unit "$lo")" "$max_right_width" "$(_flux_size_unit "$hi")"
     fi
 
-    # Bar
-    bar=""
+    # Bar: build blocks then pad explicitly in display columns (█ is multi-byte,
+    # so %-*s byte-based padding would misalign counts for partial bars)
+    bar=""; bar_len=0
     if (( count > 0 && max_count > 0 )); then
       bar_len=$(( count * BAR_WIDTH / max_count ))
       if (( bar_len < 1 )); then bar_len=1; fi
       for (( j=0; j<bar_len; j++ )); do bar="${bar}█"; done
     fi
+    bar_pad=""; for (( j=bar_len; j<BAR_WIDTH; j++ )); do bar_pad="${bar_pad} "; done
 
     # Size annotation shown only when bucket is non-empty
     if (( count > 0 )); then
@@ -848,7 +850,7 @@ _flux_dry_run_histogram() {
       size_str=""
     fi
 
-    printf "  %-*s  %*d%s\n" "$BAR_WIDTH" "$bar" "$count_digits" "$count" "$size_str"
+    printf "  %s%s  %*d%s\n" "$bar" "$bar_pad" "$count_digits" "$count" "$size_str"
 
     if (( i == sep_after )); then
       local sep_line=""
