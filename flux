@@ -470,6 +470,9 @@ _flux_add() {
   echo "    flux                            # sync everything"
   echo "    flux pull                       # download the latest"
   echo ""
+  echo "  Tip: run 'flux dry-run' to preview how your files will be routed"
+  echo "       and decide whether the default size cap needs adjusting."
+  echo ""
 }
 
 # ---------------------------------------------------------------------------
