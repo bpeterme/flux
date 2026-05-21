@@ -262,9 +262,11 @@ DVC=$(find_dvc) || {
   echo ""
   echo "  System Homebrew (Apple Silicon / Intel):"
   echo "    brew install dvc && pip install dvc-s3"
+  echo "    brew install dvc && uv tool install dvc-s3"
   echo ""
   echo "  User-local Homebrew:"
   echo "    <your-brew> install dvc && pip install dvc-s3"
+  echo "    <your-brew> install dvc && uv tool install dvc-s3"
   echo ""
   echo "  Or set your Homebrew bin directory in PATH before committing."
   exit 1

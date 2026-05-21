@@ -43,7 +43,7 @@ _flux_find_dvc() {
 
 _flux_require_dvc() {
   DVC=$(_flux_find_dvc) \
-    || fail 'dvc not found. Install: pip install "dvc[s3]"'
+    || fail 'dvc not found. Install: pip install "dvc[s3]"  or  uv tool install "dvc[s3]"'
 }
 
 _flux_format_size() {
@@ -700,7 +700,7 @@ _flux_doctor() {
     dvc_ver=$("$dvc_path" version 2>/dev/null | head -1 || true)
     ok "DVC: ${dvc_ver:-found} ($dvc_path)"
   else
-    warn "DVC not found — run: pip install \"dvc[s3]\""
+    warn "DVC not found — run: pip install \"dvc[s3]\"  or  uv tool install \"dvc[s3]\""
     pass=false
   fi
 
