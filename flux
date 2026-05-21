@@ -310,9 +310,12 @@ _flux_add() {
   ok "Config: $FLUX_CONFIG"
   ok "Credentials: Keychain"
 
-  git rev-parse --git-dir &>/dev/null \
-    || fail "Not inside a Git repository — run 'git init' first."
-  ok "Git repository found."
+  if ! git rev-parse --git-dir &>/dev/null; then
+    git init --quiet
+    ok "Git repository initialised."
+  else
+    ok "Git repository found."
+  fi
 
   if [[ ! -d .dvc ]]; then
     "$DVC" init --quiet
