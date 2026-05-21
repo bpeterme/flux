@@ -170,6 +170,22 @@ teardown() { teardown_flux_test; }
 }
 
 # ---------------------------------------------------------------------------
+# flux pull / sync — guard against non-flux repos
+# ---------------------------------------------------------------------------
+
+@test "flux pull fails with clear error in a non-flux git repo" {
+  run bash "$REPO_ROOT/flux" pull
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"flux add"* ]]
+}
+
+@test "flux sync fails with clear error in a non-flux git repo" {
+  run bash "$REPO_ROOT/flux" sync
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"flux add"* ]]
+}
+
+# ---------------------------------------------------------------------------
 # flux dry-run
 # ---------------------------------------------------------------------------
 

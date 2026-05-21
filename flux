@@ -46,6 +46,11 @@ _flux_require_dvc() {
     || fail 'dvc not found. Install: pip install "dvc[s3]"  or  uv tool install "dvc[s3]"'
 }
 
+_flux_require_dvc_repo() {
+  [[ -d ".dvc" ]] \
+    || fail "Not a flux-managed project. Run 'flux add' to initialise."
+}
+
 _flux_format_size() {
   local bytes=$1
   if   (( bytes >= 1024*1024 )); then printf '%d MB' $(( bytes / 1024 / 1024 ))
@@ -467,6 +472,7 @@ _flux_remove() {
 _flux_pull() {
   git rev-parse --git-dir &>/dev/null \
     || fail "Not inside a Git repository."
+  _flux_require_dvc_repo
   _flux_require_git_remote
   _flux_is_configured \
     || fail "Not configured. Run 'flux config' to set up."
@@ -483,6 +489,7 @@ _flux_pull() {
 _flux_sync() {
   git rev-parse --git-dir &>/dev/null \
     || fail "Not inside a Git repository."
+  _flux_require_dvc_repo
   _flux_require_git_remote
   _flux_is_configured \
     || fail "Not configured. Run 'flux config' to set up."
@@ -782,8 +789,8 @@ flux() {
     remove)            _flux_remove ;;
     sync|"")           _flux_sync ;;
     _api-version)      echo "1" ;;
-    _pull)             local DVC; _flux_require_dvc; git pull && "$DVC" pull ;;
-    _push)             local DVC; _flux_require_dvc; "$DVC" push && git push ;;
+    _pull)             _flux_require_dvc_repo; local DVC; _flux_require_dvc; git pull && "$DVC" pull ;;
+    _push)             _flux_require_dvc_repo; local DVC; _flux_require_dvc; "$DVC" push && git push ;;
     _doctor)           _flux_doctor_inline ;;
     pull)              _flux_pull "$@" ;;
     dry-run)           _flux_dry_run ;;
