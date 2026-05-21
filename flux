@@ -311,6 +311,10 @@ _flux_add() {
   ok "Credentials: Keychain"
 
   if ! git rev-parse --git-dir &>/dev/null; then
+    local nested
+    nested=$(find . -mindepth 2 -maxdepth 3 -name ".git" -type d 2>/dev/null | head -1)
+    [[ -n "$nested" ]] \
+      && fail "Nested Git repositories detected (e.g. ${nested%/.git}) — run 'git init' manually after confirming the correct directory."
     git init --quiet
     ok "Git repository initialised."
   else
