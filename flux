@@ -682,6 +682,137 @@ _flux_sync() {
 }
 
 # ---------------------------------------------------------------------------
+# Histogram helpers for dry-run size distribution
+# ---------------------------------------------------------------------------
+
+_flux_size_unit() {
+  local bytes=$1
+  if   (( bytes >= 1073741824 )); then printf '%d GB' $(( bytes / 1073741824 ))
+  elif (( bytes >= 1048576 ));    then printf '%d MB' $(( bytes / 1048576 ))
+  elif (( bytes >= 1024 ));       then printf '%d KB' $(( bytes / 1024 ))
+  else                                 printf '%d B'  "$bytes"
+  fi
+}
+
+_flux_size_label() {
+  local lo=$1 hi=$2
+  if   (( lo == 0 )); then printf "< %s"    "$(_flux_size_unit "$hi")"
+  elif (( hi == 0 )); then printf "> %s"    "$(_flux_size_unit "$lo")"
+  else                     printf "%s - %s" "$(_flux_size_unit "$lo")" "$(_flux_size_unit "$hi")"
+  fi
+}
+
+_flux_dry_run_histogram() {
+  local cap_bytes=$1
+  local BAR_WIDTH=20
+
+  local all_tracked
+  all_tracked=$(git ls-files 2>/dev/null || true)
+  [[ -z "$all_tracked" ]] && return 0
+
+  # Fixed log-scale boundaries, with cap inserted as a dynamic boundary
+  local fixed_thresholds=(1024 10240 102400 1048576 10485760 104857600 1073741824)
+  local boundaries=(0) cap_added=false t last_idx
+
+  for t in "${fixed_thresholds[@]}"; do
+    if [[ "$cap_added" == "false" ]] && (( cap_bytes <= t )); then
+      last_idx=$(( ${#boundaries[@]} - 1 ))
+      if (( cap_bytes > boundaries[last_idx] )); then
+        boundaries+=("$cap_bytes")
+      fi
+      cap_added=true
+    fi
+    last_idx=$(( ${#boundaries[@]} - 1 ))
+    if (( t != boundaries[last_idx] )); then
+      boundaries+=("$t")
+    fi
+  done
+
+  if [[ "$cap_added" == "false" ]]; then
+    last_idx=$(( ${#boundaries[@]} - 1 ))
+    if (( cap_bytes > boundaries[last_idx] )); then
+      boundaries+=("$cap_bytes")
+    fi
+  fi
+  boundaries+=(0)  # 0 = infinity sentinel
+
+  local nbrackets=$(( ${#boundaries[@]} - 1 ))
+
+  local i counts=()
+  for (( i=0; i<nbrackets; i++ )); do counts+=( 0 ); done
+
+  # Count all tracked files per bracket
+  local file sz lo hi
+  while IFS= read -r file; do
+    [[ ! -f "$file" ]] && continue
+    sz=$(wc -c < "$file" | tr -d ' ')
+    for (( i=0; i<nbrackets; i++ )); do
+      lo="${boundaries[$i]}"
+      hi="${boundaries[$((i+1))]}"
+      if (( sz >= lo )) && (( hi == 0 || sz < hi )); then
+        counts[$i]=$(( counts[$i] + 1 ))
+        break
+      fi
+    done
+  done <<< "$all_tracked"
+
+  # Only display when files span more than one bracket
+  local non_empty=0
+  for (( i=0; i<nbrackets; i++ )); do
+    if (( counts[$i] > 0 )); then non_empty=$(( non_empty + 1 )); fi
+  done
+  if (( non_empty <= 1 )); then return 0; fi
+
+  # Max count (for bar scaling)
+  local max_count=0
+  for (( i=0; i<nbrackets; i++ )); do
+    if (( counts[$i] > max_count )); then max_count=${counts[$i]}; fi
+  done
+
+  # Build labels and find max label width
+  local labels=() max_lw=0 lw label
+  for (( i=0; i<nbrackets; i++ )); do
+    label=$(_flux_size_label "${boundaries[$i]}" "${boundaries[$((i+1))]}")
+    labels+=("$label")
+    lw=${#label}
+    if (( lw > max_lw )); then max_lw=$lw; fi
+  done
+
+  # Find the bracket whose upper bound is the cap (separator goes after it)
+  local sep_after=-1
+  for (( i=0; i<nbrackets; i++ )); do
+    if (( boundaries[$((i+1))] == cap_bytes )); then sep_after=$i; break; fi
+  done
+
+  local sep_width=$(( max_lw + 2 + BAR_WIDTH ))
+
+  echo ""
+  echo "  Size distribution  (all tracked files)"
+  echo ""
+
+  local bar bar_len j count
+  for (( i=0; i<nbrackets; i++ )); do
+    count="${counts[$i]}"
+    label="${labels[$i]}"
+
+    bar=""
+    if (( count > 0 )); then
+      bar_len=$(( count * BAR_WIDTH / max_count ))
+      if (( bar_len < 1 )); then bar_len=1; fi
+      for (( j=0; j<bar_len; j++ )); do bar="${bar}█"; done
+    fi
+
+    printf "    %-*s  %-*s  %d\n" "$max_lw" "$label" "$BAR_WIDTH" "$bar" "$count"
+
+    if (( i == sep_after )); then
+      local sep_line=""
+      for (( j=0; j<sep_width; j++ )); do sep_line="${sep_line}─"; done
+      printf "    %s  cap: %s\n" "$sep_line" "$(_flux_size_unit "$cap_bytes")"
+    fi
+  done
+}
+
+# ---------------------------------------------------------------------------
 # dry-run — preview staged file routing without executing any changes
 # ---------------------------------------------------------------------------
 
@@ -750,8 +881,9 @@ _flux_dry_run() {
     (( ${#dvc_migrating[@]} > 0 )) && migrating_note="    (${#dvc_migrating[@]} migrating from Git)"
     printf "  → DVC     %d file(s)    %s%s\n" "${#dvc_files[@]}" "$(_flux_format_size "$dvc_bytes")" "$migrating_note"
   fi
-  (( ${#skip_files[@]} > 0 )) \
-    && printf "  ↷ Skip    %d file(s)    already in DVC\n" "${#skip_files[@]}"
+  printf "  ↷ Skip    %d file(s)    already in DVC\n" "${#skip_files[@]}"
+
+  _flux_dry_run_histogram "$SIZE_CAP_BYTES"
 
   local show_details=false
   if [[ -t 0 && -t 1 ]]; then
