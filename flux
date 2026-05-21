@@ -679,14 +679,14 @@ _flux_sync() {
 
   if ! git diff --quiet || ! git diff --cached --quiet; then
     git add -A
-    git commit -m "sync: $(date '+%Y-%m-%d %H:%M')"
+    git commit --quiet -m "sync: $(date '+%Y-%m-%d %H:%M')"
   fi
 
   _flux_sync_summary
-  ok "Pulling from Git remote..."; git pull
-  ok "Pulling DVC data from R2..."; "$DVC" pull
-  ok "Pushing to Git remote...";   git push
-  ok "Pushing DVC data to R2...";  "$DVC" push
+  ok "Pulling from Git remote..."; git pull --quiet
+  ok "Pulling DVC data from R2..."; "$DVC" pull --quiet
+  ok "Pushing to Git remote...";   git push --quiet
+  ok "Pushing DVC data to R2...";  "$DVC" push --quiet
 }
 
 _flux_sync_summary() {
