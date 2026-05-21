@@ -46,6 +46,45 @@ _flux_require_dvc() {
     || fail 'dvc not found. Install: pip install "dvc[s3]"  or  uv tool install "dvc[s3]"'
 }
 
+_flux_require_dvc_repo() {
+  [[ -d ".dvc" ]] \
+    || fail "Not a flux-managed project. Run 'flux add' to initialise."
+}
+
+# ---------------------------------------------------------------------------
+# Registry — tracks what flux has written to this repo for clean removal
+# Location: .git/flux-registry (not tracked by git, local to repo)
+# Format:   one "key:value" per line
+# ---------------------------------------------------------------------------
+
+_flux_registry_path() {
+  git rev-parse --git-dir 2>/dev/null && return 0
+  echo ""
+}
+
+_flux_registry_write() {
+  local key="$1" value="$2"
+  local reg; reg="$(git rev-parse --git-dir 2>/dev/null)/flux-registry"
+  [[ -z "$reg" ]] && return 0
+  grep -qxF "${key}:${value}" "$reg" 2>/dev/null || echo "${key}:${value}" >> "$reg"
+}
+
+_flux_registry_read() {
+  local key="$1"
+  local reg; reg="$(git rev-parse --git-dir 2>/dev/null)/flux-registry"
+  [[ -f "$reg" ]] || return 0
+  grep "^${key}:" "$reg" | sed "s/^${key}://"
+}
+
+_flux_registry_delete() {
+  local key="$1" value="$2"
+  local reg; reg="$(git rev-parse --git-dir 2>/dev/null)/flux-registry"
+  [[ -f "$reg" ]] || return 0
+  local tmp; tmp=$(mktemp)
+  grep -vxF "${key}:${value}" "$reg" > "$tmp" || true
+  mv "$tmp" "$reg"
+}
+
 _flux_format_size() {
   local bytes=$1
   if   (( bytes >= 1024*1024 )); then printf '%d MB' $(( bytes / 1024 / 1024 ))
@@ -156,9 +195,11 @@ flux - Git + DVC auto-router for Cloudflare R2
 Usage:
   flux                  Sync both ways (pull then push)
   flux add              Opt current project into sync
-  flux remove           Stop syncing current project
+  flux remove           Full detach (git + DVC)
+  flux remove git       Remove hook and git config only
+  flux remove dvc       Remove all DVC traces (pointer files, .dvc/)
   flux pull             Download the latest (git pull + dvc pull)
-  flux dry-run          Preview how staged files would be routed
+  flux dry-run          Preview routing (staged files, or all tracked if none staged)
   flux cap [N|--reset]  Show, reset or set per-project size cap to [N] (MB)
 
 Maintenance:
@@ -323,8 +364,10 @@ _flux_add() {
 
   if [[ ! -d .dvc ]]; then
     "$DVC" init --quiet
+    _flux_registry_write dvc_initialized true
     ok "DVC initialised."
   else
+    _flux_registry_write dvc_initialized true
     ok "DVC already initialised."
   fi
 
@@ -351,21 +394,28 @@ _flux_add() {
   "$DVC" remote modify         r2remote region      auto                   --quiet
   "$DVC" remote modify --local r2remote access_key_id     "$access_key_id" --quiet
   "$DVC" remote modify --local r2remote secret_access_key "$secret_key"    --quiet
+  _flux_registry_write dvc_remote r2remote
   ok "DVC remote ${remote_verb}: s3://${bucket}/${FLUX_R2_FOLDER}"
 
   local existing_project_cap
   existing_project_cap=$(git config --get dvc-router.size-cap-mb 2>/dev/null || true)
   if [[ -z "$existing_project_cap" ]]; then
     git config dvc-router.size-cap-mb "$cap"
+    _flux_registry_write git_config dvc-router.size-cap-mb
   else
     cap="$existing_project_cap"
   fi
-  git config dvc-router.verbose           "$verbose"
-  git config flux.r2-folder              "$FLUX_R2_FOLDER"
+  git config dvc-router.verbose "$verbose"
+  git config flux.r2-folder    "$FLUX_R2_FOLDER"
+  _flux_registry_write git_config dvc-router.verbose
+  _flux_registry_write git_config flux.r2-folder
 
   touch .gitignore
   for entry in ".dvc/config.local" ".dvc/tmp/" ".dvc/cache/"; do
-    grep -qF "$entry" .gitignore || echo "$entry" >> .gitignore
+    if ! grep -qF "$entry" .gitignore; then
+      echo "$entry" >> .gitignore
+    fi
+    _flux_registry_write gitignore "$entry"
   done
   ok ".gitignore updated."
 
@@ -410,6 +460,7 @@ _flux_add() {
     chmod +x "${HOOKS_DIR}/pre-commit"
     ok "Pre-commit hook installed."
   fi
+  _flux_registry_write hook pre-commit
 
   echo ""
   echo "  flux added. Your workflow:"
@@ -421,12 +472,11 @@ _flux_add() {
 }
 
 # ---------------------------------------------------------------------------
-# remove — detach flux from the current repository
+# remove git — remove flux's git integration (hook + git config keys)
 # ---------------------------------------------------------------------------
 
-_flux_remove() {
+_flux_remove_git() {
   git rev-parse --git-dir &>/dev/null || fail "Not inside a Git repository."
-  local DVC; _flux_require_dvc
 
   local HOOKS_DIR
   HOOKS_DIR="$(git rev-parse --git-dir)/hooks"
@@ -434,6 +484,7 @@ _flux_remove() {
   if [[ -f "${HOOKS_DIR}/pre-commit" ]]; then
     if grep -q 'dvc-router\|flux' "${HOOKS_DIR}/pre-commit" 2>/dev/null; then
       rm "${HOOKS_DIR}/pre-commit"
+      _flux_registry_delete hook pre-commit
       ok "Pre-commit hook removed."
     else
       warn "Pre-commit hook exists but does not appear to belong to flux — not removed."
@@ -443,21 +494,153 @@ _flux_remove() {
     warn "No pre-commit hook found."
   fi
 
+  local -a keys=()
+  while IFS= read -r line; do [[ -n "$line" ]] && keys+=("$line"); done \
+    < <(_flux_registry_read git_config)
+  if (( ${#keys[@]} == 0 )); then
+    keys=(flux.r2-folder dvc-router.size-cap-mb dvc-router.verbose)
+  fi
+  local removed=0
+  for key in "${keys[@]}"; do
+    if git config --unset "$key" 2>/dev/null; then
+      _flux_registry_delete git_config "$key"
+      (( removed++ )) || true
+    fi
+  done
+  (( removed > 0 )) && ok "Git config entries removed (${removed})." || warn "No flux git config entries found."
+
+  if [[ ! -f "${HOOKS_DIR}/pre-commit" ]] && (( removed == 0 )); then
+    echo -e "${RED}✘${NC} Not a flux-managed project."
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# remove dvc — thoroughly remove all DVC traces from the current repo
+# ---------------------------------------------------------------------------
+
+_flux_remove_dvc() {
+  git rev-parse --git-dir &>/dev/null || fail "Not inside a Git repository."
+  local force="${1:-}"
+
+  if [[ ! -d ".dvc" ]]; then
+    warn "No .dvc/ directory found — nothing to remove."
+    return 0
+  fi
+
+  local DVC; _flux_require_dvc
+
+  # Guard: non-flux DVC remotes
+  local other_remotes
+  other_remotes=$(grep '^\[remote "' .dvc/config 2>/dev/null \
+    | grep -v '"r2remote"' | sed 's/.*"\(.*\)".*/\1/' || true)
+  if [[ -n "$other_remotes" ]] && [[ "$force" != "--force" ]]; then
+    warn "Other DVC remotes are configured (not managed by flux):"
+    echo "$other_remotes" | sed 's/^/    /'
+    warn "Removing .dvc/ would destroy these too. Pass --force to proceed anyway."
+    return 1
+  fi
+
+  # Guard: DVC-tracked files whose data is not on disk
+  local missing_data=()
+  while IFS= read -r -d '' ptr; do
+    local data_file="${ptr%.dvc}"
+    [[ -e "$data_file" ]] || missing_data+=("$ptr")
+  done < <(find . -type f -name "*.dvc" -not -path "./.git/*" -not -path "./.dvc/*" -print0 2>/dev/null)
+
+  if (( ${#missing_data[@]} > 0 )); then
+    warn "The following DVC-tracked files are not present on disk."
+    warn "Run 'dvc pull' first, or their data will only exist on R2:"
+    for f in "${missing_data[@]}"; do printf "    %s\n" "$f"; done
+    echo ""
+    local confirm
+    read -rp "  Continue anyway? [y/N]: " confirm || true
+    [[ "${confirm:-N}" =~ ^[Yy]$ ]] || return 1
+  fi
+
+  # Remove DVC remote and local config
+  "$DVC" remote remove r2remote 2>/dev/null && ok "DVC remote 'r2remote' removed." || true
   if [[ -f ".dvc/config.local" ]]; then
     rm ".dvc/config.local"
     ok ".dvc/config.local removed."
   fi
+  _flux_registry_delete dvc_remote r2remote
 
-  "$DVC" remote remove r2remote 2>/dev/null && ok "DVC remote removed." || true
+  # Remove *.dvc pointer files from git index and disk
+  local -a ptrs=()
+  while IFS= read -r line; do [[ -n "$line" ]] && ptrs+=("$line"); done \
+    < <(find . -type f -name "*.dvc" -not -path "./.git/*" -not -path "./.dvc/*" 2>/dev/null)
+  if (( ${#ptrs[@]} > 0 )); then
+    git rm --cached -q "${ptrs[@]}" 2>/dev/null || true
+    rm -f "${ptrs[@]}"
+    ok "Removed ${#ptrs[@]} .dvc pointer file(s)."
+  fi
 
-  git config --unset flux.r2-folder               2>/dev/null || true
-  git config --unset dvc-router.size-cap-mb  2>/dev/null || true
-  git config --unset dvc-router.verbose            2>/dev/null || true
+  # Remove .dvcignore files from git index and disk
+  local -a dvcignores=()
+  while IFS= read -r line; do [[ -n "$line" ]] && dvcignores+=("$line"); done \
+    < <(find . -type f -name ".dvcignore" -not -path "./.git/*" -not -path "./.dvc/*" 2>/dev/null)
+  if (( ${#dvcignores[@]} > 0 )); then
+    git rm --cached -q "${dvcignores[@]}" 2>/dev/null || true
+    rm -f "${dvcignores[@]}"
+    ok "Removed ${#dvcignores[@]} .dvcignore file(s)."
+  fi
 
-  echo ""
-  warn "Global config and credentials were not touched."
-  warn "Run 'flux config' and choose [r] to remove those."
-  echo ""
+  # Remove .dvc/ directory from git index and disk
+  git rm -r --cached -q .dvc/ 2>/dev/null || true
+  rm -rf .dvc/
+  _flux_registry_delete dvc_initialized true
+  ok ".dvc/ directory removed."
+
+  # Clean flux-written .gitignore entries
+  if [[ -f ".gitignore" ]]; then
+    local -a entries=()
+    while IFS= read -r line; do [[ -n "$line" ]] && entries+=("$line"); done \
+      < <(_flux_registry_read gitignore)
+    local removed_gi=0
+    if (( ${#entries[@]} > 0 )); then
+      for entry in "${entries[@]}"; do
+        if grep -qxF "$entry" .gitignore 2>/dev/null; then
+          local tmp; tmp=$(mktemp)
+          grep -vxF "$entry" .gitignore > "$tmp" || true
+          mv "$tmp" .gitignore
+          _flux_registry_delete gitignore "$entry"
+          (( removed_gi++ )) || true
+        fi
+      done
+    fi
+    (( removed_gi > 0 )) && ok "Removed ${removed_gi} flux .gitignore entr(ies)." || true
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# remove — detach flux from the current repository (git + dvc)
+# ---------------------------------------------------------------------------
+
+_flux_remove() {
+  local sub="${1:-}"
+
+  case "$sub" in
+    git)   _flux_remove_git ;;
+    dvc)   shift || true; _flux_remove_dvc "$@" ;;
+    "")
+      git rev-parse --git-dir &>/dev/null || fail "Not inside a Git repository."
+      [[ -d ".dvc" ]] \
+        || fail "Not a flux-managed project (no .dvc/ found). Run 'flux add' to initialise."
+      echo ""
+      echo "  flux remove — full detach"
+      echo ""
+      _flux_remove_dvc "$@"
+      echo ""
+      _flux_remove_git
+      echo ""
+      warn "Global config and credentials were not touched."
+      warn "Run 'flux config' and choose [r] to remove those."
+      echo ""
+      ;;
+    *)
+      fail "Unknown remove target '${sub}'. Usage: flux remove [git|dvc]"
+      ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------
@@ -467,6 +650,7 @@ _flux_remove() {
 _flux_pull() {
   git rev-parse --git-dir &>/dev/null \
     || fail "Not inside a Git repository."
+  _flux_require_dvc_repo
   _flux_require_git_remote
   _flux_is_configured \
     || fail "Not configured. Run 'flux config' to set up."
@@ -483,6 +667,7 @@ _flux_pull() {
 _flux_sync() {
   git rev-parse --git-dir &>/dev/null \
     || fail "Not inside a Git repository."
+  _flux_require_dvc_repo
   _flux_require_git_remote
   _flux_is_configured \
     || fail "Not configured. Run 'flux config' to set up."
@@ -492,10 +677,231 @@ _flux_sync() {
     fail "You have uncommitted changes. Commit or stash them before syncing."
   fi
 
+  _flux_sync_summary
   ok "Pulling from Git remote..."; git pull
   ok "Pulling DVC data from R2..."; "$DVC" pull
   ok "Pushing to Git remote...";   git push
   ok "Pushing DVC data to R2...";  "$DVC" push
+}
+
+_flux_sync_summary() {
+  local git_count=0 git_bytes=0 dvc_count=0 dvc_bytes=0
+
+  local all_files
+  all_files=$(git ls-files 2>/dev/null || true)
+
+  while IFS= read -r file; do
+    [[ -z "$file" || "$file" == *.dvc ]] && continue
+    [[ ! -f "$file" ]] && continue
+    local sz; sz=$(wc -c < "$file" | tr -d ' ')
+    git_bytes=$(( git_bytes + sz ))
+    git_count=$(( git_count + 1 ))
+  done <<< "$all_files"
+
+  local dvc_pointers
+  dvc_pointers=$(git ls-files "*.dvc" 2>/dev/null || true)
+
+  while IFS= read -r ptr; do
+    [[ -z "$ptr" || ! -f "$ptr" ]] && continue
+    local sz
+    sz=$(grep -m1 'size:' "$ptr" 2>/dev/null | awk '{print $2}')
+    [[ -z "$sz" || ! "$sz" =~ ^[0-9]+$ ]] && sz=0
+    dvc_bytes=$(( dvc_bytes + sz ))
+    dvc_count=$(( dvc_count + 1 ))
+  done <<< "$dvc_pointers"
+
+  (( git_count == 0 && dvc_count == 0 )) && return 0
+
+  echo ""
+  echo "  flux sync — repository contents"
+  echo ""
+
+  local count_digits=1 max_c
+  max_c=$(( git_count > dvc_count ? git_count : dvc_count ))
+  while (( max_c >= 10 )); do count_digits=$(( count_digits + 1 )); max_c=$(( max_c / 10 )); done
+
+  (( git_count > 0 )) && printf "  Git   %*d file(s)   %s\n" "$count_digits" "$git_count" "$(_flux_size_unit "$git_bytes")"
+  (( dvc_count > 0 )) && printf "  DVC   %*d file(s)   %s\n" "$count_digits" "$dvc_count" "$(_flux_size_unit "$dvc_bytes")"
+  echo ""
+}
+
+# ---------------------------------------------------------------------------
+# Histogram helpers for dry-run size distribution
+# ---------------------------------------------------------------------------
+
+_flux_size_unit() {
+  local bytes=$1
+  if   (( bytes >= 1073741824 )); then printf '%d GB' $(( bytes / 1073741824 ))
+  elif (( bytes >= 1048576 ));    then printf '%d MB' $(( bytes / 1048576 ))
+  elif (( bytes >= 1024 ));       then printf '%d KB' $(( bytes / 1024 ))
+  else                                 printf '%d B'  "$bytes"
+  fi
+}
+
+_flux_dry_run_histogram() {
+  local cap_bytes=$1
+  local BAR_WIDTH=20
+
+  local all_tracked
+  all_tracked=$(git ls-files 2>/dev/null || true)
+  [[ -z "$all_tracked" ]] && return 0
+
+  # Fixed log-scale boundaries, with cap inserted as a dynamic boundary
+  local fixed_thresholds=(1024 10240 102400 1048576 10485760 104857600 1073741824)
+  local boundaries=(0) cap_added=false t last_idx
+
+  for t in "${fixed_thresholds[@]}"; do
+    if [[ "$cap_added" == "false" ]] && (( cap_bytes <= t )); then
+      last_idx=$(( ${#boundaries[@]} - 1 ))
+      if (( cap_bytes > boundaries[last_idx] )); then
+        boundaries+=("$cap_bytes")
+      fi
+      cap_added=true
+    fi
+    last_idx=$(( ${#boundaries[@]} - 1 ))
+    if (( t != boundaries[last_idx] )); then
+      boundaries+=("$t")
+    fi
+  done
+
+  if [[ "$cap_added" == "false" ]]; then
+    last_idx=$(( ${#boundaries[@]} - 1 ))
+    if (( cap_bytes > boundaries[last_idx] )); then
+      boundaries+=("$cap_bytes")
+    fi
+  fi
+  boundaries+=(0)  # 0 = infinity sentinel
+
+  local nbrackets=$(( ${#boundaries[@]} - 1 ))
+
+  local i
+  local counts=()
+  local sizes=()
+  for (( i=0; i<nbrackets; i++ )); do
+    counts+=( 0 )
+    sizes+=( 0 )
+  done
+
+  # Count all tracked files per bracket and accumulate sizes
+  local file sz lo hi
+  while IFS= read -r file; do
+    [[ ! -f "$file" ]] && continue
+    sz=$(wc -c < "$file" | tr -d ' ')
+    for (( i=0; i<nbrackets; i++ )); do
+      lo="${boundaries[$i]}"
+      hi="${boundaries[$((i+1))]}"
+      if (( sz >= lo )) && (( hi == 0 || sz < hi )); then
+        counts[$i]=$(( counts[$i] + 1 ))
+        sizes[$i]=$(( sizes[$i] + sz ))
+        break
+      fi
+    done
+  done <<< "$all_tracked"
+
+  # Only display when files span more than one bracket
+  local non_empty=0
+  for (( i=0; i<nbrackets; i++ )); do
+    if (( counts[$i] > 0 )); then non_empty=$(( non_empty + 1 )); fi
+  done
+  if (( non_empty <= 1 )); then return 0; fi
+
+  # Find separator position (bracket whose upper bound == cap_bytes)
+  local sep_after=-1
+  for (( i=0; i<nbrackets; i++ )); do
+    if (( boundaries[$((i+1))] == cap_bytes )); then sep_after=$i; break; fi
+  done
+
+  # Trim DVC side: show at least the first DVC bucket; stop at last non-empty one
+  local dvc_first dvc_last display_last
+  if (( sep_after >= 0 )); then
+    dvc_first=$(( sep_after + 1 ))
+    dvc_last=$dvc_first
+    for (( i=dvc_first; i<nbrackets; i++ )); do
+      if (( counts[$i] > 0 )); then dvc_last=$i; fi
+    done
+    display_last=$dvc_last
+  else
+    display_last=$(( nbrackets - 1 ))
+  fi
+
+  # Max count across displayed range (for bar scaling)
+  local max_count=0
+  for (( i=0; i<=display_last; i++ )); do
+    if (( counts[$i] > max_count )); then max_count=${counts[$i]}; fi
+  done
+
+  # Width of the count column (right-aligned)
+  local count_digits=${#max_count}
+
+  # Two-column label alignment:
+  #   left col  (max_lo_width)  : lo value, right-aligned; empty for "< hi" and "> lo"
+  #   separator (3 chars)       : " - " / " < " / " > "
+  #   right col (max_right_width): hi value for ranges; lo value for "> lo"; hi for "< hi"
+  local max_lo_width=0 max_right_width=0 lw rw lo_str hi_str
+  for (( i=0; i<=display_last; i++ )); do
+    lo="${boundaries[$i]}"
+    hi="${boundaries[$((i+1))]}"
+    if (( lo != 0 && hi != 0 )); then
+      lo_str=$(_flux_size_unit "$lo"); hi_str=$(_flux_size_unit "$hi")
+      lw=${#lo_str}; rw=${#hi_str}
+      if (( lw > max_lo_width ));    then max_lo_width=$lw;    fi
+      if (( rw > max_right_width )); then max_right_width=$rw; fi
+    elif (( lo == 0 )); then
+      hi_str=$(_flux_size_unit "$hi"); rw=${#hi_str}
+      if (( rw > max_right_width )); then max_right_width=$rw; fi
+    else
+      lo_str=$(_flux_size_unit "$lo"); lw=${#lo_str}
+      if (( lw > max_right_width )); then max_right_width=$lw; fi
+    fi
+  done
+
+  local label_width=$(( max_lo_width + 3 + max_right_width ))
+  local sep_width=$(( label_width + 2 + BAR_WIDTH ))
+
+  echo ""
+  echo "  Size distribution  (all tracked files)"
+  echo ""
+
+  local bar bar_len bar_pad j count size_str
+  for (( i=0; i<=display_last; i++ )); do
+    lo="${boundaries[$i]}"
+    hi="${boundaries[$((i+1))]}"
+    count="${counts[$i]}"
+
+    # Label: right-aligned lo, fixed-width separator, left-aligned right value
+    if (( lo == 0 )); then
+      printf "    %*s < %-*s" "$max_lo_width" "" "$max_right_width" "$(_flux_size_unit "$hi")"
+    elif (( hi == 0 )); then
+      printf "    %*s > %-*s" "$max_lo_width" "" "$max_right_width" "$(_flux_size_unit "$lo")"
+    else
+      printf "    %*s - %-*s" "$max_lo_width" "$(_flux_size_unit "$lo")" "$max_right_width" "$(_flux_size_unit "$hi")"
+    fi
+
+    # Bar: build blocks then pad explicitly in display columns (█ is multi-byte,
+    # so %-*s byte-based padding would misalign counts for partial bars)
+    bar=""; bar_len=0
+    if (( count > 0 && max_count > 0 )); then
+      bar_len=$(( count * BAR_WIDTH / max_count ))
+      if (( bar_len < 1 )); then bar_len=1; fi
+      for (( j=0; j<bar_len; j++ )); do bar="${bar}█"; done
+    fi
+    bar_pad=""; for (( j=bar_len; j<BAR_WIDTH; j++ )); do bar_pad="${bar_pad} "; done
+
+    # Size annotation shown only when bucket is non-empty
+    if (( count > 0 )); then
+      size_str="  ($(_flux_size_unit "${sizes[$i]}"))"
+    else
+      size_str=""
+    fi
+
+    printf "  %s%s  %*d%s\n" "$bar" "$bar_pad" "$count_digits" "$count" "$size_str"
+
+    if (( i == sep_after )); then
+      local sep_line=""
+      for (( j=0; j<sep_width; j++ )); do sep_line="${sep_line}─"; done
+      printf "    %s  cap: %s\n" "$sep_line" "$(_flux_size_unit "$cap_bytes")"
+    fi
+  done
 }
 
 # ---------------------------------------------------------------------------
@@ -510,12 +916,19 @@ _flux_dry_run() {
   SIZE_CAP_MB=$(git config --get dvc-router.size-cap-mb 2>/dev/null || echo "5")
   SIZE_CAP_BYTES=$(( SIZE_CAP_MB * 1024 * 1024 ))
 
-  local staged_files
+  local staged_files scan_mode
   staged_files=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)
 
   if [[ -z "$staged_files" ]]; then
+    staged_files=$(git ls-files 2>/dev/null || true)
+    scan_mode="all tracked files"
+  else
+    scan_mode="staged files"
+  fi
+
+  if [[ -z "$staged_files" ]]; then
     echo ""
-    echo "  No staged files."
+    echo "  No files to preview."
     echo ""
     return 0
   fi
@@ -550,36 +963,58 @@ _flux_dry_run() {
   done <<< "$staged_files"
 
   echo ""
-  echo "  flux dry-run — routing preview (cap: ${SIZE_CAP_MB} MB)"
+  echo "  flux dry-run — routing preview (${scan_mode}, cap: ${SIZE_CAP_MB} MB)"
+  echo ""
 
-  if (( ${#git_files[@]} > 0 )); then
-    echo ""
-    printf "  → Git  (%d file(s), %s)\n" "${#git_files[@]}" "$(_flux_format_size "$git_bytes")"
-    for f in "${git_files[@]}"; do
-      local sz; sz=$(wc -c < "$f" | tr -d ' ')
-      printf "    ·  %-42s %s\n" "$f" "$(_flux_format_size "$sz")"
-    done
-  fi
-
+  (( ${#git_files[@]} > 0 )) \
+    && printf "  → Git     %d file(s)    %s\n" "${#git_files[@]}" "$(_flux_format_size "$git_bytes")"
   if (( ${#dvc_files[@]} > 0 )); then
+    local migrating_note=""
+    (( ${#dvc_migrating[@]} > 0 )) && migrating_note="    (${#dvc_migrating[@]} migrating from Git)"
+    printf "  → DVC     %d file(s)    %s%s\n" "${#dvc_files[@]}" "$(_flux_format_size "$dvc_bytes")" "$migrating_note"
+  fi
+  printf "  ↷ Skip    %d file(s)    already in DVC\n" "${#skip_files[@]}"
+
+  _flux_dry_run_histogram "$SIZE_CAP_BYTES"
+
+  local show_details=false
+  if [[ -t 0 && -t 1 ]]; then
     echo ""
-    printf "  → DVC / R2  (%d file(s), %s)\n" "${#dvc_files[@]}" "$(_flux_format_size "$dvc_bytes")"
-    for f in "${dvc_files[@]}"; do
-      local sz; sz=$(wc -c < "$f" | tr -d ' ')
-      local note=""
-      for m in "${dvc_migrating[@]+"${dvc_migrating[@]}"}"; do
-        [[ "$m" == "$f" ]] && note="   [migrating from Git]" && break
-      done
-      printf "    ✦  %-42s %s%s\n" "$f" "$(_flux_format_size "$sz")" "$note"
-    done
+    local answer
+    read -r -p "  Show file details? [y/N] " answer
+    case "$answer" in y|Y|yes|YES|Yes) show_details=true ;; esac
   fi
 
-  if (( ${#skip_files[@]} > 0 )); then
-    echo ""
-    printf "  ↷  Already in DVC  (%d file(s), skipped)\n" "${#skip_files[@]}"
-    for f in "${skip_files[@]}"; do
-      printf "    ·  %s\n" "$f"
-    done
+  if [[ "$show_details" == "true" ]]; then
+    if (( ${#git_files[@]} > 0 )); then
+      echo ""
+      printf "  Git files:\n"
+      for f in "${git_files[@]}"; do
+        local sz; sz=$(wc -c < "$f" | tr -d ' ')
+        printf "    ·  %-42s %s\n" "$f" "$(_flux_format_size "$sz")"
+      done
+    fi
+
+    if (( ${#dvc_files[@]} > 0 )); then
+      echo ""
+      printf "  DVC files:\n"
+      for f in "${dvc_files[@]}"; do
+        local sz; sz=$(wc -c < "$f" | tr -d ' ')
+        local note=""
+        for m in "${dvc_migrating[@]+"${dvc_migrating[@]}"}"; do
+          [[ "$m" == "$f" ]] && note="   [migrating from Git]" && break
+        done
+        printf "    ✦  %-42s %s%s\n" "$f" "$(_flux_format_size "$sz")" "$note"
+      done
+    fi
+
+    if (( ${#skip_files[@]} > 0 )); then
+      echo ""
+      printf "  Skipped (already in DVC):\n"
+      for f in "${skip_files[@]}"; do
+        printf "    ·  %s\n" "$f"
+      done
+    fi
   fi
 
   echo ""
@@ -601,6 +1036,8 @@ _flux_cap() {
   project_cap=$(git config --get dvc-router.size-cap-mb 2>/dev/null || true)
 
   local arg="${1:-}"
+
+  [[ $# -gt 1 ]] && fail "Too many arguments. Usage: flux cap [N|--reset]"
 
   if [[ -z "$arg" ]]; then
     echo ""
@@ -772,11 +1209,11 @@ flux() {
 
   case "$cmd" in
     add)               _flux_add ;;
-    remove)            _flux_remove ;;
+    remove)            _flux_remove "$@" ;;
     sync|"")           _flux_sync ;;
     _api-version)      echo "1" ;;
-    _pull)             local DVC; _flux_require_dvc; git pull && "$DVC" pull ;;
-    _push)             local DVC; _flux_require_dvc; "$DVC" push && git push ;;
+    _pull)             _flux_require_dvc_repo; local DVC; _flux_require_dvc; git pull && "$DVC" pull ;;
+    _push)             _flux_require_dvc_repo; local DVC; _flux_require_dvc; "$DVC" push && git push ;;
     _doctor)           _flux_doctor_inline ;;
     pull)              _flux_pull "$@" ;;
     dry-run)           _flux_dry_run ;;

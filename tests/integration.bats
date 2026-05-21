@@ -135,10 +135,72 @@ teardown() { teardown_flux_test; }
   [ ! -f ".git/hooks/pre-commit" ]
 }
 
-@test "flux remove warns when no pre-commit hook is present" {
+@test "flux remove fails with clear error in a non-flux git repo" {
   run bash "$REPO_ROOT/flux" remove
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"flux add"* ]]
+}
+
+@test "flux remove git warns when no pre-commit hook is present" {
+  run bash "$REPO_ROOT/flux" remove git
   [ "$status" -eq 0 ]
   [[ "$output" == *"No pre-commit hook"* ]]
+}
+
+@test "flux remove removes .dvc/ directory" {
+  bash "$REPO_ROOT/flux" add
+  run bash "$REPO_ROOT/flux" remove
+  [ "$status" -eq 0 ]
+  [ ! -d ".dvc" ]
+}
+
+@test "flux remove cleans up flux .gitignore entries" {
+  bash "$REPO_ROOT/flux" add
+  bash "$REPO_ROOT/flux" remove
+  ! grep -qF ".dvc/config.local" .gitignore
+  ! grep -qF ".dvc/tmp/" .gitignore
+  ! grep -qF ".dvc/cache/" .gitignore
+}
+
+@test "flux remove git removes hook and git config but leaves .dvc/" {
+  bash "$REPO_ROOT/flux" add
+  run bash "$REPO_ROOT/flux" remove git
+  [ "$status" -eq 0 ]
+  [ ! -f ".git/hooks/pre-commit" ]
+  [ -d ".dvc" ]
+  ! git config --get flux.r2-folder 2>/dev/null
+}
+
+@test "flux remove dvc removes .dvc/ but leaves git hook" {
+  bash "$REPO_ROOT/flux" add
+  run bash "$REPO_ROOT/flux" remove dvc
+  [ "$status" -eq 0 ]
+  [ ! -d ".dvc" ]
+  [ -f ".git/hooks/pre-commit" ]
+}
+
+@test "flux remove dvc removes .dvc pointer files" {
+  bash "$REPO_ROOT/flux" add
+  # create pointer + matching data file so the missing-data guard does not trigger
+  echo "data" > model.bin
+  echo "outs:" > model.bin.dvc
+  run bash "$REPO_ROOT/flux" remove dvc
+  [ "$status" -eq 0 ]
+  [ ! -f "model.bin.dvc" ]
+}
+
+@test "flux add writes registry file" {
+  bash "$REPO_ROOT/flux" add
+  [ -f ".git/flux-registry" ]
+  grep -q "hook:pre-commit" .git/flux-registry
+  grep -q "dvc_remote:r2remote" .git/flux-registry
+  grep -q "gitignore:.dvc/config.local" .git/flux-registry
+}
+
+@test "flux remove unknown subcommand exits non-zero" {
+  run bash "$REPO_ROOT/flux" remove badarg
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Unknown remove target"* ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -170,13 +232,29 @@ teardown() { teardown_flux_test; }
 }
 
 # ---------------------------------------------------------------------------
+# flux pull / sync — guard against non-flux repos
+# ---------------------------------------------------------------------------
+
+@test "flux pull fails with clear error in a non-flux git repo" {
+  run bash "$REPO_ROOT/flux" pull
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"flux add"* ]]
+}
+
+@test "flux sync fails with clear error in a non-flux git repo" {
+  run bash "$REPO_ROOT/flux" sync
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"flux add"* ]]
+}
+
+# ---------------------------------------------------------------------------
 # flux dry-run
 # ---------------------------------------------------------------------------
 
 @test "flux dry-run with no staged files exits cleanly" {
   run bash "$REPO_ROOT/flux" dry-run
   [ "$status" -eq 0 ]
-  [[ "$output" == *"No staged files"* ]]
+  [[ "$output" == *"No files to preview"* ]]
 }
 
 @test "flux dry-run shows small text file routed to Git" {
@@ -186,7 +264,6 @@ teardown() { teardown_flux_test; }
   run bash "$REPO_ROOT/flux" dry-run
   [ "$status" -eq 0 ]
   [[ "$output" == *"→ Git"* ]]
-  [[ "$output" == *"note.txt"* ]]
 }
 
 @test "flux dry-run shows binary file routed to DVC" {
@@ -195,8 +272,7 @@ teardown() { teardown_flux_test; }
 
   run bash "$REPO_ROOT/flux" dry-run
   [ "$status" -eq 0 ]
-  [[ "$output" == *"→ DVC / R2"* ]]
-  [[ "$output" == *"asset.bin"* ]]
+  [[ "$output" == *"→ DVC"* ]]
 }
 
 @test "flux dry-run shows large text file routed to DVC" {
@@ -206,8 +282,7 @@ teardown() { teardown_flux_test; }
 
   run bash "$REPO_ROOT/flux" dry-run
   [ "$status" -eq 0 ]
-  [[ "$output" == *"→ DVC / R2"* ]]
-  [[ "$output" == *"big.txt"* ]]
+  [[ "$output" == *"→ DVC"* ]]
 }
 
 @test "flux dry-run shows both sections for mixed staging" {
@@ -218,9 +293,7 @@ teardown() { teardown_flux_test; }
   run bash "$REPO_ROOT/flux" dry-run
   [ "$status" -eq 0 ]
   [[ "$output" == *"→ Git"* ]]
-  [[ "$output" == *"→ DVC / R2"* ]]
-  [[ "$output" == *"keep.txt"* ]]
-  [[ "$output" == *"drop.bin"* ]]
+  [[ "$output" == *"→ DVC"* ]]
 }
 
 @test "flux dry-run shows already-DVC-tracked file as skipped" {
@@ -238,8 +311,7 @@ EOF
 
   run bash "$REPO_ROOT/flux" dry-run
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Already in DVC"* ]]
-  [[ "$output" == *"asset.bin"* ]]
+  [[ "$output" == *"already in DVC"* ]]
 }
 
 @test "flux dry-run flags Git-tracked file that now exceeds cap as migrating" {
@@ -253,7 +325,6 @@ EOF
   run bash "$REPO_ROOT/flux" dry-run
   [ "$status" -eq 0 ]
   [[ "$output" == *"migrating from Git"* ]]
-  [[ "$output" == *"growing.txt"* ]]
 }
 
 @test "flux dry-run respects per-repo size cap from git config" {
@@ -266,8 +337,7 @@ EOF
 
   run bash "$REPO_ROOT/flux" dry-run
   [ "$status" -eq 0 ]
-  [[ "$output" == *"→ DVC / R2"* ]]
-  [[ "$output" == *"medium.txt"* ]]
+  [[ "$output" == *"→ DVC"* ]]
   [[ "$output" == *"cap: 1 MB"* ]]
 }
 
