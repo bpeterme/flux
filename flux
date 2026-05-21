@@ -690,7 +690,7 @@ _flux_sync() {
 }
 
 _flux_sync_summary() {
-  local git_count=0 git_bytes=0 dvc_count=0 dvc_bytes=0
+  local git_count=0 git_bytes=0 dvc_count=0 dvc_bytes=0 skip_count=0
 
   local all_files
   all_files=$(git ls-files 2>/dev/null || true)
@@ -715,7 +715,7 @@ _flux_sync_summary() {
     dvc_count=$(( dvc_count + 1 ))
   done <<< "$dvc_pointers"
 
-  (( git_count == 0 && dvc_count == 0 )) && return 0
+  skip_count=$(git ls-files --others --ignored --exclude-standard --directory 2>/dev/null | wc -l | tr -d ' ')
 
   echo ""
   echo "  flux sync — repository contents"
@@ -723,10 +723,12 @@ _flux_sync_summary() {
 
   local count_digits=1 max_c
   max_c=$(( git_count > dvc_count ? git_count : dvc_count ))
+  max_c=$(( max_c > skip_count ? max_c : skip_count ))
   while (( max_c >= 10 )); do count_digits=$(( count_digits + 1 )); max_c=$(( max_c / 10 )); done
 
-  (( git_count > 0 )) && printf "  Git   %*d file(s)   %s\n" "$count_digits" "$git_count" "$(_flux_size_unit "$git_bytes")"
-  (( dvc_count > 0 )) && printf "  DVC   %*d file(s)   %s\n" "$count_digits" "$dvc_count" "$(_flux_size_unit "$dvc_bytes")"
+  printf "  Git   %*d file(s)   %s\n"       "$count_digits" "$git_count"  "$(_flux_size_unit "$git_bytes")"
+  printf "  DVC   %*d file(s)   %s\n"       "$count_digits" "$dvc_count"  "$(_flux_size_unit "$dvc_bytes")"
+  printf "  Skip  %*d file(s)   gitignored\n" "$count_digits" "$skip_count"
   echo ""
 }
 
