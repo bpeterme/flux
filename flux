@@ -140,6 +140,11 @@ _flux_is_configured() {
   [[ -n "$(_kc_get 'r2.secret-key')" ]]    || return 1
 }
 
+_flux_require_git_remote() {
+  git rev-parse --abbrev-ref --symbolic-full-name '@{u}' &>/dev/null \
+    || fail "No upstream branch configured. Run 'git push -u origin <branch>' first."
+}
+
 # ---------------------------------------------------------------------------
 # help
 # ---------------------------------------------------------------------------
@@ -441,6 +446,7 @@ _flux_remove() {
 _flux_pull() {
   git rev-parse --git-dir &>/dev/null \
     || fail "Not inside a Git repository."
+  _flux_require_git_remote
   _flux_is_configured \
     || fail "Not configured. Run 'flux config' to set up."
   local DVC; _flux_require_dvc
@@ -456,6 +462,7 @@ _flux_pull() {
 _flux_sync() {
   git rev-parse --git-dir &>/dev/null \
     || fail "Not inside a Git repository."
+  _flux_require_git_remote
   _flux_is_configured \
     || fail "Not configured. Run 'flux config' to set up."
   local DVC; _flux_require_dvc
