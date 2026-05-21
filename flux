@@ -123,14 +123,14 @@ Maintenance:
   flux doctor           Run environment diagnostics
   flux version          Show version
 
+Companion tools:
+  cbox                  claudebox — Claude Code container runtime
+  cdot                  claudedot — Config + history sync across machines
+
 Help:
   flux help
   flux --help
   flux -h
-
-Companion tools:
-  cbox                  claudebox — Claude Code container runtime
-  cdot                  claudedot — Config + history sync across machines
 EOF
 }
 
