@@ -410,6 +410,21 @@ _flux_remove() {
 }
 
 # ---------------------------------------------------------------------------
+# pull — download the latest (git pull + dvc pull)
+# ---------------------------------------------------------------------------
+
+_flux_pull() {
+  git rev-parse --git-dir &>/dev/null \
+    || fail "Not inside a Git repository."
+  _flux_is_configured \
+    || fail "Not configured. Run 'flux config' to set up."
+  local DVC; _flux_require_dvc
+
+  ok "Pulling from Git remote..."; git pull "$@"
+  ok "Pulling DVC data from R2..."; "$DVC" pull
+}
+
+# ---------------------------------------------------------------------------
 # sync — pull then push (git + dvc)
 # ---------------------------------------------------------------------------
 
@@ -657,7 +672,7 @@ flux() {
     _pull)             local DVC; _flux_require_dvc; git pull && "$DVC" pull ;;
     _push)             local DVC; _flux_require_dvc; "$DVC" push && git push ;;
     _doctor)           _flux_doctor_inline ;;
-    pull)              local DVC; _flux_require_dvc; git pull "$@" && "$DVC" pull ;;
+    pull)              _flux_pull "$@" ;;
     dry-run)           _flux_dry_run ;;
     config)            _flux_config ;;
     doctor)            _flux_doctor ;;
