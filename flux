@@ -345,8 +345,19 @@ _flux_add() {
 
   git add .dvc/config .gitignore 2>/dev/null || true
   if ! git diff --cached --quiet 2>/dev/null; then
-    git commit -m "chore: initialise DVC with Cloudflare R2 remote"
-    ok "Initial DVC config committed."
+    echo ""
+    warn "flux needs to commit the following files to your repository:"
+    git diff --cached --name-only | sed 's/^/    /'
+    echo ""
+    local confirm
+    read -rp "  Commit with message 'chore: initialise DVC with Cloudflare R2 remote'? [Y/n]: " confirm || true
+    if [[ "${confirm:-Y}" =~ ^[Yy]?$ ]]; then
+      git commit -m "chore: initialise DVC with Cloudflare R2 remote"
+      ok "Initial DVC config committed."
+    else
+      git restore --staged .dvc/config .gitignore 2>/dev/null || true
+      warn "Skipped commit — stage and commit .dvc/config and .gitignore manually before using flux."
+    fi
   else
     ok "Nothing new to commit."
   fi
