@@ -467,6 +467,10 @@ _flux_sync() {
     || fail "Not configured. Run 'flux config' to set up."
   local DVC; _flux_require_dvc
 
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    fail "You have uncommitted changes. Commit or stash them before syncing."
+  fi
+
   ok "Pulling from Git remote..."; git pull
   ok "Pulling DVC data from R2..."; "$DVC" pull
   ok "Pushing DVC data to R2...";  "$DVC" push
