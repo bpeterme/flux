@@ -476,6 +476,24 @@ _flux_doctor() {
   fi
 
   echo ""
+  echo "  [cbox]"
+  if command -v cbox >/dev/null 2>&1; then
+    cbox _doctor | sed 's/^/  /'
+  else
+    echo "  ℹ cbox not installed"
+    echo "    Install: brew tap bpeterme/claudebox && brew install claudebox"
+  fi
+
+  echo ""
+  echo "  [cdot]"
+  if command -v cdot >/dev/null 2>&1; then
+    cdot _doctor | sed 's/^/  /'
+  else
+    echo "  ℹ cdot not installed"
+    echo "    Install: brew tap bpeterme/claudebox && brew install claudedot"
+  fi
+
+  echo ""
   if [[ "$pass" == "true" ]]; then
     ok "All checks passed."
   else
