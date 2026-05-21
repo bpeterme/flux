@@ -159,7 +159,7 @@ Usage:
   flux remove           Stop syncing current project
   flux pull             Download the latest (git pull + dvc pull)
   flux dry-run          Preview how staged files would be routed
-  flux cap [N|--reset]        Show, reset or set per-project size cap to [N] (MB)
+  flux cap [N|--reset]  Show, reset or set per-project size cap to [N] (MB)
 
 Maintenance:
   flux config           Configure flux (set up or manage global settings)
