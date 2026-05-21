@@ -1037,6 +1037,8 @@ _flux_cap() {
 
   local arg="${1:-}"
 
+  [[ $# -gt 1 ]] && fail "Too many arguments. Usage: flux cap [N|--reset]"
+
   if [[ -z "$arg" ]]; then
     echo ""
     if [[ -n "$project_cap" ]]; then
