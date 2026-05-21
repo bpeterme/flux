@@ -158,7 +158,7 @@ Usage:
   flux add              Opt current project into sync
   flux remove           Stop syncing current project
   flux pull             Download the latest (git pull + dvc pull)
-  flux dry-run          Preview how staged files would be routed
+  flux dry-run          Preview routing (staged files, or all tracked if none staged)
   flux cap [N|--reset]  Show, reset or set per-project size cap to [N] (MB)
 
 Maintenance:
@@ -510,12 +510,19 @@ _flux_dry_run() {
   SIZE_CAP_MB=$(git config --get dvc-router.size-cap-mb 2>/dev/null || echo "5")
   SIZE_CAP_BYTES=$(( SIZE_CAP_MB * 1024 * 1024 ))
 
-  local staged_files
+  local staged_files scan_mode
   staged_files=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)
 
   if [[ -z "$staged_files" ]]; then
+    staged_files=$(git ls-files 2>/dev/null || true)
+    scan_mode="all tracked files"
+  else
+    scan_mode="staged files"
+  fi
+
+  if [[ -z "$staged_files" ]]; then
     echo ""
-    echo "  No staged files."
+    echo "  No files to preview."
     echo ""
     return 0
   fi
@@ -550,7 +557,7 @@ _flux_dry_run() {
   done <<< "$staged_files"
 
   echo ""
-  echo "  flux dry-run — routing preview (cap: ${SIZE_CAP_MB} MB)"
+  echo "  flux dry-run — routing preview (${scan_mode}, cap: ${SIZE_CAP_MB} MB)"
 
   if (( ${#git_files[@]} > 0 )); then
     echo ""

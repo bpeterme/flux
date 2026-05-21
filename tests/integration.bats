@@ -176,7 +176,7 @@ teardown() { teardown_flux_test; }
 @test "flux dry-run with no staged files exits cleanly" {
   run bash "$REPO_ROOT/flux" dry-run
   [ "$status" -eq 0 ]
-  [[ "$output" == *"No staged files"* ]]
+  [[ "$output" == *"No files to preview"* ]]
 }
 
 @test "flux dry-run shows small text file routed to Git" {
