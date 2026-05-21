@@ -678,7 +678,8 @@ _flux_sync() {
   local DVC; _flux_require_dvc
 
   if ! git diff --quiet || ! git diff --cached --quiet; then
-    fail "You have uncommitted changes. Commit or stash them before syncing."
+    git add -A
+    git commit -m "sync: $(date '+%Y-%m-%d %H:%M')"
   fi
 
   _flux_sync_summary
