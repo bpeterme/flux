@@ -24,6 +24,29 @@ _flux_require_macos() {
 }
 
 # ---------------------------------------------------------------------------
+# Locate DVC — checks all common Homebrew install locations before PATH
+# ---------------------------------------------------------------------------
+
+_flux_find_dvc() {
+  local candidates=(
+    "/opt/homebrew/bin/dvc"      # system Homebrew, Apple Silicon
+    "/usr/local/bin/dvc"         # system Homebrew, Intel
+    "${HOME}/.homebrew/bin/dvc"  # user-local Homebrew (common)
+    "${HOME}/homebrew/bin/dvc"   # user-local Homebrew (alternative)
+  )
+  for candidate in "${candidates[@]}"; do
+    [[ -x "$candidate" ]] && echo "$candidate" && return 0
+  done
+  command -v dvc &>/dev/null && command -v dvc && return 0
+  return 1
+}
+
+_flux_require_dvc() {
+  DVC=$(_flux_find_dvc) \
+    || fail 'dvc not found. Install: pip install "dvc[s3]"'
+}
+
+# ---------------------------------------------------------------------------
 # Keychain helpers
 # ---------------------------------------------------------------------------
 
@@ -255,7 +278,7 @@ _flux_add() {
   echo "  flux ${VERSION} — add"
   echo ""
 
-  command -v dvc >/dev/null || fail 'dvc is not installed. Run: pip install "dvc[s3]"'
+  local DVC; _flux_require_dvc
 
   _flux_is_configured \
     || fail "Not configured. Run 'flux config' to set up."
@@ -277,7 +300,7 @@ _flux_add() {
   ok "Git repository found."
 
   if [[ ! -d .dvc ]]; then
-    dvc init --quiet
+    "$DVC" init --quiet
     ok "DVC initialised."
   else
     ok "DVC already initialised."
@@ -294,16 +317,30 @@ _flux_add() {
   ok "R2 folder: ${FLUX_R2_FOLDER}"
 
   local R2_ENDPOINT="https://${account_id}.r2.cloudflarestorage.com"
-  dvc remote add    -f      r2remote "s3://${bucket}/${FLUX_R2_FOLDER}" --quiet
-  dvc remote modify         r2remote endpointurl "$R2_ENDPOINT"         --quiet
-  dvc remote modify         r2remote region      auto                   --quiet
-  dvc remote modify --local r2remote access_key_id     "$access_key_id" --quiet
-  dvc remote modify --local r2remote secret_access_key "$secret_key"    --quiet
+  "$DVC" remote add    -f      r2remote "s3://${bucket}/${FLUX_R2_FOLDER}" --quiet
+  "$DVC" remote modify         r2remote endpointurl "$R2_ENDPOINT"         --quiet
+  "$DVC" remote modify         r2remote region      auto                   --quiet
+  "$DVC" remote modify --local r2remote access_key_id     "$access_key_id" --quiet
+  "$DVC" remote modify --local r2remote secret_access_key "$secret_key"    --quiet
   ok "DVC remote: s3://${bucket}/${FLUX_R2_FOLDER}"
 
   git config dvc-router.size-threshold-mb "$threshold"
   git config dvc-router.verbose           "$verbose"
   git config flux.r2-folder              "$FLUX_R2_FOLDER"
+
+  touch .gitignore
+  for entry in ".dvc/config.local" ".dvc/tmp/" ".dvc/cache/"; do
+    grep -qF "$entry" .gitignore || echo "$entry" >> .gitignore
+  done
+  ok ".gitignore updated."
+
+  git add .dvc/config .gitignore 2>/dev/null || true
+  if ! git diff --cached --quiet 2>/dev/null; then
+    git commit -m "chore: initialise DVC with Cloudflare R2 remote"
+    ok "Initial DVC config committed."
+  else
+    ok "Nothing new to commit."
+  fi
 
   local HOOKS_DIR _script_dir HOOK_SOURCE
   HOOKS_DIR="$(git rev-parse --git-dir)/hooks"
@@ -314,20 +351,6 @@ _flux_add() {
   cp "$HOOK_SOURCE" "${HOOKS_DIR}/pre-commit"
   chmod +x "${HOOKS_DIR}/pre-commit"
   ok "Pre-commit hook installed."
-
-  touch .gitignore
-  for entry in ".dvc/config.local" ".dvc/tmp/" ".dvc/cache/"; do
-    grep -qF "$entry" .gitignore || echo "$entry" >> .gitignore
-  done
-  ok ".gitignore updated."
-
-  git add .dvc/config .gitignore 2>/dev/null || true
-  if ! git diff --cached --quiet 2>/dev/null; then
-    git commit -m "chore: initialise DVC with Cloudflare R2 remote" --no-verify
-    ok "Initial DVC config committed."
-  else
-    ok "Nothing new to commit."
-  fi
 
   echo ""
   echo "  flux added. Your workflow:"
@@ -349,8 +372,13 @@ _flux_remove() {
   HOOKS_DIR="$(git rev-parse --git-dir)/hooks"
 
   if [[ -f "${HOOKS_DIR}/pre-commit" ]]; then
-    rm "${HOOKS_DIR}/pre-commit"
-    ok "Pre-commit hook removed."
+    if grep -q 'dvc-router\|flux' "${HOOKS_DIR}/pre-commit" 2>/dev/null; then
+      rm "${HOOKS_DIR}/pre-commit"
+      ok "Pre-commit hook removed."
+    else
+      warn "Pre-commit hook exists but does not appear to belong to flux — not removed."
+      warn "  Inspect and remove manually: ${HOOKS_DIR}/pre-commit"
+    fi
   else
     warn "No pre-commit hook found."
   fi
@@ -377,7 +405,16 @@ _flux_remove() {
 # ---------------------------------------------------------------------------
 
 _flux_sync() {
-  git pull && dvc pull && dvc push && git push
+  git rev-parse --git-dir &>/dev/null \
+    || fail "Not inside a Git repository."
+  _flux_is_configured \
+    || fail "Not configured. Run 'flux config' to set up."
+  local DVC; _flux_require_dvc
+
+  ok "Pulling from Git remote..."; git pull
+  ok "Pulling DVC data from R2..."; "$DVC" pull
+  ok "Pushing DVC data to R2...";  "$DVC" push
+  ok "Pushing to Git remote...";   git push
 }
 
 # ---------------------------------------------------------------------------
@@ -447,10 +484,11 @@ _flux_doctor() {
   fi
 
   # DVC
-  if command -v dvc >/dev/null; then
+  local dvc_path
+  if dvc_path=$(_flux_find_dvc 2>/dev/null); then
     local dvc_ver
-    dvc_ver=$(dvc version 2>/dev/null | head -1 || true)
-    ok "DVC: ${dvc_ver:-found}"
+    dvc_ver=$("$dvc_path" version 2>/dev/null | head -1 || true)
+    ok "DVC: ${dvc_ver:-found} ($dvc_path)"
   else
     warn "DVC not found — run: pip install \"dvc[s3]\""
     pass=false
@@ -486,7 +524,7 @@ _flux_doctor() {
     cbox _doctor | sed 's/^/  /'
   else
     echo "  ℹ cbox not installed"
-    echo "    Install: brew tap bpeterme/claudebox && brew install claudebox"
+    echo "    Install: brew tap bpeterme/claudebox && brew install bpeterme/claudebox/claudebox"
   fi
 
   echo ""
@@ -495,7 +533,7 @@ _flux_doctor() {
     cdot _doctor | sed 's/^/  /'
   else
     echo "  ℹ cdot not installed"
-    echo "    Install: brew tap bpeterme/claudebox && brew install claudedot"
+    echo "    Install: brew tap bpeterme/claudedot && brew install bpeterme/claudedot/claudedot"
   fi
 
   echo ""
@@ -520,10 +558,10 @@ flux() {
     remove)            _flux_remove ;;
     sync|"")           _flux_sync ;;
     _api-version)      echo "1" ;;
-    _pull)             git pull && dvc pull ;;
-    _push)             dvc push && git push ;;
+    _pull)             local DVC; _flux_require_dvc; git pull && "$DVC" pull ;;
+    _push)             local DVC; _flux_require_dvc; "$DVC" push && git push ;;
     _doctor)           _flux_doctor_inline ;;
-    pull)              git pull "$@" && dvc pull ;;
+    pull)              local DVC; _flux_require_dvc; git pull "$@" && "$DVC" pull ;;
     config)            _flux_config ;;
     doctor)            _flux_doctor ;;
     version)           echo "flux ${VERSION}" ;;
