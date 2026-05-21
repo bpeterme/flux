@@ -59,10 +59,34 @@ and a Git remote configured on each repo you want to manage.
 flux config
 ```
 
-Prompts for your R2 bucket, account ID, access key, and secret key. Non-sensitive
-values are saved to `~/.config/flux/flux.env`; credentials go directly into macOS
-Keychain. On subsequent runs `flux config` shows current settings and lets you
-update or remove them.
+Walks through three sections:
+
+- **DVC remotes** — one or more Cloudflare R2 accounts (bucket + account ID + credentials).
+  Add as many as you need (personal, work, client, …).
+- **Routing** — global size cap and verbose flag.
+- **Git accounts** — one or more hosting accounts (`ssh:github.com:yourname`,
+  `https:gitlab.com:workaccount`, …). Used to propose git remote URLs during `flux add`.
+
+Non-sensitive values are saved to `~/.config/flux/flux.env` as bash arrays.
+Credentials go directly into macOS Keychain, keyed per bucket.
+
+On subsequent runs `flux config` shows a live summary and opens sub-menus to add,
+edit, or remove individual DVC remotes and git accounts.
+
+`flux.env` format:
+
+```bash
+FLUX_DVC_REMOTES=(
+  "mybucket:abc123accountid"
+  "workbucket:def456accountid"
+)
+FLUX_SIZE_CAP_MB=5
+FLUX_VERBOSE=false
+FLUX_GIT_ACCOUNTS=(
+  "ssh:github.com:yourname"
+  "https:gitlab.com:workaccount"
+)
+```
 
 ### One-time per repo
 
@@ -71,15 +95,23 @@ cd your-project
 flux add
 ```
 
-Initialises DVC, configures the R2 remote, and installs the pre-commit hook.
+Initialises DVC, configures the R2 remote, installs the pre-commit hook, and sets
+up the git remote.
+
+- If you have multiple DVC remotes configured, `flux add` prompts you to pick one.
+- The R2 folder name defaults to the current directory name (sanitized).
+- If no `origin` remote exists, `flux add` proposes a URL from your configured git
+  accounts (pre-filled with the repo name) and runs `git remote add origin` on
+  confirmation.
 
 Config is split by sensitivity:
 
 | Setting | Storage |
 |---|---|
-| R2 bucket, account ID | `~/.config/flux/flux.env` |
-| Access key ID, secret key | macOS Keychain |
-| R2 folder, threshold, verbose | per-repo `git config` |
+| DVC remotes (bucket, account ID) | `~/.config/flux/flux.env` |
+| Git accounts | `~/.config/flux/flux.env` |
+| DVC credentials (access key, secret) | macOS Keychain (per bucket) |
+| R2 folder, DVC remote bucket, threshold, verbose | per-repo `git config` |
 
 ## Daily workflow
 
