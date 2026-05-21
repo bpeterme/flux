@@ -9,7 +9,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # setup_test_repo
 #
 # Creates an isolated git repo in a temp directory with:
-#   - git configured (user, branch name, size threshold)
+#   - git configured (user, branch name, size cap)
 #   - mock DVC installed where find_dvc() will find it
 #   - HOME overridden so find_dvc's hardcoded candidate paths resolve to mock
 #   - setup.sh containing VERSION="0.0.0" (needed by bump_version)
@@ -37,7 +37,7 @@ setup_test_repo() {
   git init -q
   git config user.email "test@example.com"
   git config user.name "Test"
-  git config dvc-router.size-threshold-mb 1
+  git config dvc-router.size-cap-mb 1
   git config dvc-router.verbose false
 
   # Ensure we are on 'main' regardless of git's defaultBranch setting.
@@ -70,7 +70,7 @@ teardown_test_repo() {
 # Creates a plain-text file just over 1 MB (default) with no null bytes.
 make_large_text_file() {
   local file="$1"
-  local size="${2:-1048577}"   # 1 MB + 1 byte — above the 1 MB test threshold
+  local size="${2:-1048577}"   # 1 MB + 1 byte — above the 1 MB test cap
   printf '%*s' "$size" '' | tr ' ' 'a' > "$file"
 }
 
@@ -163,7 +163,7 @@ PYEOF
   cat > "$MOCK_HOME/.config/flux/flux.env" << 'EOF'
 FLUX_R2_BUCKET="test-bucket"
 FLUX_R2_ACCOUNT_ID="test-account-id"
-FLUX_SIZE_THRESHOLD_MB=5
+FLUX_SIZE_CAP_MB=5
 FLUX_VERBOSE=false
 EOF
 

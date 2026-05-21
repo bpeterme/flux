@@ -24,6 +24,37 @@ _flux_require_macos() {
 }
 
 # ---------------------------------------------------------------------------
+# Locate DVC — checks all common Homebrew install locations before PATH
+# ---------------------------------------------------------------------------
+
+_flux_find_dvc() {
+  local candidates=(
+    "/opt/homebrew/bin/dvc"      # system Homebrew, Apple Silicon
+    "/usr/local/bin/dvc"         # system Homebrew, Intel
+    "${HOME}/.homebrew/bin/dvc"  # user-local Homebrew (common)
+    "${HOME}/homebrew/bin/dvc"   # user-local Homebrew (alternative)
+  )
+  for candidate in "${candidates[@]}"; do
+    [[ -x "$candidate" ]] && echo "$candidate" && return 0
+  done
+  command -v dvc &>/dev/null && command -v dvc && return 0
+  return 1
+}
+
+_flux_require_dvc() {
+  DVC=$(_flux_find_dvc) \
+    || fail 'dvc not found. Install: pip install "dvc[s3]"  or  uv tool install "dvc[s3]"'
+}
+
+_flux_format_size() {
+  local bytes=$1
+  if   (( bytes >= 1024*1024 )); then printf '%d MB' $(( bytes / 1024 / 1024 ))
+  elif (( bytes >= 1024 ));      then printf '%d KB' $(( bytes / 1024 ))
+  else                                printf '%d B'  "$bytes"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Keychain helpers
 # ---------------------------------------------------------------------------
 
@@ -46,9 +77,11 @@ _kc_del() {
 # ---------------------------------------------------------------------------
 
 _flux_write_config() {
-  local bucket="$1" account_id="$2" threshold="$3" verbose="$4"
+  local bucket="$1" account_id="$2" cap="$3" verbose="$4"
   mkdir -p "$(dirname "$FLUX_CONFIG")"
-  cat > "$FLUX_CONFIG" << EOF
+  local tmp
+  tmp=$(mktemp)
+  cat > "$tmp" << EOF
 # flux configuration — managed by 'flux config'.
 
 # ── cloudflare R2 ─────────────────────────────────────────────────────────────
@@ -56,10 +89,13 @@ FLUX_R2_BUCKET="${bucket}"
 FLUX_R2_ACCOUNT_ID="${account_id}"
 
 # ── routing ───────────────────────────────────────────────────────────────────
-FLUX_SIZE_THRESHOLD_MB=${threshold}
+FLUX_SIZE_CAP_MB=${cap}
 FLUX_VERBOSE=${verbose}
 EOF
-  chmod 600 "$FLUX_CONFIG"
+  chmod 600 "$tmp"
+  # cp follows symlinks — writes to the real file, preserving any symlink at $FLUX_CONFIG
+  cp "$tmp" "$FLUX_CONFIG"
+  rm -f "$tmp"
 }
 
 # ---------------------------------------------------------------------------
@@ -104,6 +140,11 @@ _flux_is_configured() {
   [[ -n "$(_kc_get 'r2.secret-key')" ]]    || return 1
 }
 
+_flux_require_git_remote() {
+  git rev-parse --abbrev-ref --symbolic-full-name '@{u}' &>/dev/null \
+    || fail "No upstream branch configured. Run 'git push -u origin <branch>' first."
+}
+
 # ---------------------------------------------------------------------------
 # help
 # ---------------------------------------------------------------------------
@@ -112,25 +153,27 @@ _flux_help() {
   cat <<'EOF'
 flux - Git + DVC auto-router for Cloudflare R2
 
-Sync (Project Folder):
+Usage:
+  flux                  Sync both ways (pull then push)
   flux add              Opt current project into sync
   flux remove           Stop syncing current project
   flux pull             Download the latest (git pull + dvc pull)
-  flux sync             Sync both ways (pull then push)
+  flux dry-run          Preview how staged files would be routed
+  flux cap [N|--reset]  Show, reset or set per-project size cap to [N] (MB)
 
 Maintenance:
   flux config           Configure flux (set up or manage global settings)
   flux doctor           Run environment diagnostics
   flux version          Show version
 
+Companion tools:
+  cbox                  claudebox — Claude Code container runtime
+  cdot                  claudedot — Config + history sync across machines
+
 Help:
   flux help
   flux --help
   flux -h
-
-Companion tools:
-  claudebox             Claude Code container runtime
-  claudedot             Config + history sync across machines
 EOF
 }
 
@@ -142,13 +185,13 @@ _flux_config() {
   _flux_require_macos
 
   # Always pre-load whatever partial config exists before deciding which branch.
-  local bucket="" account_id="" threshold="5" verbose="false"
+  local bucket="" account_id="" cap="5" verbose="false"
   if [[ -f "$FLUX_CONFIG" ]]; then
     # shellcheck source=/dev/null
     source "$FLUX_CONFIG" 2>/dev/null || true
     bucket="${FLUX_R2_BUCKET:-}"
     account_id="${FLUX_R2_ACCOUNT_ID:-}"
-    threshold="${FLUX_SIZE_THRESHOLD_MB:-5}"
+    cap="${FLUX_SIZE_CAP_MB:-5}"
     verbose="${FLUX_VERBOSE:-false}"
   fi
   local access_key_id secret_key
@@ -170,7 +213,7 @@ _flux_config() {
     _flux_prompt_value "Account ID"        "$account_id"    false; account_id="$FLUX_VALUE"
     _flux_prompt_value "Access Key ID"     "$access_key_id" false; access_key_id="$FLUX_VALUE"
     _flux_prompt_value "Secret Key"        "$secret_key"    true;  secret_key="$FLUX_VALUE"
-    _flux_prompt_value "Size threshold MB" "$threshold"     false; threshold="$FLUX_VALUE"
+    _flux_prompt_value "Size cap MB"        "$cap"           false; cap="$FLUX_VALUE"
     _flux_prompt_value "Verbose"           "$verbose"       false; verbose="$FLUX_VALUE"
 
     echo ""
@@ -179,7 +222,7 @@ _flux_config() {
     [[ -n "$access_key_id" ]] || fail "R2 access key ID is required."
     [[ -n "$secret_key" ]]    || fail "R2 secret key is required."
 
-    _flux_write_config "$bucket" "$account_id" "$threshold" "$verbose"
+    _flux_write_config "$bucket" "$account_id" "$cap" "$verbose"
     ok "Config saved: $FLUX_CONFIG"
 
     _kc_set "r2.access-key-id" "$access_key_id"
@@ -197,7 +240,7 @@ _flux_config() {
     printf "  %-22s %s\n" "Account ID:"     "$account_id"
     printf "  %-22s %s\n" "Access Key ID:"  "$access_key_id"
     printf "  %-22s %s\n" "Secret Key:"     "****  (Keychain)"
-    printf "  %-22s %s\n" "Size Threshold:" "${threshold} MB"
+    printf "  %-22s %s\n" "Size Cap:"       "${cap} MB"
     printf "  %-22s %s\n" "Verbose:"        "$verbose"
     echo ""
 
@@ -211,10 +254,10 @@ _flux_config() {
         _flux_prompt_value "Account ID"        "$account_id"    false; account_id="$FLUX_VALUE"
         _flux_prompt_value "Access Key ID"     "$access_key_id" false; access_key_id="$FLUX_VALUE"
         _flux_prompt_value "Secret Key"        "$secret_key"    true;  secret_key="$FLUX_VALUE"
-        _flux_prompt_value "Size threshold MB" "$threshold"     false; threshold="$FLUX_VALUE"
+        _flux_prompt_value "Size cap MB"        "$cap"           false; cap="$FLUX_VALUE"
         _flux_prompt_value "Verbose"           "$verbose"       false; verbose="$FLUX_VALUE"
         echo ""
-        _flux_write_config "$bucket" "$account_id" "$threshold" "$verbose"
+        _flux_write_config "$bucket" "$account_id" "$cap" "$verbose"
         ok "Config saved: $FLUX_CONFIG"
         _kc_set "r2.access-key-id" "$access_key_id"
         _kc_set "r2.secret-key"    "$secret_key"
@@ -250,7 +293,7 @@ _flux_add() {
   echo "  flux ${VERSION} — add"
   echo ""
 
-  command -v dvc >/dev/null || fail 'dvc is not installed. Run: pip install "dvc[s3]"'
+  local DVC; _flux_require_dvc
 
   _flux_is_configured \
     || fail "Not configured. Run 'flux config' to set up."
@@ -258,7 +301,7 @@ _flux_add() {
   # Values available after _flux_is_configured sourced flux.env
   local bucket="${FLUX_R2_BUCKET:-}"
   local account_id="${FLUX_R2_ACCOUNT_ID:-}"
-  local threshold="${FLUX_SIZE_THRESHOLD_MB:-5}"
+  local cap="${FLUX_SIZE_CAP_MB:-5}"
   local verbose="${FLUX_VERBOSE:-false}"
   local access_key_id secret_key
   access_key_id=$(_kc_get "r2.access-key-id")
@@ -272,7 +315,7 @@ _flux_add() {
   ok "Git repository found."
 
   if [[ ! -d .dvc ]]; then
-    dvc init --quiet
+    "$DVC" init --quiet
     ok "DVC initialised."
   else
     ok "DVC already initialised."
@@ -281,34 +324,37 @@ _flux_add() {
   local FLUX_R2_FOLDER
   FLUX_R2_FOLDER=$(git config --get flux.r2-folder 2>/dev/null || true)
   if [[ -z "$FLUX_R2_FOLDER" ]]; then
-    FLUX_R2_FOLDER=$(git remote get-url origin 2>/dev/null \
-      | sed 's/\.git$//' | sed 's/.*\///' || true)
+    local derived
+    derived=$(git remote get-url origin 2>/dev/null \
+      | sed 's/\.git$//' | sed 's/.*\///' \
+      | tr -cd '[:alnum:]._-' || true)
+    local override
+    read -rp "  R2 folder${derived:+ [${derived}]}: " override || true
+    FLUX_R2_FOLDER="${override:-$derived}"
   fi
   [[ -n "$FLUX_R2_FOLDER" ]] \
     || fail "Cannot derive R2 folder — run: git config flux.r2-folder <name>"
   ok "R2 folder: ${FLUX_R2_FOLDER}"
 
   local R2_ENDPOINT="https://${account_id}.r2.cloudflarestorage.com"
-  dvc remote add    -f      r2remote "s3://${bucket}/${FLUX_R2_FOLDER}" --quiet
-  dvc remote modify         r2remote endpointurl "$R2_ENDPOINT"         --quiet
-  dvc remote modify         r2remote region      auto                   --quiet
-  dvc remote modify --local r2remote access_key_id     "$access_key_id" --quiet
-  dvc remote modify --local r2remote secret_access_key "$secret_key"    --quiet
-  ok "DVC remote: s3://${bucket}/${FLUX_R2_FOLDER}"
+  local remote_verb="added"
+  grep -q 'r2remote' .dvc/config 2>/dev/null && remote_verb="updated"
+  "$DVC" remote add    -f      r2remote "s3://${bucket}/${FLUX_R2_FOLDER}" --quiet
+  "$DVC" remote modify         r2remote endpointurl "$R2_ENDPOINT"         --quiet
+  "$DVC" remote modify         r2remote region      auto                   --quiet
+  "$DVC" remote modify --local r2remote access_key_id     "$access_key_id" --quiet
+  "$DVC" remote modify --local r2remote secret_access_key "$secret_key"    --quiet
+  ok "DVC remote ${remote_verb}: s3://${bucket}/${FLUX_R2_FOLDER}"
 
-  git config dvc-router.size-threshold-mb "$threshold"
+  local existing_project_cap
+  existing_project_cap=$(git config --get dvc-router.size-cap-mb 2>/dev/null || true)
+  if [[ -z "$existing_project_cap" ]]; then
+    git config dvc-router.size-cap-mb "$cap"
+  else
+    cap="$existing_project_cap"
+  fi
   git config dvc-router.verbose           "$verbose"
   git config flux.r2-folder              "$FLUX_R2_FOLDER"
-
-  local HOOKS_DIR _script_dir HOOK_SOURCE
-  HOOKS_DIR="$(git rev-parse --git-dir)/hooks"
-  _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  HOOK_SOURCE="${_script_dir}/../share/flux/pre-commit"
-  [[ -f "$HOOK_SOURCE" ]] || HOOK_SOURCE="${_script_dir}/pre-commit"
-  [[ -f "$HOOK_SOURCE" ]] || fail "pre-commit hook not found (expected at $HOOK_SOURCE)."
-  cp "$HOOK_SOURCE" "${HOOKS_DIR}/pre-commit"
-  chmod +x "${HOOKS_DIR}/pre-commit"
-  ok "Pre-commit hook installed."
 
   touch .gitignore
   for entry in ".dvc/config.local" ".dvc/tmp/" ".dvc/cache/"; do
@@ -318,17 +364,51 @@ _flux_add() {
 
   git add .dvc/config .gitignore 2>/dev/null || true
   if ! git diff --cached --quiet 2>/dev/null; then
-    git commit -m "chore: initialise DVC with Cloudflare R2 remote" --no-verify
-    ok "Initial DVC config committed."
+    echo ""
+    warn "flux needs to commit the following files to your repository:"
+    git diff --cached --name-only | sed 's/^/    /'
+    echo ""
+    local confirm
+    read -rp "  Commit with message 'chore: initialise DVC with Cloudflare R2 remote'? [Y/n]: " confirm || true
+    if [[ "${confirm:-Y}" =~ ^[Yy]?$ ]]; then
+      git commit -m "chore: initialise DVC with Cloudflare R2 remote"
+      ok "Initial DVC config committed."
+    else
+      git restore --staged .dvc/config .gitignore 2>/dev/null || true
+      warn "Skipped commit — stage and commit .dvc/config and .gitignore manually before using flux."
+    fi
   else
     ok "Nothing new to commit."
+  fi
+
+  local HOOKS_DIR _script_dir HOOK_SOURCE
+  HOOKS_DIR="$(git rev-parse --git-dir)/hooks"
+  _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  HOOK_SOURCE="${_script_dir}/../share/flux/pre-commit"
+  [[ -f "$HOOK_SOURCE" ]] || HOOK_SOURCE="${_script_dir}/pre-commit"
+  [[ -f "$HOOK_SOURCE" ]] || fail "pre-commit hook not found (expected at $HOOK_SOURCE)."
+
+  if [[ -f "${HOOKS_DIR}/pre-commit" ]]; then
+    if grep -q 'dvc-router\|flux' "${HOOKS_DIR}/pre-commit" 2>/dev/null; then
+      cp "$HOOK_SOURCE" "${HOOKS_DIR}/pre-commit"
+      chmod +x "${HOOKS_DIR}/pre-commit"
+      ok "Pre-commit hook updated."
+    else
+      warn "A pre-commit hook already exists and does not belong to flux."
+      warn "  Inspect: ${HOOKS_DIR}/pre-commit"
+      fail "Aborting — remove or merge the existing hook manually, then re-run 'flux add'."
+    fi
+  else
+    cp "$HOOK_SOURCE" "${HOOKS_DIR}/pre-commit"
+    chmod +x "${HOOKS_DIR}/pre-commit"
+    ok "Pre-commit hook installed."
   fi
 
   echo ""
   echo "  flux added. Your workflow:"
   echo ""
   echo "    git commit -m 'your message'   # hook routes files automatically"
-  echo "    flux sync                       # sync everything"
+  echo "    flux                            # sync everything"
   echo "    flux pull                       # download the latest"
   echo ""
 }
@@ -339,13 +419,19 @@ _flux_add() {
 
 _flux_remove() {
   git rev-parse --git-dir &>/dev/null || fail "Not inside a Git repository."
+  local DVC; _flux_require_dvc
 
   local HOOKS_DIR
   HOOKS_DIR="$(git rev-parse --git-dir)/hooks"
 
   if [[ -f "${HOOKS_DIR}/pre-commit" ]]; then
-    rm "${HOOKS_DIR}/pre-commit"
-    ok "Pre-commit hook removed."
+    if grep -q 'dvc-router\|flux' "${HOOKS_DIR}/pre-commit" 2>/dev/null; then
+      rm "${HOOKS_DIR}/pre-commit"
+      ok "Pre-commit hook removed."
+    else
+      warn "Pre-commit hook exists but does not appear to belong to flux — not removed."
+      warn "  Inspect and remove manually: ${HOOKS_DIR}/pre-commit"
+    fi
   else
     warn "No pre-commit hook found."
   fi
@@ -355,10 +441,10 @@ _flux_remove() {
     ok ".dvc/config.local removed."
   fi
 
-  dvc remote remove r2remote 2>/dev/null && ok "DVC remote removed." || true
+  "$DVC" remote remove r2remote 2>/dev/null && ok "DVC remote removed." || true
 
   git config --unset flux.r2-folder               2>/dev/null || true
-  git config --unset dvc-router.size-threshold-mb  2>/dev/null || true
+  git config --unset dvc-router.size-cap-mb  2>/dev/null || true
   git config --unset dvc-router.verbose            2>/dev/null || true
 
   echo ""
@@ -368,11 +454,189 @@ _flux_remove() {
 }
 
 # ---------------------------------------------------------------------------
+# pull — download the latest (git pull + dvc pull)
+# ---------------------------------------------------------------------------
+
+_flux_pull() {
+  git rev-parse --git-dir &>/dev/null \
+    || fail "Not inside a Git repository."
+  _flux_require_git_remote
+  _flux_is_configured \
+    || fail "Not configured. Run 'flux config' to set up."
+  local DVC; _flux_require_dvc
+
+  ok "Pulling from Git remote..."; git pull "$@"
+  ok "Pulling DVC data from R2..."; "$DVC" pull
+}
+
+# ---------------------------------------------------------------------------
 # sync — pull then push (git + dvc)
 # ---------------------------------------------------------------------------
 
 _flux_sync() {
-  git pull && dvc pull && git push && dvc push
+  git rev-parse --git-dir &>/dev/null \
+    || fail "Not inside a Git repository."
+  _flux_require_git_remote
+  _flux_is_configured \
+    || fail "Not configured. Run 'flux config' to set up."
+  local DVC; _flux_require_dvc
+
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    fail "You have uncommitted changes. Commit or stash them before syncing."
+  fi
+
+  ok "Pulling from Git remote..."; git pull
+  ok "Pulling DVC data from R2..."; "$DVC" pull
+  ok "Pushing to Git remote...";   git push
+  ok "Pushing DVC data to R2...";  "$DVC" push
+}
+
+# ---------------------------------------------------------------------------
+# dry-run — preview staged file routing without executing any changes
+# ---------------------------------------------------------------------------
+
+_flux_dry_run() {
+  git rev-parse --git-dir &>/dev/null \
+    || fail "Not inside a Git repository."
+
+  local SIZE_CAP_MB SIZE_CAP_BYTES
+  SIZE_CAP_MB=$(git config --get dvc-router.size-cap-mb 2>/dev/null || echo "5")
+  SIZE_CAP_BYTES=$(( SIZE_CAP_MB * 1024 * 1024 ))
+
+  local staged_files
+  staged_files=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)
+
+  if [[ -z "$staged_files" ]]; then
+    echo ""
+    echo "  No staged files."
+    echo ""
+    return 0
+  fi
+
+  local git_files=() git_bytes=0
+  local dvc_files=() dvc_bytes=0 dvc_migrating=()
+  local skip_files=()
+
+  while IFS= read -r file; do
+    [[ ! -f "$file" ]] && continue
+
+    if [[ -f "${file}.dvc" ]]; then
+      skip_files+=("$file")
+      continue
+    fi
+
+    local is_binary=false
+    grep -qI . "$file" 2>/dev/null || is_binary=true
+    local file_size
+    file_size=$(wc -c < "$file" | tr -d ' ')
+
+    if [[ "$is_binary" == "true" ]] || (( file_size > SIZE_CAP_BYTES )); then
+      dvc_files+=("$file")
+      dvc_bytes=$(( dvc_bytes + file_size ))
+      if git ls-files --error-unmatch "$file" &>/dev/null 2>&1; then
+        dvc_migrating+=("$file")
+      fi
+    else
+      git_files+=("$file")
+      git_bytes=$(( git_bytes + file_size ))
+    fi
+  done <<< "$staged_files"
+
+  echo ""
+  echo "  flux dry-run — routing preview (cap: ${SIZE_CAP_MB} MB)"
+
+  if (( ${#git_files[@]} > 0 )); then
+    echo ""
+    printf "  → Git  (%d file(s), %s)\n" "${#git_files[@]}" "$(_flux_format_size "$git_bytes")"
+    for f in "${git_files[@]}"; do
+      local sz; sz=$(wc -c < "$f" | tr -d ' ')
+      printf "    ·  %-42s %s\n" "$f" "$(_flux_format_size "$sz")"
+    done
+  fi
+
+  if (( ${#dvc_files[@]} > 0 )); then
+    echo ""
+    printf "  → DVC / R2  (%d file(s), %s)\n" "${#dvc_files[@]}" "$(_flux_format_size "$dvc_bytes")"
+    for f in "${dvc_files[@]}"; do
+      local sz; sz=$(wc -c < "$f" | tr -d ' ')
+      local note=""
+      for m in "${dvc_migrating[@]+"${dvc_migrating[@]}"}"; do
+        [[ "$m" == "$f" ]] && note="   [migrating from Git]" && break
+      done
+      printf "    ✦  %-42s %s%s\n" "$f" "$(_flux_format_size "$sz")" "$note"
+    done
+  fi
+
+  if (( ${#skip_files[@]} > 0 )); then
+    echo ""
+    printf "  ↷  Already in DVC  (%d file(s), skipped)\n" "${#skip_files[@]}"
+    for f in "${skip_files[@]}"; do
+      printf "    ·  %s\n" "$f"
+    done
+  fi
+
+  echo ""
+}
+
+# ---------------------------------------------------------------------------
+# cap — show or set the per-project file size cap
+# ---------------------------------------------------------------------------
+
+_flux_cap() {
+  git rev-parse --git-dir &>/dev/null \
+    || fail "Not inside a Git repository."
+
+  _flux_is_configured \
+    || fail "Not configured. Run 'flux config' to set up."
+
+  local global_cap="${FLUX_SIZE_CAP_MB:-5}"
+  local project_cap
+  project_cap=$(git config --get dvc-router.size-cap-mb 2>/dev/null || true)
+
+  local arg="${1:-}"
+
+  if [[ -z "$arg" ]]; then
+    echo ""
+    if [[ -n "$project_cap" ]]; then
+      printf "  %-18s %s MB\n"       "Global default:" "$global_cap"
+      printf "  %-18s %s MB  ← active\n" "Per-project:" "$project_cap"
+    else
+      printf "  %-18s %s MB  ← active\n" "Global default:" "$global_cap"
+      printf "  %-18s %s\n"          "Per-project:" "(not set)"
+    fi
+    echo ""
+    return 0
+  fi
+
+  if [[ "$arg" == "--reset" ]]; then
+    git config --unset dvc-router.size-cap-mb 2>/dev/null || true
+    ok "Per-project cap removed — global default (${global_cap} MB) is now active."
+    return 0
+  fi
+
+  if ! [[ "$arg" =~ ^[1-9][0-9]*$ ]]; then
+    fail "Invalid value '${arg}' — provide a positive integer (MB), e.g.: flux cap 20"
+  fi
+
+  git config dvc-router.size-cap-mb "$arg"
+  ok "Per-project cap set to ${arg} MB."
+  if [[ ! -d ".dvc" ]]; then
+    ok "Will take effect when 'flux add' initialises this project."
+  else
+    ok "Takes effect on the next commit."
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# _flux_doctor_inline — single-line status for embedding in other tools
+# ---------------------------------------------------------------------------
+
+_flux_doctor_inline() {
+  if _flux_is_configured 2>/dev/null; then
+    echo "✔ flux configured (bucket: ${FLUX_R2_BUCKET})"
+  else
+    echo "✘ flux not configured — run: flux config"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -430,12 +694,13 @@ _flux_doctor() {
   fi
 
   # DVC
-  if command -v dvc >/dev/null; then
+  local dvc_path
+  if dvc_path=$(_flux_find_dvc 2>/dev/null); then
     local dvc_ver
-    dvc_ver=$(dvc version 2>/dev/null | head -1 || true)
-    ok "DVC: ${dvc_ver:-found}"
+    dvc_ver=$("$dvc_path" version 2>/dev/null | head -1 || true)
+    ok "DVC: ${dvc_ver:-found} ($dvc_path)"
   else
-    warn "DVC not found — run: pip install \"dvc[s3]\""
+    warn "DVC not found — run: pip install \"dvc[s3]\"  or  uv tool install \"dvc[s3]\""
     pass=false
   fi
 
@@ -464,6 +729,24 @@ _flux_doctor() {
   fi
 
   echo ""
+  echo "  [cbox]"
+  if command -v cbox >/dev/null 2>&1; then
+    cbox _doctor | sed 's/^/  /'
+  else
+    echo "  ℹ cbox not installed"
+    echo "    Install: brew tap bpeterme/claudebox && brew install bpeterme/claudebox/claudebox"
+  fi
+
+  echo ""
+  echo "  [cdot]"
+  if command -v cdot >/dev/null 2>&1; then
+    cdot _doctor | sed 's/^/  /'
+  else
+    echo "  ℹ cdot not installed"
+    echo "    Install: brew tap bpeterme/claudedot && brew install bpeterme/claudedot/claudedot"
+  fi
+
+  echo ""
   if [[ "$pass" == "true" ]]; then
     ok "All checks passed."
   else
@@ -483,26 +766,34 @@ flux() {
   case "$cmd" in
     add)               _flux_add ;;
     remove)            _flux_remove ;;
-    sync)              _flux_sync ;;
-    pull)              git pull "$@" && dvc pull ;;
+    sync|"")           _flux_sync ;;
+    _api-version)      echo "1" ;;
+    _pull)             local DVC; _flux_require_dvc; git pull && "$DVC" pull ;;
+    _push)             local DVC; _flux_require_dvc; "$DVC" push && git push ;;
+    _doctor)           _flux_doctor_inline ;;
+    pull)              _flux_pull "$@" ;;
+    dry-run)           _flux_dry_run ;;
+    cap)               _flux_cap "$@" ;;
     config)            _flux_config ;;
     doctor)            _flux_doctor ;;
     version)           echo "flux ${VERSION}" ;;
-    help|--help|-h|"") _flux_help ;;
-    claudebox)
+    help|--help|-h)    _flux_help ;;
+    cbox)
       if command -v cbox >/dev/null 2>&1; then
-        echo "claudebox is installed. Use: cbox help"
+        cbox help
       else
         echo "claudebox is not installed."
         echo "Install: brew tap bpeterme/claudebox && brew install bpeterme/claudebox/claudebox"
+        return 1
       fi
       ;;
-    claudedot)
+    cdot)
       if command -v cdot >/dev/null 2>&1; then
-        echo "claudedot is installed. Use: cdot help"
+        cdot help
       else
         echo "claudedot is not installed."
         echo "Install: brew tap bpeterme/claudedot && brew install bpeterme/claudedot/claudedot"
+        return 1
       fi
       ;;
     *)
