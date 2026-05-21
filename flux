@@ -323,8 +323,13 @@ _flux_add() {
   local FLUX_R2_FOLDER
   FLUX_R2_FOLDER=$(git config --get flux.r2-folder 2>/dev/null || true)
   if [[ -z "$FLUX_R2_FOLDER" ]]; then
-    FLUX_R2_FOLDER=$(git remote get-url origin 2>/dev/null \
-      | sed 's/\.git$//' | sed 's/.*\///' || true)
+    local derived
+    derived=$(git remote get-url origin 2>/dev/null \
+      | sed 's/\.git$//' | sed 's/.*\///' \
+      | tr -cd '[:alnum:]._-' || true)
+    local override
+    read -rp "  R2 folder${derived:+ [${derived}]}: " override || true
+    FLUX_R2_FOLDER="${override:-$derived}"
   fi
   [[ -n "$FLUX_R2_FOLDER" ]] \
     || fail "Cannot derive R2 folder — run: git config flux.r2-folder <name>"
