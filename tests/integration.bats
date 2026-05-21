@@ -73,6 +73,7 @@ teardown() { teardown_flux_test; }
   run bash "$REPO_ROOT/flux" add
   [ "$status" -eq 0 ]
   assert_dvc_called "remote add"
+  assert_dvc_called "remote default r2remote"
 }
 
 @test "flux add writes required .gitignore entries" {

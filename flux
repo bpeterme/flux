@@ -390,6 +390,7 @@ _flux_add() {
   local remote_verb="added"
   grep -q 'r2remote' .dvc/config 2>/dev/null && remote_verb="updated"
   "$DVC" remote add    -f      r2remote "s3://${bucket}/${FLUX_R2_FOLDER}" --quiet
+  "$DVC" remote default        r2remote                                     --quiet
   "$DVC" remote modify         r2remote endpointurl "$R2_ENDPOINT"         --quiet
   "$DVC" remote modify         r2remote region      auto                   --quiet
   "$DVC" remote modify --local r2remote access_key_id     "$access_key_id" --quiet
