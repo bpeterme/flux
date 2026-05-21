@@ -168,3 +168,105 @@ teardown() { teardown_flux_test; }
   [[ "$output" == *"Some checks failed"* ]]
   [[ "$output" == *"Pre-commit hook"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# flux dry-run
+# ---------------------------------------------------------------------------
+
+@test "flux dry-run with no staged files exits cleanly" {
+  run bash "$REPO_ROOT/flux" dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"No staged files"* ]]
+}
+
+@test "flux dry-run shows small text file routed to Git" {
+  echo "hello" > note.txt
+  git add note.txt
+
+  run bash "$REPO_ROOT/flux" dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"→ Git"* ]]
+  [[ "$output" == *"note.txt"* ]]
+}
+
+@test "flux dry-run shows binary file routed to DVC" {
+  printf '\x00\x01\x02\x03\xff\xfe' > asset.bin
+  git add asset.bin
+
+  run bash "$REPO_ROOT/flux" dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"→ DVC / R2"* ]]
+  [[ "$output" == *"asset.bin"* ]]
+}
+
+@test "flux dry-run shows large text file routed to DVC" {
+  # threshold in setup_flux_test is 5 MB; make a 6 MB file
+  printf '%*s' $(( 6 * 1024 * 1024 + 1 )) '' | tr ' ' 'a' > big.txt
+  git add big.txt
+
+  run bash "$REPO_ROOT/flux" dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"→ DVC / R2"* ]]
+  [[ "$output" == *"big.txt"* ]]
+}
+
+@test "flux dry-run shows both sections for mixed staging" {
+  echo "small" > keep.txt
+  printf '\x00\x01\x02' > drop.bin
+  git add keep.txt drop.bin
+
+  run bash "$REPO_ROOT/flux" dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"→ Git"* ]]
+  [[ "$output" == *"→ DVC / R2"* ]]
+  [[ "$output" == *"keep.txt"* ]]
+  [[ "$output" == *"drop.bin"* ]]
+}
+
+@test "flux dry-run shows already-DVC-tracked file as skipped" {
+  printf '\x00\x01\x02' > asset.bin
+  cat > asset.bin.dvc << 'EOF'
+outs:
+- md5: deadbeef
+  path: asset.bin
+EOF
+  git add asset.bin.dvc
+  git commit -m "dvc-tracked asset" --no-verify -q
+
+  echo "trigger" > t.txt
+  git add t.txt asset.bin 2>/dev/null || true
+
+  run bash "$REPO_ROOT/flux" dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Already in DVC"* ]]
+  [[ "$output" == *"asset.bin"* ]]
+}
+
+@test "flux dry-run flags Git-tracked file that now exceeds threshold as migrating" {
+  echo "small" > growing.txt
+  git add growing.txt
+  git commit -m "small file" --no-verify -q
+
+  printf '%*s' $(( 6 * 1024 * 1024 + 1 )) '' | tr ' ' 'a' > growing.txt
+  git add growing.txt
+
+  run bash "$REPO_ROOT/flux" dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"migrating from Git"* ]]
+  [[ "$output" == *"growing.txt"* ]]
+}
+
+@test "flux dry-run respects per-repo size threshold from git config" {
+  git config dvc-router.size-threshold-mb 1
+  # File is 2 KB — above 1 KB but well below default 5 MB; should go to Git at 5 MB threshold
+  # but with a 1 MB threshold it still goes to Git (2 KB < 1 MB).
+  # Use a file just over 1 MB to verify the threshold is read correctly.
+  printf '%*s' $(( 1024 * 1024 + 1 )) '' | tr ' ' 'a' > medium.txt
+  git add medium.txt
+
+  run bash "$REPO_ROOT/flux" dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"→ DVC / R2"* ]]
+  [[ "$output" == *"medium.txt"* ]]
+  [[ "$output" == *"threshold: 1 MB"* ]]
+}

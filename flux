@@ -46,6 +46,14 @@ _flux_require_dvc() {
     || fail 'dvc not found. Install: pip install "dvc[s3]"'
 }
 
+_flux_format_size() {
+  local bytes=$1
+  if   (( bytes >= 1024*1024 )); then printf '%d MB' $(( bytes / 1024 / 1024 ))
+  elif (( bytes >= 1024 ));      then printf '%d KB' $(( bytes / 1024 ))
+  else                                printf '%d B'  "$bytes"
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # Keychain helpers
 # ---------------------------------------------------------------------------
@@ -145,6 +153,7 @@ Usage:
   flux add              Opt current project into sync
   flux remove           Stop syncing current project
   flux pull             Download the latest (git pull + dvc pull)
+  flux dry-run          Preview how staged files would be routed
 
 Maintenance:
   flux config           Configure flux (set up or manage global settings)
@@ -418,6 +427,93 @@ _flux_sync() {
 }
 
 # ---------------------------------------------------------------------------
+# dry-run — preview staged file routing without executing any changes
+# ---------------------------------------------------------------------------
+
+_flux_dry_run() {
+  git rev-parse --git-dir &>/dev/null \
+    || fail "Not inside a Git repository."
+
+  local SIZE_THRESHOLD_MB SIZE_THRESHOLD_BYTES
+  SIZE_THRESHOLD_MB=$(git config --get dvc-router.size-threshold-mb 2>/dev/null || echo "5")
+  SIZE_THRESHOLD_BYTES=$(( SIZE_THRESHOLD_MB * 1024 * 1024 ))
+
+  local staged_files
+  staged_files=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)
+
+  if [[ -z "$staged_files" ]]; then
+    echo ""
+    echo "  No staged files."
+    echo ""
+    return 0
+  fi
+
+  local git_files=() git_bytes=0
+  local dvc_files=() dvc_bytes=0 dvc_migrating=()
+  local skip_files=()
+
+  while IFS= read -r file; do
+    [[ ! -f "$file" ]] && continue
+
+    if [[ -f "${file}.dvc" ]]; then
+      skip_files+=("$file")
+      continue
+    fi
+
+    local is_binary=false
+    grep -qI . "$file" 2>/dev/null || is_binary=true
+    local file_size
+    file_size=$(wc -c < "$file" | tr -d ' ')
+
+    if [[ "$is_binary" == "true" ]] || (( file_size > SIZE_THRESHOLD_BYTES )); then
+      dvc_files+=("$file")
+      dvc_bytes=$(( dvc_bytes + file_size ))
+      if git ls-files --error-unmatch "$file" &>/dev/null 2>&1; then
+        dvc_migrating+=("$file")
+      fi
+    else
+      git_files+=("$file")
+      git_bytes=$(( git_bytes + file_size ))
+    fi
+  done <<< "$staged_files"
+
+  echo ""
+  echo "  flux dry-run — routing preview (threshold: ${SIZE_THRESHOLD_MB} MB)"
+
+  if (( ${#git_files[@]} > 0 )); then
+    echo ""
+    printf "  → Git  (%d file(s), %s)\n" "${#git_files[@]}" "$(_flux_format_size "$git_bytes")"
+    for f in "${git_files[@]}"; do
+      local sz; sz=$(wc -c < "$f" | tr -d ' ')
+      printf "    ·  %-42s %s\n" "$f" "$(_flux_format_size "$sz")"
+    done
+  fi
+
+  if (( ${#dvc_files[@]} > 0 )); then
+    echo ""
+    printf "  → DVC / R2  (%d file(s), %s)\n" "${#dvc_files[@]}" "$(_flux_format_size "$dvc_bytes")"
+    for f in "${dvc_files[@]}"; do
+      local sz; sz=$(wc -c < "$f" | tr -d ' ')
+      local note=""
+      for m in "${dvc_migrating[@]+"${dvc_migrating[@]}"}"; do
+        [[ "$m" == "$f" ]] && note="   [migrating from Git]" && break
+      done
+      printf "    ✦  %-42s %s%s\n" "$f" "$(_flux_format_size "$sz")" "$note"
+    done
+  fi
+
+  if (( ${#skip_files[@]} > 0 )); then
+    echo ""
+    printf "  ↷  Already in DVC  (%d file(s), skipped)\n" "${#skip_files[@]}"
+    for f in "${skip_files[@]}"; do
+      printf "    ·  %s\n" "$f"
+    done
+  fi
+
+  echo ""
+}
+
+# ---------------------------------------------------------------------------
 # _flux_doctor_inline — single-line status for embedding in other tools
 # ---------------------------------------------------------------------------
 
@@ -562,6 +658,7 @@ flux() {
     _push)             local DVC; _flux_require_dvc; "$DVC" push && git push ;;
     _doctor)           _flux_doctor_inline ;;
     pull)              local DVC; _flux_require_dvc; git pull "$@" && "$DVC" pull ;;
+    dry-run)           _flux_dry_run ;;
     config)            _flux_config ;;
     doctor)            _flux_doctor ;;
     version)           echo "flux ${VERSION}" ;;
