@@ -675,10 +675,52 @@ _flux_sync() {
     fail "You have uncommitted changes. Commit or stash them before syncing."
   fi
 
+  _flux_sync_summary
   ok "Pulling from Git remote..."; git pull
   ok "Pulling DVC data from R2..."; "$DVC" pull
   ok "Pushing to Git remote...";   git push
   ok "Pushing DVC data to R2...";  "$DVC" push
+}
+
+_flux_sync_summary() {
+  local git_count=0 git_bytes=0 dvc_count=0 dvc_bytes=0
+
+  local all_files
+  all_files=$(git ls-files 2>/dev/null || true)
+
+  while IFS= read -r file; do
+    [[ -z "$file" || "$file" == *.dvc ]] && continue
+    [[ ! -f "$file" ]] && continue
+    local sz; sz=$(wc -c < "$file" | tr -d ' ')
+    git_bytes=$(( git_bytes + sz ))
+    git_count=$(( git_count + 1 ))
+  done <<< "$all_files"
+
+  local dvc_pointers
+  dvc_pointers=$(git ls-files "*.dvc" 2>/dev/null || true)
+
+  while IFS= read -r ptr; do
+    [[ -z "$ptr" || ! -f "$ptr" ]] && continue
+    local sz
+    sz=$(grep -m1 'size:' "$ptr" 2>/dev/null | awk '{print $2}')
+    [[ -z "$sz" || ! "$sz" =~ ^[0-9]+$ ]] && sz=0
+    dvc_bytes=$(( dvc_bytes + sz ))
+    dvc_count=$(( dvc_count + 1 ))
+  done <<< "$dvc_pointers"
+
+  (( git_count == 0 && dvc_count == 0 )) && return 0
+
+  echo ""
+  echo "  flux sync — repository contents"
+  echo ""
+
+  local count_digits=1 max_c
+  max_c=$(( git_count > dvc_count ? git_count : dvc_count ))
+  while (( max_c >= 10 )); do count_digits=$(( count_digits + 1 )); max_c=$(( max_c / 10 )); done
+
+  (( git_count > 0 )) && printf "  Git   %*d file(s)   %s\n" "$count_digits" "$git_count" "$(_flux_size_unit "$git_bytes")"
+  (( dvc_count > 0 )) && printf "  DVC   %*d file(s)   %s\n" "$count_digits" "$dvc_count" "$(_flux_size_unit "$dvc_bytes")"
+  echo ""
 }
 
 # ---------------------------------------------------------------------------
