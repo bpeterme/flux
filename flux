@@ -597,15 +597,17 @@ _flux_remove_dvc() {
     while IFS= read -r line; do [[ -n "$line" ]] && entries+=("$line"); done \
       < <(_flux_registry_read gitignore)
     local removed_gi=0
-    for entry in "${entries[@]}"; do
-      if grep -qxF "$entry" .gitignore 2>/dev/null; then
-        local tmp; tmp=$(mktemp)
-        grep -vxF "$entry" .gitignore > "$tmp" || true
-        mv "$tmp" .gitignore
-        _flux_registry_delete gitignore "$entry"
-        (( removed_gi++ )) || true
-      fi
-    done
+    if (( ${#entries[@]} > 0 )); then
+      for entry in "${entries[@]}"; do
+        if grep -qxF "$entry" .gitignore 2>/dev/null; then
+          local tmp; tmp=$(mktemp)
+          grep -vxF "$entry" .gitignore > "$tmp" || true
+          mv "$tmp" .gitignore
+          _flux_registry_delete gitignore "$entry"
+          (( removed_gi++ )) || true
+        fi
+      done
+    fi
     (( removed_gi > 0 )) && ok "Removed ${removed_gi} flux .gitignore entr(ies)." || true
   fi
 }
