@@ -473,8 +473,8 @@ _flux_sync() {
 
   ok "Pulling from Git remote..."; git pull
   ok "Pulling DVC data from R2..."; "$DVC" pull
-  ok "Pushing DVC data to R2...";  "$DVC" push
   ok "Pushing to Git remote...";   git push
+  ok "Pushing DVC data to R2...";  "$DVC" push
 }
 
 # ---------------------------------------------------------------------------
