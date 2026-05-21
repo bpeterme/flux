@@ -400,6 +400,7 @@ _flux_add() {
 
 _flux_remove() {
   git rev-parse --git-dir &>/dev/null || fail "Not inside a Git repository."
+  local DVC; _flux_require_dvc
 
   local HOOKS_DIR
   HOOKS_DIR="$(git rev-parse --git-dir)/hooks"
@@ -421,7 +422,7 @@ _flux_remove() {
     ok ".dvc/config.local removed."
   fi
 
-  dvc remote remove r2remote 2>/dev/null && ok "DVC remote removed." || true
+  "$DVC" remote remove r2remote 2>/dev/null && ok "DVC remote removed." || true
 
   git config --unset flux.r2-folder               2>/dev/null || true
   git config --unset dvc-router.size-threshold-mb  2>/dev/null || true
