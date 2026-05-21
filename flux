@@ -357,9 +357,22 @@ _flux_add() {
   HOOK_SOURCE="${_script_dir}/../share/flux/pre-commit"
   [[ -f "$HOOK_SOURCE" ]] || HOOK_SOURCE="${_script_dir}/pre-commit"
   [[ -f "$HOOK_SOURCE" ]] || fail "pre-commit hook not found (expected at $HOOK_SOURCE)."
-  cp "$HOOK_SOURCE" "${HOOKS_DIR}/pre-commit"
-  chmod +x "${HOOKS_DIR}/pre-commit"
-  ok "Pre-commit hook installed."
+
+  if [[ -f "${HOOKS_DIR}/pre-commit" ]]; then
+    if grep -q 'dvc-router\|flux' "${HOOKS_DIR}/pre-commit" 2>/dev/null; then
+      cp "$HOOK_SOURCE" "${HOOKS_DIR}/pre-commit"
+      chmod +x "${HOOKS_DIR}/pre-commit"
+      ok "Pre-commit hook updated."
+    else
+      warn "A pre-commit hook already exists and does not belong to flux."
+      warn "  Inspect: ${HOOKS_DIR}/pre-commit"
+      fail "Aborting — remove or merge the existing hook manually, then re-run 'flux add'."
+    fi
+  else
+    cp "$HOOK_SOURCE" "${HOOKS_DIR}/pre-commit"
+    chmod +x "${HOOKS_DIR}/pre-commit"
+    ok "Pre-commit hook installed."
+  fi
 
   echo ""
   echo "  flux added. Your workflow:"
