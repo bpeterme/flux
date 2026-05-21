@@ -508,6 +508,10 @@ _flux_remove_git() {
     fi
   done
   (( removed > 0 )) && ok "Git config entries removed (${removed})." || warn "No flux git config entries found."
+
+  if [[ ! -f "${HOOKS_DIR}/pre-commit" ]] && (( removed == 0 )); then
+    echo -e "${RED}✘${NC} Not a flux-managed project."
+  fi
 }
 
 # ---------------------------------------------------------------------------
