@@ -741,35 +741,56 @@ _flux_dry_run() {
 
   echo ""
   echo "  flux dry-run — routing preview (${scan_mode}, cap: ${SIZE_CAP_MB} MB)"
+  echo ""
 
-  if (( ${#git_files[@]} > 0 )); then
-    echo ""
-    printf "  → Git  (%d file(s), %s)\n" "${#git_files[@]}" "$(_flux_format_size "$git_bytes")"
-    for f in "${git_files[@]}"; do
-      local sz; sz=$(wc -c < "$f" | tr -d ' ')
-      printf "    ·  %-42s %s\n" "$f" "$(_flux_format_size "$sz")"
-    done
-  fi
-
+  (( ${#git_files[@]} > 0 )) \
+    && printf "  → Git     %d file(s)    %s\n" "${#git_files[@]}" "$(_flux_format_size "$git_bytes")"
   if (( ${#dvc_files[@]} > 0 )); then
+    local migrating_note=""
+    (( ${#dvc_migrating[@]} > 0 )) && migrating_note="    (${#dvc_migrating[@]} migrating from Git)"
+    printf "  → DVC     %d file(s)    %s%s\n" "${#dvc_files[@]}" "$(_flux_format_size "$dvc_bytes")" "$migrating_note"
+  fi
+  (( ${#skip_files[@]} > 0 )) \
+    && printf "  ↷ Skip    %d file(s)    already in DVC\n" "${#skip_files[@]}"
+
+  local show_details=false
+  if [[ -t 0 && -t 1 ]]; then
     echo ""
-    printf "  → DVC / R2  (%d file(s), %s)\n" "${#dvc_files[@]}" "$(_flux_format_size "$dvc_bytes")"
-    for f in "${dvc_files[@]}"; do
-      local sz; sz=$(wc -c < "$f" | tr -d ' ')
-      local note=""
-      for m in "${dvc_migrating[@]+"${dvc_migrating[@]}"}"; do
-        [[ "$m" == "$f" ]] && note="   [migrating from Git]" && break
-      done
-      printf "    ✦  %-42s %s%s\n" "$f" "$(_flux_format_size "$sz")" "$note"
-    done
+    local answer
+    read -r -p "  Show file details? [y/N] " answer
+    [[ "${answer,,}" == "y" || "${answer,,}" == "yes" ]] && show_details=true
   fi
 
-  if (( ${#skip_files[@]} > 0 )); then
-    echo ""
-    printf "  ↷  Already in DVC  (%d file(s), skipped)\n" "${#skip_files[@]}"
-    for f in "${skip_files[@]}"; do
-      printf "    ·  %s\n" "$f"
-    done
+  if [[ "$show_details" == "true" ]]; then
+    if (( ${#git_files[@]} > 0 )); then
+      echo ""
+      printf "  Git files:\n"
+      for f in "${git_files[@]}"; do
+        local sz; sz=$(wc -c < "$f" | tr -d ' ')
+        printf "    ·  %-42s %s\n" "$f" "$(_flux_format_size "$sz")"
+      done
+    fi
+
+    if (( ${#dvc_files[@]} > 0 )); then
+      echo ""
+      printf "  DVC files:\n"
+      for f in "${dvc_files[@]}"; do
+        local sz; sz=$(wc -c < "$f" | tr -d ' ')
+        local note=""
+        for m in "${dvc_migrating[@]+"${dvc_migrating[@]}"}"; do
+          [[ "$m" == "$f" ]] && note="   [migrating from Git]" && break
+        done
+        printf "    ✦  %-42s %s%s\n" "$f" "$(_flux_format_size "$sz")" "$note"
+      done
+    fi
+
+    if (( ${#skip_files[@]} > 0 )); then
+      echo ""
+      printf "  Skipped (already in DVC):\n"
+      for f in "${skip_files[@]}"; do
+        printf "    ·  %s\n" "$f"
+      done
+    fi
   fi
 
   echo ""
