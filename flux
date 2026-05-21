@@ -694,14 +694,6 @@ _flux_size_unit() {
   fi
 }
 
-_flux_size_label() {
-  local lo=$1 hi=$2
-  if   (( lo == 0 )); then printf "< %s"    "$(_flux_size_unit "$hi")"
-  elif (( hi == 0 )); then printf "> %s"    "$(_flux_size_unit "$lo")"
-  else                     printf "%s - %s" "$(_flux_size_unit "$lo")" "$(_flux_size_unit "$hi")"
-  fi
-}
-
 _flux_dry_run_histogram() {
   local cap_bytes=$1
   local BAR_WIDTH=20
@@ -738,10 +730,15 @@ _flux_dry_run_histogram() {
 
   local nbrackets=$(( ${#boundaries[@]} - 1 ))
 
-  local i counts=()
-  for (( i=0; i<nbrackets; i++ )); do counts+=( 0 ); done
+  local i
+  local counts=()
+  local sizes=()
+  for (( i=0; i<nbrackets; i++ )); do
+    counts+=( 0 )
+    sizes+=( 0 )
+  done
 
-  # Count all tracked files per bracket
+  # Count all tracked files per bracket and accumulate sizes
   local file sz lo hi
   while IFS= read -r file; do
     [[ ! -f "$file" ]] && continue
@@ -751,6 +748,7 @@ _flux_dry_run_histogram() {
       hi="${boundaries[$((i+1))]}"
       if (( sz >= lo )) && (( hi == 0 || sz < hi )); then
         counts[$i]=$(( counts[$i] + 1 ))
+        sizes[$i]=$(( sizes[$i] + sz ))
         break
       fi
     done
@@ -763,46 +761,94 @@ _flux_dry_run_histogram() {
   done
   if (( non_empty <= 1 )); then return 0; fi
 
-  # Max count (for bar scaling)
-  local max_count=0
-  for (( i=0; i<nbrackets; i++ )); do
-    if (( counts[$i] > max_count )); then max_count=${counts[$i]}; fi
-  done
-
-  # Build labels and find max label width
-  local labels=() max_lw=0 lw label
-  for (( i=0; i<nbrackets; i++ )); do
-    label=$(_flux_size_label "${boundaries[$i]}" "${boundaries[$((i+1))]}")
-    labels+=("$label")
-    lw=${#label}
-    if (( lw > max_lw )); then max_lw=$lw; fi
-  done
-
-  # Find the bracket whose upper bound is the cap (separator goes after it)
+  # Find separator position (bracket whose upper bound == cap_bytes)
   local sep_after=-1
   for (( i=0; i<nbrackets; i++ )); do
     if (( boundaries[$((i+1))] == cap_bytes )); then sep_after=$i; break; fi
   done
 
-  local sep_width=$(( max_lw + 2 + BAR_WIDTH ))
+  # Trim DVC side: show at least the first DVC bucket; stop at last non-empty one
+  local dvc_first dvc_last display_last
+  if (( sep_after >= 0 )); then
+    dvc_first=$(( sep_after + 1 ))
+    dvc_last=$dvc_first
+    for (( i=dvc_first; i<nbrackets; i++ )); do
+      if (( counts[$i] > 0 )); then dvc_last=$i; fi
+    done
+    display_last=$dvc_last
+  else
+    display_last=$(( nbrackets - 1 ))
+  fi
+
+  # Max count across displayed range (for bar scaling)
+  local max_count=0
+  for (( i=0; i<=display_last; i++ )); do
+    if (( counts[$i] > max_count )); then max_count=${counts[$i]}; fi
+  done
+
+  # Width of the count column (right-aligned)
+  local count_digits=${#max_count}
+
+  # Two-column label alignment:
+  #   left col  (max_lo_width)  : lo value, right-aligned; empty for "< hi" and "> lo"
+  #   separator (3 chars)       : " - " / " < " / " > "
+  #   right col (max_right_width): hi value for ranges; lo value for "> lo"; hi for "< hi"
+  local max_lo_width=0 max_right_width=0 lw rw lo_str hi_str
+  for (( i=0; i<=display_last; i++ )); do
+    lo="${boundaries[$i]}"
+    hi="${boundaries[$((i+1))]}"
+    if (( lo != 0 && hi != 0 )); then
+      lo_str=$(_flux_size_unit "$lo"); hi_str=$(_flux_size_unit "$hi")
+      lw=${#lo_str}; rw=${#hi_str}
+      if (( lw > max_lo_width ));    then max_lo_width=$lw;    fi
+      if (( rw > max_right_width )); then max_right_width=$rw; fi
+    elif (( lo == 0 )); then
+      hi_str=$(_flux_size_unit "$hi"); rw=${#hi_str}
+      if (( rw > max_right_width )); then max_right_width=$rw; fi
+    else
+      lo_str=$(_flux_size_unit "$lo"); lw=${#lo_str}
+      if (( lw > max_right_width )); then max_right_width=$lw; fi
+    fi
+  done
+
+  local label_width=$(( max_lo_width + 3 + max_right_width ))
+  local sep_width=$(( label_width + 2 + BAR_WIDTH ))
 
   echo ""
   echo "  Size distribution  (all tracked files)"
   echo ""
 
-  local bar bar_len j count
-  for (( i=0; i<nbrackets; i++ )); do
+  local bar bar_len j count size_str
+  for (( i=0; i<=display_last; i++ )); do
+    lo="${boundaries[$i]}"
+    hi="${boundaries[$((i+1))]}"
     count="${counts[$i]}"
-    label="${labels[$i]}"
 
+    # Label: right-aligned lo, fixed-width separator, left-aligned right value
+    if (( lo == 0 )); then
+      printf "    %*s < %-*s" "$max_lo_width" "" "$max_right_width" "$(_flux_size_unit "$hi")"
+    elif (( hi == 0 )); then
+      printf "    %*s > %-*s" "$max_lo_width" "" "$max_right_width" "$(_flux_size_unit "$lo")"
+    else
+      printf "    %*s - %-*s" "$max_lo_width" "$(_flux_size_unit "$lo")" "$max_right_width" "$(_flux_size_unit "$hi")"
+    fi
+
+    # Bar
     bar=""
-    if (( count > 0 )); then
+    if (( count > 0 && max_count > 0 )); then
       bar_len=$(( count * BAR_WIDTH / max_count ))
       if (( bar_len < 1 )); then bar_len=1; fi
       for (( j=0; j<bar_len; j++ )); do bar="${bar}█"; done
     fi
 
-    printf "    %-*s  %-*s  %d\n" "$max_lw" "$label" "$BAR_WIDTH" "$bar" "$count"
+    # Size annotation shown only when bucket is non-empty
+    if (( count > 0 )); then
+      size_str="  ($(_flux_size_unit "${sizes[$i]}"))"
+    else
+      size_str=""
+    fi
+
+    printf "  %-*s  %*d%s\n" "$BAR_WIDTH" "$bar" "$count_digits" "$count" "$size_str"
 
     if (( i == sep_after )); then
       local sep_line=""
@@ -890,7 +936,7 @@ _flux_dry_run() {
     echo ""
     local answer
     read -r -p "  Show file details? [y/N] " answer
-    [[ "${answer,,}" == "y" || "${answer,,}" == "yes" ]] && show_details=true
+    case "$answer" in y|Y|yes|YES|Yes) show_details=true ;; esac
   fi
 
   if [[ "$show_details" == "true" ]]; then
