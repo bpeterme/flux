@@ -141,6 +141,62 @@ teardown() { teardown_flux_test; }
   [[ "$output" == *"No pre-commit hook"* ]]
 }
 
+@test "flux remove removes .dvc/ directory" {
+  bash "$REPO_ROOT/flux" add
+  run bash "$REPO_ROOT/flux" remove
+  [ "$status" -eq 0 ]
+  [ ! -d ".dvc" ]
+}
+
+@test "flux remove cleans up flux .gitignore entries" {
+  bash "$REPO_ROOT/flux" add
+  bash "$REPO_ROOT/flux" remove
+  ! grep -qF ".dvc/config.local" .gitignore
+  ! grep -qF ".dvc/tmp/" .gitignore
+  ! grep -qF ".dvc/cache/" .gitignore
+}
+
+@test "flux remove git removes hook and git config but leaves .dvc/" {
+  bash "$REPO_ROOT/flux" add
+  run bash "$REPO_ROOT/flux" remove git
+  [ "$status" -eq 0 ]
+  [ ! -f ".git/hooks/pre-commit" ]
+  [ -d ".dvc" ]
+  ! git config --get flux.r2-folder 2>/dev/null
+}
+
+@test "flux remove dvc removes .dvc/ but leaves git hook" {
+  bash "$REPO_ROOT/flux" add
+  run bash "$REPO_ROOT/flux" remove dvc
+  [ "$status" -eq 0 ]
+  [ ! -d ".dvc" ]
+  [ -f ".git/hooks/pre-commit" ]
+}
+
+@test "flux remove dvc removes .dvc pointer files" {
+  bash "$REPO_ROOT/flux" add
+  # create pointer + matching data file so the missing-data guard does not trigger
+  echo "data" > model.bin
+  echo "outs:" > model.bin.dvc
+  run bash "$REPO_ROOT/flux" remove dvc
+  [ "$status" -eq 0 ]
+  [ ! -f "model.bin.dvc" ]
+}
+
+@test "flux add writes registry file" {
+  bash "$REPO_ROOT/flux" add
+  [ -f ".git/flux-registry" ]
+  grep -q "hook:pre-commit" .git/flux-registry
+  grep -q "dvc_remote:r2remote" .git/flux-registry
+  grep -q "gitignore:.dvc/config.local" .git/flux-registry
+}
+
+@test "flux remove unknown subcommand exits non-zero" {
+  run bash "$REPO_ROOT/flux" remove badarg
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Unknown remove target"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # flux doctor
 # ---------------------------------------------------------------------------

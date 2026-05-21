@@ -51,6 +51,40 @@ _flux_require_dvc_repo() {
     || fail "Not a flux-managed project. Run 'flux add' to initialise."
 }
 
+# ---------------------------------------------------------------------------
+# Registry — tracks what flux has written to this repo for clean removal
+# Location: .git/flux-registry (not tracked by git, local to repo)
+# Format:   one "key:value" per line
+# ---------------------------------------------------------------------------
+
+_flux_registry_path() {
+  git rev-parse --git-dir 2>/dev/null && return 0
+  echo ""
+}
+
+_flux_registry_write() {
+  local key="$1" value="$2"
+  local reg; reg="$(git rev-parse --git-dir 2>/dev/null)/flux-registry"
+  [[ -z "$reg" ]] && return 0
+  grep -qxF "${key}:${value}" "$reg" 2>/dev/null || echo "${key}:${value}" >> "$reg"
+}
+
+_flux_registry_read() {
+  local key="$1"
+  local reg; reg="$(git rev-parse --git-dir 2>/dev/null)/flux-registry"
+  [[ -f "$reg" ]] || return 0
+  grep "^${key}:" "$reg" | sed "s/^${key}://"
+}
+
+_flux_registry_delete() {
+  local key="$1" value="$2"
+  local reg; reg="$(git rev-parse --git-dir 2>/dev/null)/flux-registry"
+  [[ -f "$reg" ]] || return 0
+  local tmp; tmp=$(mktemp)
+  grep -vxF "${key}:${value}" "$reg" > "$tmp" || true
+  mv "$tmp" "$reg"
+}
+
 _flux_format_size() {
   local bytes=$1
   if   (( bytes >= 1024*1024 )); then printf '%d MB' $(( bytes / 1024 / 1024 ))
@@ -161,7 +195,9 @@ flux - Git + DVC auto-router for Cloudflare R2
 Usage:
   flux                  Sync both ways (pull then push)
   flux add              Opt current project into sync
-  flux remove           Stop syncing current project
+  flux remove           Full detach (git + DVC)
+  flux remove git       Remove hook and git config only
+  flux remove dvc       Remove all DVC traces (pointer files, .dvc/)
   flux pull             Download the latest (git pull + dvc pull)
   flux dry-run          Preview routing (staged files, or all tracked if none staged)
   flux cap [N|--reset]  Show, reset or set per-project size cap to [N] (MB)
@@ -328,8 +364,10 @@ _flux_add() {
 
   if [[ ! -d .dvc ]]; then
     "$DVC" init --quiet
+    _flux_registry_write dvc_initialized true
     ok "DVC initialised."
   else
+    _flux_registry_write dvc_initialized true
     ok "DVC already initialised."
   fi
 
@@ -356,21 +394,28 @@ _flux_add() {
   "$DVC" remote modify         r2remote region      auto                   --quiet
   "$DVC" remote modify --local r2remote access_key_id     "$access_key_id" --quiet
   "$DVC" remote modify --local r2remote secret_access_key "$secret_key"    --quiet
+  _flux_registry_write dvc_remote r2remote
   ok "DVC remote ${remote_verb}: s3://${bucket}/${FLUX_R2_FOLDER}"
 
   local existing_project_cap
   existing_project_cap=$(git config --get dvc-router.size-cap-mb 2>/dev/null || true)
   if [[ -z "$existing_project_cap" ]]; then
     git config dvc-router.size-cap-mb "$cap"
+    _flux_registry_write git_config dvc-router.size-cap-mb
   else
     cap="$existing_project_cap"
   fi
-  git config dvc-router.verbose           "$verbose"
-  git config flux.r2-folder              "$FLUX_R2_FOLDER"
+  git config dvc-router.verbose "$verbose"
+  git config flux.r2-folder    "$FLUX_R2_FOLDER"
+  _flux_registry_write git_config dvc-router.verbose
+  _flux_registry_write git_config flux.r2-folder
 
   touch .gitignore
   for entry in ".dvc/config.local" ".dvc/tmp/" ".dvc/cache/"; do
-    grep -qF "$entry" .gitignore || echo "$entry" >> .gitignore
+    if ! grep -qF "$entry" .gitignore; then
+      echo "$entry" >> .gitignore
+    fi
+    _flux_registry_write gitignore "$entry"
   done
   ok ".gitignore updated."
 
@@ -415,6 +460,7 @@ _flux_add() {
     chmod +x "${HOOKS_DIR}/pre-commit"
     ok "Pre-commit hook installed."
   fi
+  _flux_registry_write hook pre-commit
 
   echo ""
   echo "  flux added. Your workflow:"
@@ -426,12 +472,11 @@ _flux_add() {
 }
 
 # ---------------------------------------------------------------------------
-# remove — detach flux from the current repository
+# remove git — remove flux's git integration (hook + git config keys)
 # ---------------------------------------------------------------------------
 
-_flux_remove() {
+_flux_remove_git() {
   git rev-parse --git-dir &>/dev/null || fail "Not inside a Git repository."
-  local DVC; _flux_require_dvc
 
   local HOOKS_DIR
   HOOKS_DIR="$(git rev-parse --git-dir)/hooks"
@@ -439,6 +484,7 @@ _flux_remove() {
   if [[ -f "${HOOKS_DIR}/pre-commit" ]]; then
     if grep -q 'dvc-router\|flux' "${HOOKS_DIR}/pre-commit" 2>/dev/null; then
       rm "${HOOKS_DIR}/pre-commit"
+      _flux_registry_delete hook pre-commit
       ok "Pre-commit hook removed."
     else
       warn "Pre-commit hook exists but does not appear to belong to flux — not removed."
@@ -448,21 +494,139 @@ _flux_remove() {
     warn "No pre-commit hook found."
   fi
 
+  local keys removed=0
+  mapfile -t keys < <(_flux_registry_read git_config)
+  if (( ${#keys[@]} == 0 )); then
+    keys=(flux.r2-folder dvc-router.size-cap-mb dvc-router.verbose)
+  fi
+  for key in "${keys[@]}"; do
+    if git config --unset "$key" 2>/dev/null; then
+      _flux_registry_delete git_config "$key"
+      (( removed++ )) || true
+    fi
+  done
+  (( removed > 0 )) && ok "Git config entries removed (${removed})." || warn "No flux git config entries found."
+}
+
+# ---------------------------------------------------------------------------
+# remove dvc — thoroughly remove all DVC traces from the current repo
+# ---------------------------------------------------------------------------
+
+_flux_remove_dvc() {
+  git rev-parse --git-dir &>/dev/null || fail "Not inside a Git repository."
+  local force="${1:-}"
+
+  if [[ ! -d ".dvc" ]]; then
+    warn "No .dvc/ directory found — nothing to remove."
+    return 0
+  fi
+
+  local DVC; _flux_require_dvc
+
+  # Guard: non-flux DVC remotes
+  local other_remotes
+  other_remotes=$(grep '^\[remote "' .dvc/config 2>/dev/null \
+    | grep -v '"r2remote"' | sed 's/.*"\(.*\)".*/\1/' || true)
+  if [[ -n "$other_remotes" ]] && [[ "$force" != "--force" ]]; then
+    warn "Other DVC remotes are configured (not managed by flux):"
+    echo "$other_remotes" | sed 's/^/    /'
+    warn "Removing .dvc/ would destroy these too. Pass --force to proceed anyway."
+    return 1
+  fi
+
+  # Guard: DVC-tracked files whose data is not on disk
+  local missing_data=()
+  while IFS= read -r -d '' ptr; do
+    local data_file="${ptr%.dvc}"
+    [[ -e "$data_file" ]] || missing_data+=("$ptr")
+  done < <(find . -type f -name "*.dvc" -not -path "./.git/*" -not -path "./.dvc/*" -print0 2>/dev/null)
+
+  if (( ${#missing_data[@]} > 0 )); then
+    warn "The following DVC-tracked files are not present on disk."
+    warn "Run 'dvc pull' first, or their data will only exist on R2:"
+    for f in "${missing_data[@]}"; do printf "    %s\n" "$f"; done
+    echo ""
+    local confirm
+    read -rp "  Continue anyway? [y/N]: " confirm || true
+    [[ "${confirm:-N}" =~ ^[Yy]$ ]] || return 1
+  fi
+
+  # Remove DVC remote and local config
+  "$DVC" remote remove r2remote 2>/dev/null && ok "DVC remote 'r2remote' removed." || true
   if [[ -f ".dvc/config.local" ]]; then
     rm ".dvc/config.local"
     ok ".dvc/config.local removed."
   fi
+  _flux_registry_delete dvc_remote r2remote
 
-  "$DVC" remote remove r2remote 2>/dev/null && ok "DVC remote removed." || true
+  # Remove *.dvc pointer files from git index and disk
+  local ptrs=()
+  mapfile -t ptrs < <(find . -type f -name "*.dvc" -not -path "./.git/*" -not -path "./.dvc/*" 2>/dev/null || true)
+  if (( ${#ptrs[@]} > 0 )); then
+    git rm --cached -q "${ptrs[@]}" 2>/dev/null || true
+    rm -f "${ptrs[@]}"
+    ok "Removed ${#ptrs[@]} .dvc pointer file(s)."
+  fi
 
-  git config --unset flux.r2-folder               2>/dev/null || true
-  git config --unset dvc-router.size-cap-mb  2>/dev/null || true
-  git config --unset dvc-router.verbose            2>/dev/null || true
+  # Remove .dvcignore files from git index and disk
+  local dvcignores=()
+  mapfile -t dvcignores < <(find . -type f -name ".dvcignore" -not -path "./.git/*" -not -path "./.dvc/*" 2>/dev/null || true)
+  if (( ${#dvcignores[@]} > 0 )); then
+    git rm --cached -q "${dvcignores[@]}" 2>/dev/null || true
+    rm -f "${dvcignores[@]}"
+    ok "Removed ${#dvcignores[@]} .dvcignore file(s)."
+  fi
 
-  echo ""
-  warn "Global config and credentials were not touched."
-  warn "Run 'flux config' and choose [r] to remove those."
-  echo ""
+  # Remove .dvc/ directory from git index and disk
+  git rm -r --cached -q .dvc/ 2>/dev/null || true
+  rm -rf .dvc/
+  _flux_registry_delete dvc_initialized true
+  ok ".dvc/ directory removed."
+
+  # Clean flux-written .gitignore entries
+  if [[ -f ".gitignore" ]]; then
+    local entries removed_gi=0
+    mapfile -t entries < <(_flux_registry_read gitignore)
+    for entry in "${entries[@]}"; do
+      if grep -qxF "$entry" .gitignore 2>/dev/null; then
+        local tmp; tmp=$(mktemp)
+        grep -vxF "$entry" .gitignore > "$tmp" || true
+        mv "$tmp" .gitignore
+        _flux_registry_delete gitignore "$entry"
+        (( removed_gi++ )) || true
+      fi
+    done
+    (( removed_gi > 0 )) && ok "Removed ${removed_gi} flux .gitignore entr(ies)." || true
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# remove — detach flux from the current repository (git + dvc)
+# ---------------------------------------------------------------------------
+
+_flux_remove() {
+  local sub="${1:-}"
+
+  case "$sub" in
+    git)   _flux_remove_git ;;
+    dvc)   shift || true; _flux_remove_dvc "$@" ;;
+    "")
+      git rev-parse --git-dir &>/dev/null || fail "Not inside a Git repository."
+      echo ""
+      echo "  flux remove — full detach"
+      echo ""
+      _flux_remove_dvc "$@"
+      echo ""
+      _flux_remove_git
+      echo ""
+      warn "Global config and credentials were not touched."
+      warn "Run 'flux config' and choose [r] to remove those."
+      echo ""
+      ;;
+    *)
+      fail "Unknown remove target '${sub}'. Usage: flux remove [git|dvc]"
+      ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------
@@ -786,7 +950,7 @@ flux() {
 
   case "$cmd" in
     add)               _flux_add ;;
-    remove)            _flux_remove ;;
+    remove)            _flux_remove "$@" ;;
     sync|"")           _flux_sync ;;
     _api-version)      echo "1" ;;
     _pull)             _flux_require_dvc_repo; local DVC; _flux_require_dvc; git pull && "$DVC" pull ;;
