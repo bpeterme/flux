@@ -336,12 +336,14 @@ _flux_add() {
   ok "R2 folder: ${FLUX_R2_FOLDER}"
 
   local R2_ENDPOINT="https://${account_id}.r2.cloudflarestorage.com"
+  local remote_verb="added"
+  grep -q 'r2remote' .dvc/config 2>/dev/null && remote_verb="updated"
   "$DVC" remote add    -f      r2remote "s3://${bucket}/${FLUX_R2_FOLDER}" --quiet
   "$DVC" remote modify         r2remote endpointurl "$R2_ENDPOINT"         --quiet
   "$DVC" remote modify         r2remote region      auto                   --quiet
   "$DVC" remote modify --local r2remote access_key_id     "$access_key_id" --quiet
   "$DVC" remote modify --local r2remote secret_access_key "$secret_key"    --quiet
-  ok "DVC remote: s3://${bucket}/${FLUX_R2_FOLDER}"
+  ok "DVC remote ${remote_verb}: s3://${bucket}/${FLUX_R2_FOLDER}"
 
   git config dvc-router.size-threshold-mb "$threshold"
   git config dvc-router.verbose           "$verbose"
