@@ -326,9 +326,14 @@ _flux_config() {
   _cfg_prompt_git() {
     # Prompts for a git account entry. Uses $1 $2 $3 as current proto/host/account.
     # Sets global: _GIT_ENTRY
-    _flux_prompt_value "Protocol (ssh/https)" "${1:-ssh}"        false; local _p="$FLUX_VALUE"
-    _flux_prompt_value "Host"                 "${2:-github.com}" false; local _h="$FLUX_VALUE"
-    _flux_prompt_value "Account"              "${3:-}"           false; local _a="$FLUX_VALUE"
+    local _p
+    while true; do
+      _flux_prompt_value "Protocol (ssh/https)" "${1:-ssh}" false; _p="$FLUX_VALUE"
+      [[ "$_p" == "ssh" || "$_p" == "https" ]] && break
+      warn "Protocol must be 'ssh' or 'https'."
+    done
+    _flux_prompt_value "Host"    "${2:-github.com}" false; local _h="$FLUX_VALUE"
+    _flux_prompt_value "Account" "${3:-}"           false; local _a="$FLUX_VALUE"
     _GIT_ENTRY="${_p}:${_h}:${_a}"
   }
 
@@ -410,8 +415,16 @@ _flux_config() {
     echo ""
     echo "  ── Routing ──────────────────────────────────────────────────────────────"
     echo ""
-    _flux_prompt_value "Size cap MB" "${FLUX_SIZE_CAP_MB:-5}" false; FLUX_SIZE_CAP_MB="$FLUX_VALUE"
-    _flux_prompt_value "Verbose"     "${FLUX_VERBOSE:-false}"  false; FLUX_VERBOSE="$FLUX_VALUE"
+    while true; do
+      _flux_prompt_value "Size cap MB" "${FLUX_SIZE_CAP_MB:-5}" false
+      [[ "$FLUX_VALUE" =~ ^[1-9][0-9]*$ ]] && { FLUX_SIZE_CAP_MB="$FLUX_VALUE"; break; }
+      warn "Size cap must be a positive integer."
+    done
+    while true; do
+      _flux_prompt_value "Verbose (true/false)" "${FLUX_VERBOSE:-false}" false
+      [[ "$FLUX_VALUE" == "true" || "$FLUX_VALUE" == "false" ]] && { FLUX_VERBOSE="$FLUX_VALUE"; break; }
+      warn "Verbose must be 'true' or 'false'."
+    done
 
     echo ""
     echo "  ── Git accounts (optional) ──────────────────────────────────────────────"
@@ -571,8 +584,16 @@ _flux_config() {
 
         o|O)
           echo ""
-          _flux_prompt_value "Size cap MB" "${FLUX_SIZE_CAP_MB:-5}" false; FLUX_SIZE_CAP_MB="$FLUX_VALUE"
-          _flux_prompt_value "Verbose"     "${FLUX_VERBOSE:-false}"  false; FLUX_VERBOSE="$FLUX_VALUE"
+          while true; do
+            _flux_prompt_value "Size cap MB" "${FLUX_SIZE_CAP_MB:-5}" false
+            [[ "$FLUX_VALUE" =~ ^[1-9][0-9]*$ ]] && { FLUX_SIZE_CAP_MB="$FLUX_VALUE"; break; }
+            warn "Size cap must be a positive integer."
+          done
+          while true; do
+            _flux_prompt_value "Verbose (true/false)" "${FLUX_VERBOSE:-false}" false
+            [[ "$FLUX_VALUE" == "true" || "$FLUX_VALUE" == "false" ]] && { FLUX_VERBOSE="$FLUX_VALUE"; break; }
+            warn "Verbose must be 'true' or 'false'."
+          done
           echo ""
           _cfg_save ;;
 
