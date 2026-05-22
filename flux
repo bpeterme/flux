@@ -332,8 +332,9 @@ _flux_config() {
         else
           _cred_badge="${YELLOW}[✘ credentials missing]${NC}"
         fi
-        if [[ "$_b" == "$FLUX_PRIMARY_DVC_REMOTE" ]] || \
-           [[ -z "$FLUX_PRIMARY_DVC_REMOTE" && $_i -eq 1 ]]; then
+        if [[ "${#FLUX_DVC_REMOTES[@]}" -gt 1 ]] && \
+           { [[ "$_b" == "$FLUX_PRIMARY_DVC_REMOTE" ]] || \
+             [[ -z "$FLUX_PRIMARY_DVC_REMOTE" && $_i -eq 1 ]]; }; then
           _primary_mark="  [← primary]"
         fi
         printf "    %d. %s  " "$_i" "$_e"
