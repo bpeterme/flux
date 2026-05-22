@@ -349,7 +349,17 @@ _flux_config() {
     else
       local _i=1
       for _e in "${FLUX_GIT_ACCOUNTS[@]}"; do
-        printf "    %d. %s\n" "$_i" "$_e"
+        local _proto="${_e%%:*}" _rest="${_e#*:}"
+        local _host="${_rest%%:*}" _account="${_rest#*:}"
+        local _badge
+        if [[ ( "$_proto" == "ssh" || "$_proto" == "https" ) && \
+              -n "$_host" && -n "$_account" ]]; then
+          _badge="${GREEN}[✔]${NC}"
+        else
+          _badge="${YELLOW}[✘ incomplete]${NC}"
+        fi
+        printf "    %d. %s  " "$_i" "$_e"
+        echo -e "${_badge}"
         (( _i++ ))
       done
     fi
