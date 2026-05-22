@@ -578,6 +578,95 @@ _flux_config() {
 }
 
 # ---------------------------------------------------------------------------
+# Sub-repo management — detect nested git repos and maintain .gitignore exclusions
+# ---------------------------------------------------------------------------
+
+_flux_scan_subrepos() {
+  # Outputs newline-separated relative paths to top-level nested git repo roots.
+  # "Top-level" means not nested inside another discovered sub-repo.
+  local root_dir
+  root_dir=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
+
+  local all=()
+  while IFS= read -r gitdir; do
+    [[ -n "$gitdir" ]] && all+=("${gitdir%/.git}")
+  done < <(find "$root_dir" -mindepth 2 -name ".git" -type d \
+             -not -path '*/.git/*' 2>/dev/null | sort)
+
+  # Keep only paths not nested inside another found sub-repo
+  local result=()
+  for path in "${all[@]}"; do
+    local nested=false
+    for other in "${all[@]}"; do
+      [[ "$path" == "$other" ]] && continue
+      [[ "$path" == "$other/"* ]] && nested=true && break
+    done
+    [[ "$nested" == "false" ]] && result+=("${path#${root_dir}/}")
+  done
+
+  (( ${#result[@]} > 0 )) && printf '%s\n' "${result[@]}"
+  return 0
+}
+
+_flux_subrepo_sync() {
+  # Diffs live sub-repo scan against registry; adds/removes .gitignore entries.
+  # Sets FLUX_SUBREPO_CHANGED=true when any modification is made.
+  FLUX_SUBREPO_CHANGED=false
+  git rev-parse --show-toplevel &>/dev/null || return 0
+  local root_dir
+  root_dir=$(git rev-parse --show-toplevel)
+
+  local current=()
+  while IFS= read -r p; do [[ -n "$p" ]] && current+=("$p"); done \
+    < <(_flux_scan_subrepos)
+
+  local previous=()
+  while IFS= read -r p; do [[ -n "$p" ]] && previous+=("$p"); done \
+    < <(_flux_registry_read subrepo_exclusion)
+
+  local appeared=()
+  for p in "${current[@]}"; do
+    local found=false
+    for q in "${previous[@]}"; do [[ "$p" == "$q" ]] && found=true && break; done
+    [[ "$found" == "false" ]] && appeared+=("$p")
+  done
+
+  local disappeared=()
+  for p in "${previous[@]}"; do
+    local found=false
+    for q in "${current[@]}"; do [[ "$p" == "$q" ]] && found=true && break; done
+    [[ "$found" == "false" ]] && disappeared+=("$p")
+  done
+
+  local gitignore="${root_dir}/.gitignore"
+
+  for path in "${appeared[@]}"; do
+    local tracked
+    tracked=$(git ls-files -- "$path" 2>/dev/null || true)
+    if [[ -n "$tracked" ]]; then
+      git rm --cached -r --quiet -- "$path" 2>/dev/null || true
+      warn "Un-tracked '${path}/' from workspace git (new sub-repo detected)."
+    fi
+    touch "$gitignore"
+    grep -qxF "${path}/" "$gitignore" 2>/dev/null || echo "${path}/" >> "$gitignore"
+    _flux_registry_write subrepo_exclusion "$path"
+    ok "Sub-repo detected: ${path}/ → excluded from workspace git."
+    FLUX_SUBREPO_CHANGED=true
+  done
+
+  for path in "${disappeared[@]}"; do
+    if [[ -f "$gitignore" ]] && grep -qxF "${path}/" "$gitignore" 2>/dev/null; then
+      local tmp; tmp=$(mktemp)
+      grep -vxF "${path}/" "$gitignore" > "$tmp" || true
+      mv "$tmp" "$gitignore"
+    fi
+    _flux_registry_delete subrepo_exclusion "$path"
+    warn "Sub-repo removed: ${path}/ → files now visible to workspace git."
+    FLUX_SUBREPO_CHANGED=true
+  done
+}
+
+# ---------------------------------------------------------------------------
 # add — add flux to the current repository
 # ---------------------------------------------------------------------------
 
@@ -625,15 +714,12 @@ _flux_add() {
   ok "DVC remote: ${chosen_bucket}"
 
   if ! git rev-parse --git-dir &>/dev/null; then
-    local nested
-    nested=$(find . -mindepth 2 -maxdepth 3 -name ".git" -type d 2>/dev/null | head -1)
-    [[ -n "$nested" ]] \
-      && fail "Nested Git repositories detected (e.g. ${nested%/.git}) — run 'git init' manually after confirming the correct directory."
     git init --quiet
     ok "Git repository initialised."
   else
     ok "Git repository found."
   fi
+  _flux_subrepo_sync
 
   if [[ ! -d .dvc ]]; then
     "$DVC" init --quiet
@@ -866,7 +952,23 @@ _flux_remove_git() {
     fi
   fi
 
-  if [[ ! -f "${HOOKS_DIR}/pre-commit" ]] && (( removed == 0 )); then
+  # Remove sub-repo exclusions flux added to .gitignore
+  local excl_paths=()
+  while IFS= read -r p; do [[ -n "$p" ]] && excl_paths+=("$p"); done \
+    < <(_flux_registry_read subrepo_exclusion)
+  local removed_excl=0
+  for path in "${excl_paths[@]}"; do
+    if [[ -f ".gitignore" ]] && grep -qxF "${path}/" .gitignore 2>/dev/null; then
+      local tmp; tmp=$(mktemp)
+      grep -vxF "${path}/" .gitignore > "$tmp" || true
+      mv "$tmp" .gitignore
+    fi
+    _flux_registry_delete subrepo_exclusion "$path"
+    (( removed_excl++ )) || true
+  done
+  (( removed_excl > 0 )) && ok "Sub-repo exclusions removed (${removed_excl})."
+
+  if [[ ! -f "${HOOKS_DIR}/pre-commit" ]] && (( removed == 0 )) && (( removed_excl == 0 )); then
     echo -e "${RED}✘${NC} Not a flux-managed project."
   fi
 }
@@ -1013,6 +1115,14 @@ _flux_pull() {
     || fail "Not configured. Run 'flux config' to set up."
   local DVC; _flux_require_dvc
 
+  _flux_subrepo_sync
+  if [[ "${FLUX_SUBREPO_CHANGED}" == "true" ]]; then
+    git add -A 2>/dev/null || true
+    if ! git diff --cached --quiet 2>/dev/null; then
+      git commit --quiet -m "chore: sync sub-repo exclusions"
+    fi
+  fi
+
   ok "Pulling from Git remote..."; git pull "$@"
   ok "Pulling DVC data from R2..."; "$DVC" pull
 }
@@ -1029,6 +1139,8 @@ _flux_sync() {
   _flux_is_configured \
     || fail "Not configured. Run 'flux config' to set up."
   local DVC; _flux_require_dvc
+
+  _flux_subrepo_sync
 
   if ! git diff --quiet || ! git diff --cached --quiet; then
     git add -A

@@ -406,3 +406,102 @@ EOF
 
   [ "$(git config --get dvc-router.size-cap-mb)" = "20" ]
 }
+
+# ---------------------------------------------------------------------------
+# Sub-repo exclusion — workspace with nested git repositories
+# ---------------------------------------------------------------------------
+
+@test "flux add excludes a nested git repo from workspace tracking" {
+  mkdir -p sub
+  git -C sub init -q
+  git -C sub config user.email "sub@example.com"
+  git -C sub config user.name "Sub"
+
+  run bash "$REPO_ROOT/flux" add
+  [ "$status" -eq 0 ]
+
+  grep -qF "sub/" .gitignore
+}
+
+@test "flux add excludes sub-repos at multiple depth levels" {
+  mkdir -p a/b/c
+  git -C a/b init -q
+  git -C a/b config user.email "sub@example.com"
+  git -C a/b config user.name "Sub"
+  git -C a/b/c init -q  # nested inside a/b — should NOT appear in workspace .gitignore
+  git -C a/b/c config user.email "sub@example.com"
+  git -C a/b/c config user.name "Sub"
+
+  mkdir -p d/e
+  git -C d/e init -q
+  git -C d/e config user.email "sub@example.com"
+  git -C d/e config user.name "Sub"
+
+  run bash "$REPO_ROOT/flux" add
+  [ "$status" -eq 0 ]
+
+  # top-level sub-repos are excluded
+  grep -qF "a/b/" .gitignore
+  grep -qF "d/e/" .gitignore
+  # a/b/c is inside a/b — its parent covers it, so it must NOT get its own entry
+  ! grep -qF "a/b/c/" .gitignore
+}
+
+@test "files inside a nested git repo are not tracked by the workspace git" {
+  mkdir -p service
+  git -C service init -q
+  git -C service config user.email "sub@example.com"
+  git -C service config user.name "Sub"
+  echo "service code" > service/main.py
+
+  bash "$REPO_ROOT/flux" add
+
+  run git ls-files service/main.py
+  [ -z "$output" ]
+}
+
+@test "sub-repo registry entry is written on flux add" {
+  mkdir -p sub
+  git -C sub init -q
+
+  bash "$REPO_ROOT/flux" add
+
+  grep -q "subrepo_exclusion:sub" .git/flux-registry
+}
+
+@test "a sub-repo that disappears is removed from .gitignore on next flux add" {
+  mkdir -p sub
+  git -C sub init -q
+
+  bash "$REPO_ROOT/flux" add
+  grep -qF "sub/" .gitignore
+
+  # Remove the sub-repo
+  rm -rf sub
+
+  bash "$REPO_ROOT/flux" add
+  ! grep -qF "sub/" .gitignore
+}
+
+@test "a new sub-repo appearing after initial flux add is picked up by flux add" {
+  bash "$REPO_ROOT/flux" add
+
+  mkdir -p late
+  git -C late init -q
+
+  bash "$REPO_ROOT/flux" add
+
+  grep -qF "late/" .gitignore
+  grep -q "subrepo_exclusion:late" .git/flux-registry
+}
+
+@test "flux remove git cleans up sub-repo exclusions from .gitignore" {
+  mkdir -p sub
+  git -C sub init -q
+
+  bash "$REPO_ROOT/flux" add
+  grep -qF "sub/" .gitignore
+
+  bash "$REPO_ROOT/flux" remove git
+  ! grep -qF "sub/" .gitignore
+}
