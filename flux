@@ -138,10 +138,14 @@ _flux_write_config() {
   mkdir -p "$(dirname "$FLUX_CONFIG")"
   local tmp; tmp=$(mktemp)
   {
-    echo "# flux configuration — managed by 'flux config'."
+    echo "# flux configuration"
+    echo "# This file is managed by 'flux config' — you normally don't edit it by hand."
+    echo "# Sensitive credentials (access key, secret key) are stored in macOS Keychain,"
+    echo "# keyed per bucket as flux.dvc.{bucket}.{access-key-id|secret-key}."
     echo ""
-    echo "# ── DVC remotes ──────────────────────────────────────────────────────────────"
-    echo "# Format: \"bucket:account_id\"  (credentials in Keychain as flux.dvc.{bucket}.*)"
+    echo "# ── DVC remotes ───────────────────────────────────────────────────────────────"
+    echo "# One or more Cloudflare R2 accounts. Format: \"bucket:account_id\""
+    echo "# Credentials are stored in Keychain — not here."
     echo "FLUX_DVC_REMOTES=("
     if [[ -n "$dvc_str" ]]; then
       while IFS= read -r entry; do
@@ -150,11 +154,12 @@ _flux_write_config() {
     fi
     echo ")"
     echo ""
-    echo "# ── routing ──────────────────────────────────────────────────────────────────"
-    echo "FLUX_SIZE_CAP_MB=${cap}"
-    echo "FLUX_VERBOSE=${verbose}"
+    echo "# ── routing ───────────────────────────────────────────────────────────────────"
+    echo "FLUX_SIZE_CAP_MB=${cap}        # files larger than this go to R2; smaller stay in Git"
+    echo "FLUX_VERBOSE=${verbose}        # verbose hook output (true/false)"
     echo ""
-    echo "# ── git accounts ─────────────────────────────────────────────────────────────"
+    echo "# ── git accounts ──────────────────────────────────────────────────────────────"
+    echo "# One or more hosting accounts used to propose git remote URLs during 'flux add'."
     echo "# Format: \"protocol:host:account\"  (protocol: ssh or https)"
     echo "FLUX_GIT_ACCOUNTS=("
     if [[ -n "$git_str" ]]; then
@@ -163,6 +168,16 @@ _flux_write_config() {
       done <<< "$git_str"
     fi
     echo ")"
+    echo ""
+    echo "# ─── companion tools ──────────────────────────────────────────────────────────"
+    echo ""
+    echo "# claudebox — Claude Code container runtime"
+    echo "# Install: brew tap bpeterme/claudebox && brew install bpeterme/claudebox/claudebox"
+    echo "# Set up:  cbox build"
+    echo ""
+    echo "# claudedot — cross-machine config + history sync via git"
+    echo "# Install: brew tap bpeterme/claudedot && brew install bpeterme/claudedot/claudedot"
+    echo "# Set up:  cdot config"
   } > "$tmp"
   chmod 600 "$tmp"
   # cp follows symlinks — writes to the real file, preserving any symlink at $FLUX_CONFIG
