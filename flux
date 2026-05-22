@@ -248,6 +248,7 @@ _flux_require_git_remote() {
 # ---------------------------------------------------------------------------
 
 _flux_help() {
+  clear
   cat <<'EOF'
 flux - Git + DVC auto-router for Cloudflare R2
 
@@ -868,6 +869,7 @@ _flux_subrepo_sync() {
 
 _flux_add() {
   _flux_require_macos
+  clear
 
   echo ""
   echo "  flux ${VERSION} — add"
@@ -1101,6 +1103,7 @@ _flux_add() {
 
 _flux_remove_git() {
   git rev-parse --git-dir &>/dev/null || fail "Not inside a Git repository."
+  clear
 
   local HOOKS_DIR
   HOOKS_DIR="$(git rev-parse --git-dir)/hooks"
@@ -1176,6 +1179,7 @@ _flux_remove_git() {
 _flux_remove_dvc() {
   git rev-parse --git-dir &>/dev/null || fail "Not inside a Git repository."
   local force="${1:-}"
+  clear
 
   if [[ ! -d ".dvc" ]]; then
     warn "No .dvc/ directory found — nothing to remove."
@@ -1310,6 +1314,7 @@ _flux_pull() {
   _flux_is_configured \
     || fail "Not configured. Run 'flux config' to set up."
   local DVC; _flux_require_dvc
+  clear
 
   _flux_subrepo_sync
   if [[ "${FLUX_SUBREPO_CHANGED}" == "true" ]]; then
@@ -1335,6 +1340,7 @@ _flux_sync() {
   _flux_is_configured \
     || fail "Not configured. Run 'flux config' to set up."
   local DVC; _flux_require_dvc
+  clear
 
   _flux_subrepo_sync
 
@@ -1583,6 +1589,8 @@ _flux_dry_run() {
   git rev-parse --git-dir &>/dev/null \
     || fail "Not inside a Git repository."
 
+  clear
+
   local SIZE_CAP_MB SIZE_CAP_BYTES
   SIZE_CAP_MB=$(git config --get dvc-router.size-cap-mb 2>/dev/null || echo "5")
   SIZE_CAP_BYTES=$(( SIZE_CAP_MB * 1024 * 1024 ))
@@ -1763,6 +1771,7 @@ _flux_doctor_inline() {
 
 _flux_doctor() {
   _flux_require_macos
+  clear
 
   local pass=true
 
