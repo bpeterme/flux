@@ -158,20 +158,21 @@ PYEOF
   export MOCK_DVC_LOG="$TEST_REPO/dvc_calls.log"
   export MOCK_KEYCHAIN_DIR
 
-  # Write non-sensitive global config to flux.env (bucket, account ID, routing).
+  # Write non-sensitive global config to flux.env (DVC remotes, routing).
   mkdir -p "$MOCK_HOME/.config/flux"
   cat > "$MOCK_HOME/.config/flux/flux.env" << 'EOF'
-FLUX_R2_BUCKET="test-bucket"
-FLUX_R2_ACCOUNT_ID="test-account-id"
+FLUX_DVC_REMOTES=(
+  "test-bucket:test-account-id"
+)
 FLUX_SIZE_CAP_MB=5
 FLUX_VERBOSE=false
 EOF
 
-  # Pre-populate mock Keychain with credentials only (access key + secret).
+  # Pre-populate mock Keychain with credentials using current key naming scheme.
   MOCK_KEYCHAIN_DIR="$MOCK_KEYCHAIN_DIR" "$MOCK_BIN/security" \
-    add-generic-password -U -s "flux.r2.access-key-id" -w "test-key-id"
+    add-generic-password -U -s "flux.dvc.test-bucket.access-key-id" -w "test-key-id"
   MOCK_KEYCHAIN_DIR="$MOCK_KEYCHAIN_DIR" "$MOCK_BIN/security" \
-    add-generic-password -U -s "flux.r2.secret-key"    -w "test-secret-key"
+    add-generic-password -U -s "flux.dvc.test-bucket.secret-key"    -w "test-secret-key"
 
   cd "$TEST_REPO"
 

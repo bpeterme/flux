@@ -84,11 +84,11 @@ teardown() { teardown_flux_test; }
   grep -qF ".dvc/cache/"       .gitignore
 }
 
-@test "flux add derives R2 folder from git remote when flux.r2-folder is not configured" {
-  # git config flux.r2-folder is not set — auto-detection from the remote URL kicks in
+@test "flux add uses pre-configured R2 folder from git config" {
+  # flux.r2-folder set in git config — flux must use it without prompting
+  git config flux.r2-folder "test-project"
   run bash "$REPO_ROOT/flux" add
   [ "$status" -eq 0 ]
-  # Remote URL is https://github.com/test/test-project.git → folder = test-project
   assert_dvc_called "remote add -f r2remote s3://test-bucket/test-project"
 }
 

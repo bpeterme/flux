@@ -73,7 +73,7 @@ _flux_registry_read() {
   local key="$1"
   local reg; reg="$(git rev-parse --git-dir 2>/dev/null)/flux-registry"
   [[ -f "$reg" ]] || return 0
-  grep "^${key}:" "$reg" | sed "s/^${key}://"
+  grep "^${key}:" "$reg" | sed "s/^${key}://" || true
 }
 
 _flux_registry_delete() {
