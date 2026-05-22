@@ -373,10 +373,23 @@ _flux_config() {
       echo ""
     fi
 
+    # Stash values pre-loaded from flux.env; reset live arrays so the setup
+    # loop starts fresh (avoids duplicates when the file has data but Keychain
+    # credentials are still missing).
+    local _preset_dvc=("${FLUX_DVC_REMOTES[@]}") _preset_git=("${FLUX_GIT_ACCOUNTS[@]}")
+    FLUX_DVC_REMOTES=()
+    FLUX_GIT_ACCOUNTS=()
+
     echo "  ── DVC remotes (Cloudflare R2) ──────────────────────────────────────────"
     echo ""
+    local _pi=0
     while true; do
-      _cfg_prompt_dvc
+      local _pb="" _pa=""
+      if (( _pi < ${#_preset_dvc[@]} )); then
+        _pb="${_preset_dvc[$_pi]%%:*}"
+        _pa="${_preset_dvc[$_pi]#*:}"
+      fi
+      _cfg_prompt_dvc "$_pb" "$_pa"
       if [[ -z "$_DVC_BUCKET" ]]; then
         warn "Bucket is required."; continue
       fi
@@ -387,6 +400,7 @@ _flux_config() {
       _kc_set_dvc "$_DVC_BUCKET" "access-key-id" "$_DVC_ACCESS_KEY"
       _kc_set_dvc "$_DVC_BUCKET" "secret-key"    "$_DVC_SECRET_KEY"
       ok "DVC remote '${_DVC_BUCKET}' saved."
+      _pi=$(( _pi + 1 ))
       echo ""
       local _more; read -rp "  Add another DVC remote? [y/N]: " _more || true
       [[ "${_more:-N}" =~ ^[Yy]$ ]] || break
@@ -403,12 +417,20 @@ _flux_config() {
     echo "  ── Git accounts (optional) ──────────────────────────────────────────────"
     echo "  Used to propose git remote URLs during 'flux add'."
     echo ""
+    local _gi=0
     while true; do
-      _cfg_prompt_git
+      local _gp="" _gh="" _ga=""
+      if (( _gi < ${#_preset_git[@]} )); then
+        _gp="${_preset_git[$_gi]%%:*}"
+        _gh="${_preset_git[$_gi]#*:}"; _gh="${_gh%%:*}"
+        _ga="${_preset_git[$_gi]##*:}"
+      fi
+      _cfg_prompt_git "$_gp" "$_gh" "$_ga"
       local _acct="${_GIT_ENTRY##*:}"
       [[ -z "$_acct" ]] && break
       FLUX_GIT_ACCOUNTS+=("$_GIT_ENTRY")
       ok "Git account '${_GIT_ENTRY}' added."
+      _gi=$(( _gi + 1 ))
       echo ""
       local _more; read -rp "  Add another git account? [y/N]: " _more || true
       [[ "${_more:-N}" =~ ^[Yy]$ ]] || break
