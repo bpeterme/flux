@@ -1407,13 +1407,16 @@ _flux_dry_run_histogram() {
       printf "    %*s - %-*s" "$max_lo_width" "$(_flux_size_unit "$lo")" "$max_right_width" "$(_flux_size_unit "$hi")"
     fi
 
-    # Bar: build blocks then pad explicitly in display columns (█ is multi-byte,
-    # so %-*s byte-based padding would misalign counts for partial bars)
+    # Bar: build blocks then pad explicitly in display columns (block chars are
+    # multi-byte, so %-*s byte-based padding would misalign counts for partial bars).
+    # Shading: ░ for Git-routed buckets, █ for DVC-routed buckets.
     bar=""; bar_len=0
     if (( count > 0 && max_count > 0 )); then
       bar_len=$(( count * BAR_WIDTH / max_count ))
       if (( bar_len < 1 )); then bar_len=1; fi
-      for (( j=0; j<bar_len; j++ )); do bar="${bar}█"; done
+      local bar_char
+      if (( sep_after >= 0 && i <= sep_after )); then bar_char="░"; else bar_char="█"; fi
+      for (( j=0; j<bar_len; j++ )); do bar="${bar}${bar_char}"; done
     fi
     bar_pad=""; for (( j=bar_len; j<BAR_WIDTH; j++ )); do bar_pad="${bar_pad} "; done
 
