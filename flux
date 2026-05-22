@@ -393,39 +393,88 @@ _flux_config() {
       echo ""
     fi
 
-    # Stash values pre-loaded from flux.env; reset live arrays so the setup
-    # loop starts fresh (avoids duplicates when the file has data but Keychain
-    # credentials are still missing).
+    # Stash existing entries before resetting; they are preserved below and
+    # never silently discarded — only missing credentials are prompted for.
     local _preset_dvc=("${FLUX_DVC_REMOTES[@]}") _preset_git=("${FLUX_GIT_ACCOUNTS[@]}")
     FLUX_DVC_REMOTES=()
     FLUX_GIT_ACCOUNTS=()
 
     echo "  ── DVC remotes (Cloudflare R2) ──────────────────────────────────────────"
     echo ""
-    local _pi=0
-    while true; do
-      local _pb="" _pa=""
-      if (( _pi < ${#_preset_dvc[@]} )); then
-        _pb="${_preset_dvc[$_pi]%%:*}"
-        _pa="${_preset_dvc[$_pi]#*:}"
-      fi
-      _cfg_prompt_dvc "$_pb" "$_pa"
-      if [[ -z "$_DVC_BUCKET" ]]; then
-        warn "Bucket is required."; continue
-      fi
-      [[ -n "$_DVC_ACCOUNT_ID"  ]] || { warn "Account ID is required."; continue; }
-      [[ -n "$_DVC_ACCESS_KEY"  ]] || { warn "Access Key ID is required."; continue; }
-      [[ -n "$_DVC_SECRET_KEY"  ]] || { warn "Secret Key is required."; continue; }
-      FLUX_DVC_REMOTES+=("${_DVC_BUCKET}:${_DVC_ACCOUNT_ID}")
-      _kc_set_dvc "$_DVC_BUCKET" "access-key-id" "$_DVC_ACCESS_KEY"
-      _kc_set_dvc "$_DVC_BUCKET" "secret-key"    "$_DVC_SECRET_KEY"
-      ok "DVC remote '${_DVC_BUCKET}' saved."
-      _pi=$(( _pi + 1 ))
+
+    if [[ "${#_preset_dvc[@]}" -gt 0 ]]; then
+      # Preserve all existing entries; only prompt for missing credentials or new entries.
+      FLUX_DVC_REMOTES=("${_preset_dvc[@]}")
+      echo "  Existing DVC remotes:"
+      local _pi=0
+      for _pe in "${_preset_dvc[@]}"; do
+        local _pb="${_pe%%:*}" _pa="${_pe#*:}"
+        local _cst; [[ -n "$(_kc_get_dvc "$_pb" 'access-key-id')" ]] && _cst="credentials OK" || _cst="credentials MISSING"
+        printf "    %d. %-28s account: %s  (%s)\n" "$(( _pi + 1 ))" "$_pb" "$_pa" "$_cst"
+        (( _pi++ ))
+      done
       echo ""
+      _pi=0
+      for _pe in "${_preset_dvc[@]}"; do
+        local _pb="${_pe%%:*}"
+        if [[ -z "$(_kc_get_dvc "$_pb" 'access-key-id')" ]]; then
+          local _fix; read -rp "  Entry $(( _pi + 1 )) ('$_pb') is missing credentials. Enter them now? [Y/n]: " _fix || true
+          if [[ ! "${_fix:-Y}" =~ ^[Nn]$ ]]; then
+            echo ""
+            _flux_prompt_value "Access Key ID" "" false; local _ak="$FLUX_VALUE"
+            _flux_prompt_value "Secret Key"    "" true;  local _sk="$FLUX_VALUE"
+            if [[ -n "$_ak" && -n "$_sk" ]]; then
+              _kc_set_dvc "$_pb" "access-key-id" "$_ak"
+              _kc_set_dvc "$_pb" "secret-key"    "$_sk"
+              ok "Credentials saved for '${_pb}'."
+            else
+              warn "Credentials not updated — both fields are required."
+            fi
+            echo ""
+          fi
+        fi
+        (( _pi++ ))
+      done
       local _more; read -rp "  Add another DVC remote? [y/N]: " _more || true
-      [[ "${_more:-N}" =~ ^[Yy]$ ]] || break
-      echo ""
-    done
+      if [[ "${_more:-N}" =~ ^[Yy]$ ]]; then
+        echo ""
+        while true; do
+          _cfg_prompt_dvc
+          if [[ -z "$_DVC_BUCKET" ]]; then
+            warn "Bucket is required."; continue
+          fi
+          [[ -n "$_DVC_ACCOUNT_ID"  ]] || { warn "Account ID is required."; continue; }
+          [[ -n "$_DVC_ACCESS_KEY"  ]] || { warn "Access Key ID is required."; continue; }
+          [[ -n "$_DVC_SECRET_KEY"  ]] || { warn "Secret Key is required."; continue; }
+          FLUX_DVC_REMOTES+=("${_DVC_BUCKET}:${_DVC_ACCOUNT_ID}")
+          _kc_set_dvc "$_DVC_BUCKET" "access-key-id" "$_DVC_ACCESS_KEY"
+          _kc_set_dvc "$_DVC_BUCKET" "secret-key"    "$_DVC_SECRET_KEY"
+          ok "DVC remote '${_DVC_BUCKET}' saved."
+          echo ""
+          local _more2; read -rp "  Add another DVC remote? [y/N]: " _more2 || true
+          [[ "${_more2:-N}" =~ ^[Yy]$ ]] || break
+          echo ""
+        done
+      fi
+    else
+      while true; do
+        _cfg_prompt_dvc
+        if [[ -z "$_DVC_BUCKET" ]]; then
+          warn "Bucket is required."; continue
+        fi
+        [[ -n "$_DVC_ACCOUNT_ID"  ]] || { warn "Account ID is required."; continue; }
+        [[ -n "$_DVC_ACCESS_KEY"  ]] || { warn "Access Key ID is required."; continue; }
+        [[ -n "$_DVC_SECRET_KEY"  ]] || { warn "Secret Key is required."; continue; }
+        FLUX_DVC_REMOTES+=("${_DVC_BUCKET}:${_DVC_ACCOUNT_ID}")
+        _kc_set_dvc "$_DVC_BUCKET" "access-key-id" "$_DVC_ACCESS_KEY"
+        _kc_set_dvc "$_DVC_BUCKET" "secret-key"    "$_DVC_SECRET_KEY"
+        ok "DVC remote '${_DVC_BUCKET}' saved."
+        echo ""
+        local _more; read -rp "  Add another DVC remote? [y/N]: " _more || true
+        [[ "${_more:-N}" =~ ^[Yy]$ ]] || break
+        echo ""
+      done
+    fi
 
     echo ""
     echo "  ── Routing ──────────────────────────────────────────────────────────────"
@@ -445,25 +494,45 @@ _flux_config() {
     echo "  ── Git accounts (optional) ──────────────────────────────────────────────"
     echo "  Used to propose git remote URLs during 'flux add'."
     echo ""
-    local _gi=0
-    while true; do
-      local _gp="" _gh="" _ga=""
-      if (( _gi < ${#_preset_git[@]} )); then
-        _gp="${_preset_git[$_gi]%%:*}"
-        _gh="${_preset_git[$_gi]#*:}"; _gh="${_gh%%:*}"
-        _ga="${_preset_git[$_gi]##*:}"
-      fi
-      _cfg_prompt_git "$_gp" "$_gh" "$_ga"
-      local _acct="${_GIT_ENTRY##*:}"
-      [[ -z "$_acct" ]] && break
-      FLUX_GIT_ACCOUNTS+=("$_GIT_ENTRY")
-      ok "Git account '${_GIT_ENTRY}' added."
-      _gi=$(( _gi + 1 ))
+
+    if [[ "${#_preset_git[@]}" -gt 0 ]]; then
+      # Preserve all existing entries; offer to add new ones.
+      FLUX_GIT_ACCOUNTS=("${_preset_git[@]}")
+      echo "  Existing git accounts (all preserved):"
+      local _gi=1
+      for _ge in "${_preset_git[@]}"; do
+        printf "    %d. %s\n" "$_gi" "$_ge"
+        (( _gi++ ))
+      done
       echo ""
       local _more; read -rp "  Add another git account? [y/N]: " _more || true
-      [[ "${_more:-N}" =~ ^[Yy]$ ]] || break
-      echo ""
-    done
+      if [[ "${_more:-N}" =~ ^[Yy]$ ]]; then
+        echo ""
+        while true; do
+          _cfg_prompt_git
+          local _acct="${_GIT_ENTRY##*:}"
+          [[ -z "$_acct" ]] && break
+          FLUX_GIT_ACCOUNTS+=("$_GIT_ENTRY")
+          ok "Git account '${_GIT_ENTRY}' added."
+          echo ""
+          local _more2; read -rp "  Add another git account? [y/N]: " _more2 || true
+          [[ "${_more2:-N}" =~ ^[Yy]$ ]] || break
+          echo ""
+        done
+      fi
+    else
+      while true; do
+        _cfg_prompt_git
+        local _acct="${_GIT_ENTRY##*:}"
+        [[ -z "$_acct" ]] && break
+        FLUX_GIT_ACCOUNTS+=("$_GIT_ENTRY")
+        ok "Git account '${_GIT_ENTRY}' added."
+        echo ""
+        local _more; read -rp "  Add another git account? [y/N]: " _more || true
+        [[ "${_more:-N}" =~ ^[Yy]$ ]] || break
+        echo ""
+      done
+    fi
 
     echo ""
     _cfg_save
