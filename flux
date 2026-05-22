@@ -322,12 +322,21 @@ _flux_config() {
     else
       local _i=1
       for _e in "${FLUX_DVC_REMOTES[@]}"; do
-        local _b="${_e%%:*}" _mark=""
+        local _b="${_e%%:*}" _cred_badge _primary_mark=""
+        local _ak _sk
+        _ak=$(_kc_get_dvc "$_b" "access-key-id")
+        _sk=$(_kc_get_dvc "$_b" "secret-key")
+        if [[ -n "$_ak" && -n "$_sk" ]]; then
+          _cred_badge="${GREEN}[✔]${NC}"
+        else
+          _cred_badge="${YELLOW}[✘ credentials missing]${NC}"
+        fi
         if [[ "$_b" == "$FLUX_PRIMARY_DVC_REMOTE" ]] || \
            [[ -z "$FLUX_PRIMARY_DVC_REMOTE" && $_i -eq 1 ]]; then
-          _mark="  [← primary]"
+          _primary_mark="  [← primary]"
         fi
-        printf "    %d. %s%s\n" "$_i" "$_e" "$_mark"
+        printf "    %d. %s  " "$_i" "$_e"
+        echo -e "${_cred_badge}${_primary_mark}"
         (( _i++ ))
       done
     fi
