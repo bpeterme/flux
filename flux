@@ -134,7 +134,8 @@ _flux_write_config() {
   # $2: size cap MB
   # $3: verbose
   # $4: newline-separated "proto:host:account" git account entries
-  local dvc_str="$1" cap="$2" verbose="$3" git_str="$4"
+  # $5: primary DVC remote bucket name
+  local dvc_str="$1" cap="$2" verbose="$3" git_str="$4" primary_dvc="${5:-}"
   mkdir -p "$(dirname "$FLUX_CONFIG")"
   local tmp; tmp=$(mktemp)
   {
@@ -153,6 +154,7 @@ _flux_write_config() {
       done <<< "$dvc_str"
     fi
     echo ")"
+    echo "FLUX_PRIMARY_DVC_REMOTE=${primary_dvc}  # active remote bucket; must match an entry in FLUX_DVC_REMOTES"
     echo ""
     echo "# ── routing ───────────────────────────────────────────────────────────────────"
     echo "FLUX_SIZE_CAP_MB=${cap}        # files larger than this go to R2; smaller stay in Git"
@@ -222,10 +224,16 @@ _flux_is_configured() {
   [[ -f "$FLUX_CONFIG" ]] || return 1
   FLUX_DVC_REMOTES=()
   FLUX_GIT_ACCOUNTS=()
+  FLUX_PRIMARY_DVC_REMOTE=""
   # shellcheck source=/dev/null
   source "$FLUX_CONFIG" 2>/dev/null || return 1
   [[ "${#FLUX_DVC_REMOTES[@]}" -gt 0 ]] || return 1
-  local _bucket="${FLUX_DVC_REMOTES[0]%%:*}"
+  local _bucket
+  if [[ -n "$FLUX_PRIMARY_DVC_REMOTE" ]]; then
+    _bucket="$FLUX_PRIMARY_DVC_REMOTE"
+  else
+    _bucket="${FLUX_DVC_REMOTES[0]%%:*}"
+  fi
   [[ -n "$(_kc_get_dvc "$_bucket" 'access-key-id')" ]] || return 1
   [[ -n "$(_kc_get_dvc "$_bucket" 'secret-key')" ]]    || return 1
 }
@@ -283,6 +291,7 @@ _flux_sanitize_repo_name() {
 
 _flux_config() {
   _flux_require_macos
+  clear
 
   # ── helpers (defined globally when _flux_config runs) ─────────────────────
 
@@ -299,7 +308,10 @@ _flux_config() {
   }
 
   _cfg_save() {
-    _flux_write_config "$(_cfg_dvc_str)" "${FLUX_SIZE_CAP_MB:-5}" "${FLUX_VERBOSE:-false}" "$(_cfg_git_str)"
+    if [[ -z "$FLUX_PRIMARY_DVC_REMOTE" ]] && [[ "${#FLUX_DVC_REMOTES[@]}" -gt 0 ]]; then
+      FLUX_PRIMARY_DVC_REMOTE="${FLUX_DVC_REMOTES[0]%%:*}"
+    fi
+    _flux_write_config "$(_cfg_dvc_str)" "${FLUX_SIZE_CAP_MB:-5}" "${FLUX_VERBOSE:-false}" "$(_cfg_git_str)" "$FLUX_PRIMARY_DVC_REMOTE"
     ok "Config saved: $FLUX_CONFIG"
   }
 
@@ -310,7 +322,12 @@ _flux_config() {
     else
       local _i=1
       for _e in "${FLUX_DVC_REMOTES[@]}"; do
-        printf "    %d. %-28s account: %s\n" "$_i" "${_e%%:*}" "${_e#*:}"
+        local _b="${_e%%:*}" _mark=""
+        if [[ "$_b" == "$FLUX_PRIMARY_DVC_REMOTE" ]] || \
+           [[ -z "$FLUX_PRIMARY_DVC_REMOTE" && $_i -eq 1 ]]; then
+          _mark="  [← primary]"
+        fi
+        printf "    %d. %s%s\n" "$_i" "$_e" "$_mark"
         (( _i++ ))
       done
     fi
@@ -356,6 +373,7 @@ _flux_config() {
 
   FLUX_DVC_REMOTES=()
   FLUX_GIT_ACCOUNTS=()
+  FLUX_PRIMARY_DVC_REMOTE=""
   FLUX_SIZE_CAP_MB=5
   FLUX_VERBOSE=false
 
@@ -544,6 +562,7 @@ _flux_config() {
     local _subcmd _subarg _idx _entry _old _bucket
 
     while true; do
+      clear
       echo ""
       echo "  flux config  —  ${FLUX_CONFIG}"
       echo ""
@@ -561,11 +580,18 @@ _flux_config() {
 
         d|D)
           while true; do
+            clear
             echo ""
             _cfg_show_dvc
             echo ""
-            local _sub
-            read -rp "  [a] Add   [e N] Edit   [r N] Remove   Enter to go back: " _sub || true
+            local _sub _dvc_n="${#FLUX_DVC_REMOTES[@]}"
+            if (( _dvc_n == 0 )); then
+              read -rp "  [a] Add   Enter to go back: " _sub || true
+            elif (( _dvc_n == 1 )); then
+              read -rp "  [a] Add   [e] Edit   [r] Remove   Enter to go back: " _sub || true
+            else
+              read -rp "  [a] Add   [e #] Edit   [r #] Remove   [p #] Set primary   Enter to go back: " _sub || true
+            fi
             echo ""
             _subcmd="${_sub%% *}"; _subarg="${_sub#* }"
             [[ "$_subcmd" == "$_subarg" ]] && _subarg=""
@@ -582,6 +608,7 @@ _flux_config() {
                   warn "Skipped — bucket and credentials required."
                 fi ;;
               e|E)
+                [[ -z "$_subarg" && _dvc_n -eq 1 ]] && _subarg="1"
                 if [[ "$_subarg" =~ ^[0-9]+$ ]]; then
                   _idx=$(( _subarg - 1 ))
                   if (( _idx >= 0 && _idx < ${#FLUX_DVC_REMOTES[@]} )); then
@@ -589,18 +616,20 @@ _flux_config() {
                     echo ""
                     _cfg_prompt_dvc "${_old%%:*}" "${_old#*:}"
                     if [[ -n "$_DVC_BUCKET" ]]; then
-                      [[ "${_old%%:*}" != "$_DVC_BUCKET" ]] && {
+                      if [[ "${_old%%:*}" != "$_DVC_BUCKET" ]]; then
                         _kc_del_dvc "${_old%%:*}" "access-key-id"
                         _kc_del_dvc "${_old%%:*}" "secret-key"
-                      }
+                        [[ "$FLUX_PRIMARY_DVC_REMOTE" == "${_old%%:*}" ]] && FLUX_PRIMARY_DVC_REMOTE="$_DVC_BUCKET"
+                      fi
                       FLUX_DVC_REMOTES[$_idx]="${_DVC_BUCKET}:${_DVC_ACCOUNT_ID}"
                       [[ -n "$_DVC_ACCESS_KEY" ]] && _kc_set_dvc "$_DVC_BUCKET" "access-key-id" "$_DVC_ACCESS_KEY"
                       [[ -n "$_DVC_SECRET_KEY" ]] && _kc_set_dvc "$_DVC_BUCKET" "secret-key"    "$_DVC_SECRET_KEY"
                       _cfg_save
                     fi
                   else warn "Invalid index."; fi
-                else warn "Usage: e N  (e.g. 'e 1')"; fi ;;
+                else warn "Usage: e #  (e.g. 'e 2')"; fi ;;
               r|R)
+                [[ -z "$_subarg" && _dvc_n -eq 1 ]] && _subarg="1"
                 if [[ "$_subarg" =~ ^[0-9]+$ ]]; then
                   _idx=$(( _subarg - 1 ))
                   if (( _idx >= 0 && _idx < ${#FLUX_DVC_REMOTES[@]} )); then
@@ -608,10 +637,20 @@ _flux_config() {
                     FLUX_DVC_REMOTES=( "${FLUX_DVC_REMOTES[@]:0:$_idx}" "${FLUX_DVC_REMOTES[@]:$((_idx+1))}" )
                     _kc_del_dvc "$_bucket" "access-key-id"
                     _kc_del_dvc "$_bucket" "secret-key"
+                    [[ "$FLUX_PRIMARY_DVC_REMOTE" == "$_bucket" ]] && FLUX_PRIMARY_DVC_REMOTE=""
                     _cfg_save
                     ok "Removed DVC remote '${_bucket}'."
                   else warn "Invalid index."; fi
-                else warn "Usage: r N  (e.g. 'r 1')"; fi ;;
+                else warn "Usage: r #  (e.g. 'r 2')"; fi ;;
+              p|P)
+                if [[ "$_subarg" =~ ^[0-9]+$ ]]; then
+                  _idx=$(( _subarg - 1 ))
+                  if (( _idx >= 0 && _idx < ${#FLUX_DVC_REMOTES[@]} )); then
+                    FLUX_PRIMARY_DVC_REMOTE="${FLUX_DVC_REMOTES[$_idx]%%:*}"
+                    _cfg_save
+                    ok "Primary DVC remote set to '${FLUX_PRIMARY_DVC_REMOTE}'."
+                  else warn "Invalid index."; fi
+                else warn "Usage: p #  (e.g. 'p 2')"; fi ;;
               "") break ;;
               *) warn "Unknown command." ;;
             esac
@@ -619,11 +658,18 @@ _flux_config() {
 
         g|G)
           while true; do
+            clear
             echo ""
             _cfg_show_git
             echo ""
-            local _sub
-            read -rp "  [a] Add   [e N] Edit   [r N] Remove   Enter to go back: " _sub || true
+            local _sub _git_n="${#FLUX_GIT_ACCOUNTS[@]}"
+            if (( _git_n == 0 )); then
+              read -rp "  [a] Add   Enter to go back: " _sub || true
+            elif (( _git_n == 1 )); then
+              read -rp "  [a] Add   [e] Edit   [r] Remove   Enter to go back: " _sub || true
+            else
+              read -rp "  [a] Add   [e #] Edit   [r #] Remove   Enter to go back: " _sub || true
+            fi
             echo ""
             _subcmd="${_sub%% *}"; _subarg="${_sub#* }"
             [[ "$_subcmd" == "$_subarg" ]] && _subarg=""
@@ -638,6 +684,7 @@ _flux_config() {
                   warn "Skipped — account is required."
                 fi ;;
               e|E)
+                [[ -z "$_subarg" && _git_n -eq 1 ]] && _subarg="1"
                 if [[ "$_subarg" =~ ^[0-9]+$ ]]; then
                   _idx=$(( _subarg - 1 ))
                   if (( _idx >= 0 && _idx < ${#FLUX_GIT_ACCOUNTS[@]} )); then
@@ -650,8 +697,9 @@ _flux_config() {
                       _cfg_save
                     fi
                   else warn "Invalid index."; fi
-                else warn "Usage: e N  (e.g. 'e 1')"; fi ;;
+                else warn "Usage: e #  (e.g. 'e 2')"; fi ;;
               r|R)
+                [[ -z "$_subarg" && _git_n -eq 1 ]] && _subarg="1"
                 if [[ "$_subarg" =~ ^[0-9]+$ ]]; then
                   _idx=$(( _subarg - 1 ))
                   if (( _idx >= 0 && _idx < ${#FLUX_GIT_ACCOUNTS[@]} )); then
@@ -660,13 +708,14 @@ _flux_config() {
                     _cfg_save
                     ok "Removed git account '${_removed}'."
                   else warn "Invalid index."; fi
-                else warn "Usage: r N  (e.g. 'r 1')"; fi ;;
+                else warn "Usage: r #  (e.g. 'r 2')"; fi ;;
               "") break ;;
               *) warn "Unknown command." ;;
             esac
           done ;;
 
         o|O)
+          clear
           echo ""
           while true; do
             _flux_prompt_value "Size cap MB" "${FLUX_SIZE_CAP_MB:-5}" false
@@ -682,6 +731,7 @@ _flux_config() {
           _cfg_save ;;
 
         r|R)
+          clear
           local _confirm
           read -rp "  Remove all flux config and credentials? [y/N]: " _confirm || true
           if [[ "${_confirm:-}" =~ ^[Yy]$ ]]; then
