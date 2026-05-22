@@ -138,10 +138,14 @@ _flux_write_config() {
   mkdir -p "$(dirname "$FLUX_CONFIG")"
   local tmp; tmp=$(mktemp)
   {
-    echo "# flux configuration — managed by 'flux config'."
+    echo "# flux configuration"
+    echo "# This file is managed by 'flux config' — you normally don't edit it by hand."
+    echo "# Sensitive credentials (access key, secret key) are stored in macOS Keychain,"
+    echo "# keyed per bucket as flux.dvc.{bucket}.{access-key-id|secret-key}."
     echo ""
-    echo "# ── DVC remotes ──────────────────────────────────────────────────────────────"
-    echo "# Format: \"bucket:account_id\"  (credentials in Keychain as flux.dvc.{bucket}.*)"
+    echo "# ── DVC remotes ───────────────────────────────────────────────────────────────"
+    echo "# One or more Cloudflare R2 accounts. Format: \"bucket:account_id\""
+    echo "# Credentials are stored in Keychain — not here."
     echo "FLUX_DVC_REMOTES=("
     if [[ -n "$dvc_str" ]]; then
       while IFS= read -r entry; do
@@ -150,11 +154,12 @@ _flux_write_config() {
     fi
     echo ")"
     echo ""
-    echo "# ── routing ──────────────────────────────────────────────────────────────────"
-    echo "FLUX_SIZE_CAP_MB=${cap}"
-    echo "FLUX_VERBOSE=${verbose}"
+    echo "# ── routing ───────────────────────────────────────────────────────────────────"
+    echo "FLUX_SIZE_CAP_MB=${cap}        # files larger than this go to R2; smaller stay in Git"
+    echo "FLUX_VERBOSE=${verbose}        # verbose hook output (true/false)"
     echo ""
-    echo "# ── git accounts ─────────────────────────────────────────────────────────────"
+    echo "# ── git accounts ──────────────────────────────────────────────────────────────"
+    echo "# One or more hosting accounts used to propose git remote URLs during 'flux add'."
     echo "# Format: \"protocol:host:account\"  (protocol: ssh or https)"
     echo "FLUX_GIT_ACCOUNTS=("
     if [[ -n "$git_str" ]]; then
@@ -163,6 +168,16 @@ _flux_write_config() {
       done <<< "$git_str"
     fi
     echo ")"
+    echo ""
+    echo "# ─── companion tools ──────────────────────────────────────────────────────────"
+    echo ""
+    echo "# claudebox — Claude Code container runtime"
+    echo "# Install: brew tap bpeterme/claudebox && brew install bpeterme/claudebox/claudebox"
+    echo "# Set up:  cbox build"
+    echo ""
+    echo "# claudedot — cross-machine config + history sync via git"
+    echo "# Install: brew tap bpeterme/claudedot && brew install bpeterme/claudedot/claudedot"
+    echo "# Set up:  cdot config"
   } > "$tmp"
   chmod 600 "$tmp"
   # cp follows symlinks — writes to the real file, preserving any symlink at $FLUX_CONFIG
@@ -326,9 +341,14 @@ _flux_config() {
   _cfg_prompt_git() {
     # Prompts for a git account entry. Uses $1 $2 $3 as current proto/host/account.
     # Sets global: _GIT_ENTRY
-    _flux_prompt_value "Protocol (ssh/https)" "${1:-ssh}"        false; local _p="$FLUX_VALUE"
-    _flux_prompt_value "Host"                 "${2:-github.com}" false; local _h="$FLUX_VALUE"
-    _flux_prompt_value "Account"              "${3:-}"           false; local _a="$FLUX_VALUE"
+    local _p
+    while true; do
+      _flux_prompt_value "Protocol (ssh/https)" "${1:-ssh}" false; _p="$FLUX_VALUE"
+      [[ "$_p" == "ssh" || "$_p" == "https" ]] && break
+      warn "Protocol must be 'ssh' or 'https'."
+    done
+    _flux_prompt_value "Host"    "${2:-github.com}" false; local _h="$FLUX_VALUE"
+    _flux_prompt_value "Account" "${3:-}"           false; local _a="$FLUX_VALUE"
     _GIT_ENTRY="${_p}:${_h}:${_a}"
   }
 
@@ -373,10 +393,23 @@ _flux_config() {
       echo ""
     fi
 
+    # Stash values pre-loaded from flux.env; reset live arrays so the setup
+    # loop starts fresh (avoids duplicates when the file has data but Keychain
+    # credentials are still missing).
+    local _preset_dvc=("${FLUX_DVC_REMOTES[@]}") _preset_git=("${FLUX_GIT_ACCOUNTS[@]}")
+    FLUX_DVC_REMOTES=()
+    FLUX_GIT_ACCOUNTS=()
+
     echo "  ── DVC remotes (Cloudflare R2) ──────────────────────────────────────────"
     echo ""
+    local _pi=0
     while true; do
-      _cfg_prompt_dvc
+      local _pb="" _pa=""
+      if (( _pi < ${#_preset_dvc[@]} )); then
+        _pb="${_preset_dvc[$_pi]%%:*}"
+        _pa="${_preset_dvc[$_pi]#*:}"
+      fi
+      _cfg_prompt_dvc "$_pb" "$_pa"
       if [[ -z "$_DVC_BUCKET" ]]; then
         warn "Bucket is required."; continue
       fi
@@ -387,6 +420,7 @@ _flux_config() {
       _kc_set_dvc "$_DVC_BUCKET" "access-key-id" "$_DVC_ACCESS_KEY"
       _kc_set_dvc "$_DVC_BUCKET" "secret-key"    "$_DVC_SECRET_KEY"
       ok "DVC remote '${_DVC_BUCKET}' saved."
+      _pi=$(( _pi + 1 ))
       echo ""
       local _more; read -rp "  Add another DVC remote? [y/N]: " _more || true
       [[ "${_more:-N}" =~ ^[Yy]$ ]] || break
@@ -396,19 +430,35 @@ _flux_config() {
     echo ""
     echo "  ── Routing ──────────────────────────────────────────────────────────────"
     echo ""
-    _flux_prompt_value "Size cap MB" "${FLUX_SIZE_CAP_MB:-5}" false; FLUX_SIZE_CAP_MB="$FLUX_VALUE"
-    _flux_prompt_value "Verbose"     "${FLUX_VERBOSE:-false}"  false; FLUX_VERBOSE="$FLUX_VALUE"
+    while true; do
+      _flux_prompt_value "Size cap MB" "${FLUX_SIZE_CAP_MB:-5}" false
+      [[ "$FLUX_VALUE" =~ ^[1-9][0-9]*$ ]] && { FLUX_SIZE_CAP_MB="$FLUX_VALUE"; break; }
+      warn "Size cap must be a positive integer."
+    done
+    while true; do
+      _flux_prompt_value "Verbose (true/false)" "${FLUX_VERBOSE:-false}" false
+      [[ "$FLUX_VALUE" == "true" || "$FLUX_VALUE" == "false" ]] && { FLUX_VERBOSE="$FLUX_VALUE"; break; }
+      warn "Verbose must be 'true' or 'false'."
+    done
 
     echo ""
     echo "  ── Git accounts (optional) ──────────────────────────────────────────────"
     echo "  Used to propose git remote URLs during 'flux add'."
     echo ""
+    local _gi=0
     while true; do
-      _cfg_prompt_git
+      local _gp="" _gh="" _ga=""
+      if (( _gi < ${#_preset_git[@]} )); then
+        _gp="${_preset_git[$_gi]%%:*}"
+        _gh="${_preset_git[$_gi]#*:}"; _gh="${_gh%%:*}"
+        _ga="${_preset_git[$_gi]##*:}"
+      fi
+      _cfg_prompt_git "$_gp" "$_gh" "$_ga"
       local _acct="${_GIT_ENTRY##*:}"
       [[ -z "$_acct" ]] && break
       FLUX_GIT_ACCOUNTS+=("$_GIT_ENTRY")
       ok "Git account '${_GIT_ENTRY}' added."
+      _gi=$(( _gi + 1 ))
       echo ""
       local _more; read -rp "  Add another git account? [y/N]: " _more || true
       [[ "${_more:-N}" =~ ^[Yy]$ ]] || break
@@ -549,8 +599,16 @@ _flux_config() {
 
         o|O)
           echo ""
-          _flux_prompt_value "Size cap MB" "${FLUX_SIZE_CAP_MB:-5}" false; FLUX_SIZE_CAP_MB="$FLUX_VALUE"
-          _flux_prompt_value "Verbose"     "${FLUX_VERBOSE:-false}"  false; FLUX_VERBOSE="$FLUX_VALUE"
+          while true; do
+            _flux_prompt_value "Size cap MB" "${FLUX_SIZE_CAP_MB:-5}" false
+            [[ "$FLUX_VALUE" =~ ^[1-9][0-9]*$ ]] && { FLUX_SIZE_CAP_MB="$FLUX_VALUE"; break; }
+            warn "Size cap must be a positive integer."
+          done
+          while true; do
+            _flux_prompt_value "Verbose (true/false)" "${FLUX_VERBOSE:-false}" false
+            [[ "$FLUX_VALUE" == "true" || "$FLUX_VALUE" == "false" ]] && { FLUX_VERBOSE="$FLUX_VALUE"; break; }
+            warn "Verbose must be 'true' or 'false'."
+          done
           echo ""
           _cfg_save ;;
 
@@ -1349,13 +1407,16 @@ _flux_dry_run_histogram() {
       printf "    %*s - %-*s" "$max_lo_width" "$(_flux_size_unit "$lo")" "$max_right_width" "$(_flux_size_unit "$hi")"
     fi
 
-    # Bar: build blocks then pad explicitly in display columns (█ is multi-byte,
-    # so %-*s byte-based padding would misalign counts for partial bars)
+    # Bar: build blocks then pad explicitly in display columns (block chars are
+    # multi-byte, so %-*s byte-based padding would misalign counts for partial bars).
+    # Shading: ░ for Git-routed buckets, █ for DVC-routed buckets.
     bar=""; bar_len=0
     if (( count > 0 && max_count > 0 )); then
       bar_len=$(( count * BAR_WIDTH / max_count ))
       if (( bar_len < 1 )); then bar_len=1; fi
-      for (( j=0; j<bar_len; j++ )); do bar="${bar}█"; done
+      local bar_char
+      if (( sep_after >= 0 && i <= sep_after )); then bar_char="░"; else bar_char="█"; fi
+      for (( j=0; j<bar_len; j++ )); do bar="${bar}${bar_char}"; done
     fi
     bar_pad=""; for (( j=bar_len; j<BAR_WIDTH; j++ )); do bar_pad="${bar_pad} "; done
 
