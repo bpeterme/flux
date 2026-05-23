@@ -268,8 +268,8 @@ Maintenance:
   flux version          Show version
 
 Companion tools:
-  cbox                  claudebox — Claude Code container runtime
-  cdot                  claudedot — Config + history sync across machines
+  cbox help             claudebox — Claude Code container runtime
+  cdot help             claudedot — Config + history sync across machines
 
 Help:
   flux help
