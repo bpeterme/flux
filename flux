@@ -248,7 +248,7 @@ _flux_require_git_remote() {
 # ---------------------------------------------------------------------------
 
 _flux_help() {
-  clear
+  clear 2>/dev/null || true
   cat <<'EOF'
 flux - Git + DVC auto-router for Cloudflare R2
 
@@ -292,7 +292,7 @@ _flux_sanitize_repo_name() {
 
 _flux_config() {
   _flux_require_macos
-  clear
+  clear 2>/dev/null || true
 
   # ── helpers (defined globally when _flux_config runs) ─────────────────────
 
@@ -450,7 +450,7 @@ _flux_config() {
         local _pb="${_pe%%:*}" _pa="${_pe#*:}"
         local _cst; [[ -n "$(_kc_get_dvc "$_pb" 'access-key-id')" ]] && _cst="credentials OK" || _cst="credentials MISSING"
         printf "    %d. %-28s account: %s  (%s)\n" "$(( _pi + 1 ))" "$_pb" "$_pa" "$_cst"
-        (( _pi++ ))
+        (( ++_pi ))
       done
       echo ""
       _pi=0
@@ -472,7 +472,7 @@ _flux_config() {
             echo ""
           fi
         fi
-        (( _pi++ ))
+        (( ++_pi ))
       done
       local _more; read -rp "  Add another DVC remote? [y/N]: " _more || true
       if [[ "${_more:-N}" =~ ^[Yy]$ ]]; then
@@ -583,7 +583,7 @@ _flux_config() {
     local _subcmd _subarg _idx _entry _old _bucket
 
     while true; do
-      clear
+      clear 2>/dev/null || true
       echo ""
       echo "  flux config  —  ${FLUX_CONFIG}"
       echo ""
@@ -601,7 +601,7 @@ _flux_config() {
 
         d|D)
           while true; do
-            clear
+            clear 2>/dev/null || true
             echo ""
             _cfg_show_dvc
             echo ""
@@ -679,7 +679,7 @@ _flux_config() {
 
         g|G)
           while true; do
-            clear
+            clear 2>/dev/null || true
             echo ""
             _cfg_show_git
             echo ""
@@ -736,7 +736,7 @@ _flux_config() {
           done ;;
 
         o|O)
-          clear
+          clear 2>/dev/null || true
           echo ""
           while true; do
             _flux_prompt_value "Size cap MB" "${FLUX_SIZE_CAP_MB:-5}" false
@@ -752,7 +752,7 @@ _flux_config() {
           _cfg_save ;;
 
         r|R)
-          clear
+          clear 2>/dev/null || true
           local _confirm
           read -rp "  Remove all flux config and credentials? [y/N]: " _confirm || true
           if [[ "${_confirm:-}" =~ ^[Yy]$ ]]; then
@@ -870,7 +870,7 @@ _flux_subrepo_sync() {
 
 _flux_add() {
   _flux_require_macos
-  clear
+  clear 2>/dev/null || true
 
   echo ""
   echo "  flux ${VERSION} — add"
@@ -1104,7 +1104,7 @@ _flux_add() {
 
 _flux_remove_git() {
   git rev-parse --git-dir &>/dev/null || fail "Not inside a Git repository."
-  clear
+  clear 2>/dev/null || true
 
   local HOOKS_DIR
   HOOKS_DIR="$(git rev-parse --git-dir)/hooks"
@@ -1180,7 +1180,7 @@ _flux_remove_git() {
 _flux_remove_dvc() {
   git rev-parse --git-dir &>/dev/null || fail "Not inside a Git repository."
   local force="${1:-}"
-  clear
+  clear 2>/dev/null || true
 
   if [[ ! -d ".dvc" ]]; then
     warn "No .dvc/ directory found — nothing to remove."
@@ -1315,7 +1315,7 @@ _flux_pull() {
   _flux_is_configured \
     || fail "Not configured. Run 'flux config' to set up."
   local DVC; _flux_require_dvc
-  clear
+  clear 2>/dev/null || true
 
   _flux_subrepo_sync
   if [[ "${FLUX_SUBREPO_CHANGED}" == "true" ]]; then
@@ -1341,7 +1341,7 @@ _flux_sync() {
   _flux_is_configured \
     || fail "Not configured. Run 'flux config' to set up."
   local DVC; _flux_require_dvc
-  clear
+  clear 2>/dev/null || true
 
   _flux_subrepo_sync
 
@@ -1590,7 +1590,7 @@ _flux_dry_run() {
   git rev-parse --git-dir &>/dev/null \
     || fail "Not inside a Git repository."
 
-  clear
+  clear 2>/dev/null || true
 
   local SIZE_CAP_MB SIZE_CAP_BYTES
   SIZE_CAP_MB=$(git config --get dvc-router.size-cap-mb 2>/dev/null || echo "5")
@@ -1772,7 +1772,7 @@ _flux_doctor_inline() {
 
 _flux_doctor() {
   _flux_require_macos
-  clear
+  clear 2>/dev/null || true
 
   local pass=true
 

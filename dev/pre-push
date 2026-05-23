@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# pre-push hook for the flux development repo.
+# Runs the full test suite before any push; blocks if tests fail.
+#
+# Install: cp dev/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+if ! command -v bats &>/dev/null; then
+  echo "pre-push: bats-core not found — install it to run tests before pushing."
+  echo "  macOS:  brew install bats-core"
+  echo "  Linux:  https://github.com/bats-core/bats-core#installation"
+  exit 1
+fi
+
+echo "pre-push: running test suite..."
+if TERM=dumb bats "$REPO_ROOT/tests/unit.bats" "$REPO_ROOT/tests/integration.bats"; then
+  echo "pre-push: all tests passed."
+else
+  echo ""
+  echo "pre-push: tests failed — push blocked. Fix the failures and try again."
+  exit 1
+fi
