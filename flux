@@ -134,7 +134,8 @@ _flux_write_config() {
   # $2: size cap MB
   # $3: verbose
   # $4: newline-separated "proto:host:account" git account entries
-  local dvc_str="$1" cap="$2" verbose="$3" git_str="$4"
+  # $5: primary DVC remote bucket name
+  local dvc_str="$1" cap="$2" verbose="$3" git_str="$4" primary_dvc="${5:-}"
   mkdir -p "$(dirname "$FLUX_CONFIG")"
   local tmp; tmp=$(mktemp)
   {
@@ -153,6 +154,7 @@ _flux_write_config() {
       done <<< "$dvc_str"
     fi
     echo ")"
+    echo "FLUX_PRIMARY_DVC_REMOTE=${primary_dvc}  # active remote bucket; must match an entry in FLUX_DVC_REMOTES"
     echo ""
     echo "# ── routing ───────────────────────────────────────────────────────────────────"
     echo "FLUX_SIZE_CAP_MB=${cap}        # files larger than this go to R2; smaller stay in Git"
@@ -222,10 +224,16 @@ _flux_is_configured() {
   [[ -f "$FLUX_CONFIG" ]] || return 1
   FLUX_DVC_REMOTES=()
   FLUX_GIT_ACCOUNTS=()
+  FLUX_PRIMARY_DVC_REMOTE=""
   # shellcheck source=/dev/null
   source "$FLUX_CONFIG" 2>/dev/null || return 1
   [[ "${#FLUX_DVC_REMOTES[@]}" -gt 0 ]] || return 1
-  local _bucket="${FLUX_DVC_REMOTES[0]%%:*}"
+  local _bucket
+  if [[ -n "$FLUX_PRIMARY_DVC_REMOTE" ]]; then
+    _bucket="$FLUX_PRIMARY_DVC_REMOTE"
+  else
+    _bucket="${FLUX_DVC_REMOTES[0]%%:*}"
+  fi
   [[ -n "$(_kc_get_dvc "$_bucket" 'access-key-id')" ]] || return 1
   [[ -n "$(_kc_get_dvc "$_bucket" 'secret-key')" ]]    || return 1
 }
@@ -240,6 +248,7 @@ _flux_require_git_remote() {
 # ---------------------------------------------------------------------------
 
 _flux_help() {
+  clear 2>/dev/null || true
   cat <<'EOF'
 flux - Git + DVC auto-router for Cloudflare R2
 
@@ -259,8 +268,8 @@ Maintenance:
   flux version          Show version
 
 Companion tools:
-  cbox                  claudebox — Claude Code container runtime
-  cdot                  claudedot — Config + history sync across machines
+  cbox help             claudebox — Claude Code container runtime
+  cdot help             claudedot — Config + history sync across machines
 
 Help:
   flux help
@@ -283,6 +292,7 @@ _flux_sanitize_repo_name() {
 
 _flux_config() {
   _flux_require_macos
+  clear 2>/dev/null || true
 
   # ── helpers (defined globally when _flux_config runs) ─────────────────────
 
@@ -299,7 +309,10 @@ _flux_config() {
   }
 
   _cfg_save() {
-    _flux_write_config "$(_cfg_dvc_str)" "${FLUX_SIZE_CAP_MB:-5}" "${FLUX_VERBOSE:-false}" "$(_cfg_git_str)"
+    if [[ -z "$FLUX_PRIMARY_DVC_REMOTE" ]] && [[ "${#FLUX_DVC_REMOTES[@]}" -gt 0 ]]; then
+      FLUX_PRIMARY_DVC_REMOTE="${FLUX_DVC_REMOTES[0]%%:*}"
+    fi
+    _flux_write_config "$(_cfg_dvc_str)" "${FLUX_SIZE_CAP_MB:-5}" "${FLUX_VERBOSE:-false}" "$(_cfg_git_str)" "$FLUX_PRIMARY_DVC_REMOTE"
     ok "Config saved: $FLUX_CONFIG"
   }
 
@@ -310,7 +323,22 @@ _flux_config() {
     else
       local _i=1
       for _e in "${FLUX_DVC_REMOTES[@]}"; do
-        printf "    %d. %-28s account: %s\n" "$_i" "${_e%%:*}" "${_e#*:}"
+        local _b="${_e%%:*}" _cred_badge _primary_mark=""
+        local _ak _sk
+        _ak=$(_kc_get_dvc "$_b" "access-key-id")
+        _sk=$(_kc_get_dvc "$_b" "secret-key")
+        if [[ -n "$_ak" && -n "$_sk" ]]; then
+          _cred_badge="${GREEN}[✔]${NC}"
+        else
+          _cred_badge="${YELLOW}[✘ credentials missing]${NC}"
+        fi
+        if [[ "${#FLUX_DVC_REMOTES[@]}" -gt 1 ]] && \
+           { [[ "$_b" == "$FLUX_PRIMARY_DVC_REMOTE" ]] || \
+             [[ -z "$FLUX_PRIMARY_DVC_REMOTE" && $_i -eq 1 ]]; }; then
+          _primary_mark="  [← primary]"
+        fi
+        printf "    %d. %s  " "$_i" "$_e"
+        echo -e "${_cred_badge}${_primary_mark}"
         (( _i++ ))
       done
     fi
@@ -323,7 +351,17 @@ _flux_config() {
     else
       local _i=1
       for _e in "${FLUX_GIT_ACCOUNTS[@]}"; do
-        printf "    %d. %s\n" "$_i" "$_e"
+        local _proto="${_e%%:*}" _rest="${_e#*:}"
+        local _host="${_rest%%:*}" _account="${_rest#*:}"
+        local _badge
+        if [[ ( "$_proto" == "ssh" || "$_proto" == "https" ) && \
+              -n "$_host" && -n "$_account" ]]; then
+          _badge="${GREEN}[✔]${NC}"
+        else
+          _badge="${YELLOW}[✘ incomplete]${NC}"
+        fi
+        printf "    %d. %s  " "$_i" "$_e"
+        echo -e "${_badge}"
         (( _i++ ))
       done
     fi
@@ -356,6 +394,7 @@ _flux_config() {
 
   FLUX_DVC_REMOTES=()
   FLUX_GIT_ACCOUNTS=()
+  FLUX_PRIMARY_DVC_REMOTE=""
   FLUX_SIZE_CAP_MB=5
   FLUX_VERBOSE=false
 
@@ -393,39 +432,88 @@ _flux_config() {
       echo ""
     fi
 
-    # Stash values pre-loaded from flux.env; reset live arrays so the setup
-    # loop starts fresh (avoids duplicates when the file has data but Keychain
-    # credentials are still missing).
+    # Stash existing entries before resetting; they are preserved below and
+    # never silently discarded — only missing credentials are prompted for.
     local _preset_dvc=("${FLUX_DVC_REMOTES[@]}") _preset_git=("${FLUX_GIT_ACCOUNTS[@]}")
     FLUX_DVC_REMOTES=()
     FLUX_GIT_ACCOUNTS=()
 
     echo "  ── DVC remotes (Cloudflare R2) ──────────────────────────────────────────"
     echo ""
-    local _pi=0
-    while true; do
-      local _pb="" _pa=""
-      if (( _pi < ${#_preset_dvc[@]} )); then
-        _pb="${_preset_dvc[$_pi]%%:*}"
-        _pa="${_preset_dvc[$_pi]#*:}"
-      fi
-      _cfg_prompt_dvc "$_pb" "$_pa"
-      if [[ -z "$_DVC_BUCKET" ]]; then
-        warn "Bucket is required."; continue
-      fi
-      [[ -n "$_DVC_ACCOUNT_ID"  ]] || { warn "Account ID is required."; continue; }
-      [[ -n "$_DVC_ACCESS_KEY"  ]] || { warn "Access Key ID is required."; continue; }
-      [[ -n "$_DVC_SECRET_KEY"  ]] || { warn "Secret Key is required."; continue; }
-      FLUX_DVC_REMOTES+=("${_DVC_BUCKET}:${_DVC_ACCOUNT_ID}")
-      _kc_set_dvc "$_DVC_BUCKET" "access-key-id" "$_DVC_ACCESS_KEY"
-      _kc_set_dvc "$_DVC_BUCKET" "secret-key"    "$_DVC_SECRET_KEY"
-      ok "DVC remote '${_DVC_BUCKET}' saved."
-      _pi=$(( _pi + 1 ))
+
+    if [[ "${#_preset_dvc[@]}" -gt 0 ]]; then
+      # Preserve all existing entries; only prompt for missing credentials or new entries.
+      FLUX_DVC_REMOTES=("${_preset_dvc[@]}")
+      echo "  Existing DVC remotes:"
+      local _pi=0
+      for _pe in "${_preset_dvc[@]}"; do
+        local _pb="${_pe%%:*}" _pa="${_pe#*:}"
+        local _cst; [[ -n "$(_kc_get_dvc "$_pb" 'access-key-id')" ]] && _cst="credentials OK" || _cst="credentials MISSING"
+        printf "    %d. %-28s account: %s  (%s)\n" "$(( _pi + 1 ))" "$_pb" "$_pa" "$_cst"
+        (( ++_pi ))
+      done
       echo ""
+      _pi=0
+      for _pe in "${_preset_dvc[@]}"; do
+        local _pb="${_pe%%:*}"
+        if [[ -z "$(_kc_get_dvc "$_pb" 'access-key-id')" ]]; then
+          local _fix; read -rp "  Entry $(( _pi + 1 )) ('$_pb') is missing credentials. Enter them now? [Y/n]: " _fix || true
+          if [[ ! "${_fix:-Y}" =~ ^[Nn]$ ]]; then
+            echo ""
+            _flux_prompt_value "Access Key ID" "" false; local _ak="$FLUX_VALUE"
+            _flux_prompt_value "Secret Key"    "" true;  local _sk="$FLUX_VALUE"
+            if [[ -n "$_ak" && -n "$_sk" ]]; then
+              _kc_set_dvc "$_pb" "access-key-id" "$_ak"
+              _kc_set_dvc "$_pb" "secret-key"    "$_sk"
+              ok "Credentials saved for '${_pb}'."
+            else
+              warn "Credentials not updated — both fields are required."
+            fi
+            echo ""
+          fi
+        fi
+        (( ++_pi ))
+      done
       local _more; read -rp "  Add another DVC remote? [y/N]: " _more || true
-      [[ "${_more:-N}" =~ ^[Yy]$ ]] || break
-      echo ""
-    done
+      if [[ "${_more:-N}" =~ ^[Yy]$ ]]; then
+        echo ""
+        while true; do
+          _cfg_prompt_dvc
+          if [[ -z "$_DVC_BUCKET" ]]; then
+            warn "Bucket is required."; continue
+          fi
+          [[ -n "$_DVC_ACCOUNT_ID"  ]] || { warn "Account ID is required."; continue; }
+          [[ -n "$_DVC_ACCESS_KEY"  ]] || { warn "Access Key ID is required."; continue; }
+          [[ -n "$_DVC_SECRET_KEY"  ]] || { warn "Secret Key is required."; continue; }
+          FLUX_DVC_REMOTES+=("${_DVC_BUCKET}:${_DVC_ACCOUNT_ID}")
+          _kc_set_dvc "$_DVC_BUCKET" "access-key-id" "$_DVC_ACCESS_KEY"
+          _kc_set_dvc "$_DVC_BUCKET" "secret-key"    "$_DVC_SECRET_KEY"
+          ok "DVC remote '${_DVC_BUCKET}' saved."
+          echo ""
+          local _more2; read -rp "  Add another DVC remote? [y/N]: " _more2 || true
+          [[ "${_more2:-N}" =~ ^[Yy]$ ]] || break
+          echo ""
+        done
+      fi
+    else
+      while true; do
+        _cfg_prompt_dvc
+        if [[ -z "$_DVC_BUCKET" ]]; then
+          warn "Bucket is required."; continue
+        fi
+        [[ -n "$_DVC_ACCOUNT_ID"  ]] || { warn "Account ID is required."; continue; }
+        [[ -n "$_DVC_ACCESS_KEY"  ]] || { warn "Access Key ID is required."; continue; }
+        [[ -n "$_DVC_SECRET_KEY"  ]] || { warn "Secret Key is required."; continue; }
+        FLUX_DVC_REMOTES+=("${_DVC_BUCKET}:${_DVC_ACCOUNT_ID}")
+        _kc_set_dvc "$_DVC_BUCKET" "access-key-id" "$_DVC_ACCESS_KEY"
+        _kc_set_dvc "$_DVC_BUCKET" "secret-key"    "$_DVC_SECRET_KEY"
+        ok "DVC remote '${_DVC_BUCKET}' saved."
+        echo ""
+        local _more; read -rp "  Add another DVC remote? [y/N]: " _more || true
+        [[ "${_more:-N}" =~ ^[Yy]$ ]] || break
+        echo ""
+      done
+    fi
 
     echo ""
     echo "  ── Routing ──────────────────────────────────────────────────────────────"
@@ -445,25 +533,45 @@ _flux_config() {
     echo "  ── Git accounts (optional) ──────────────────────────────────────────────"
     echo "  Used to propose git remote URLs during 'flux add'."
     echo ""
-    local _gi=0
-    while true; do
-      local _gp="" _gh="" _ga=""
-      if (( _gi < ${#_preset_git[@]} )); then
-        _gp="${_preset_git[$_gi]%%:*}"
-        _gh="${_preset_git[$_gi]#*:}"; _gh="${_gh%%:*}"
-        _ga="${_preset_git[$_gi]##*:}"
-      fi
-      _cfg_prompt_git "$_gp" "$_gh" "$_ga"
-      local _acct="${_GIT_ENTRY##*:}"
-      [[ -z "$_acct" ]] && break
-      FLUX_GIT_ACCOUNTS+=("$_GIT_ENTRY")
-      ok "Git account '${_GIT_ENTRY}' added."
-      _gi=$(( _gi + 1 ))
+
+    if [[ "${#_preset_git[@]}" -gt 0 ]]; then
+      # Preserve all existing entries; offer to add new ones.
+      FLUX_GIT_ACCOUNTS=("${_preset_git[@]}")
+      echo "  Existing git accounts (all preserved):"
+      local _gi=1
+      for _ge in "${_preset_git[@]}"; do
+        printf "    %d. %s\n" "$_gi" "$_ge"
+        (( _gi++ ))
+      done
       echo ""
       local _more; read -rp "  Add another git account? [y/N]: " _more || true
-      [[ "${_more:-N}" =~ ^[Yy]$ ]] || break
-      echo ""
-    done
+      if [[ "${_more:-N}" =~ ^[Yy]$ ]]; then
+        echo ""
+        while true; do
+          _cfg_prompt_git
+          local _acct="${_GIT_ENTRY##*:}"
+          [[ -z "$_acct" ]] && break
+          FLUX_GIT_ACCOUNTS+=("$_GIT_ENTRY")
+          ok "Git account '${_GIT_ENTRY}' added."
+          echo ""
+          local _more2; read -rp "  Add another git account? [y/N]: " _more2 || true
+          [[ "${_more2:-N}" =~ ^[Yy]$ ]] || break
+          echo ""
+        done
+      fi
+    else
+      while true; do
+        _cfg_prompt_git
+        local _acct="${_GIT_ENTRY##*:}"
+        [[ -z "$_acct" ]] && break
+        FLUX_GIT_ACCOUNTS+=("$_GIT_ENTRY")
+        ok "Git account '${_GIT_ENTRY}' added."
+        echo ""
+        local _more; read -rp "  Add another git account? [y/N]: " _more || true
+        [[ "${_more:-N}" =~ ^[Yy]$ ]] || break
+        echo ""
+      done
+    fi
 
     echo ""
     _cfg_save
@@ -475,6 +583,7 @@ _flux_config() {
     local _subcmd _subarg _idx _entry _old _bucket
 
     while true; do
+      clear 2>/dev/null || true
       echo ""
       echo "  flux config  —  ${FLUX_CONFIG}"
       echo ""
@@ -492,11 +601,18 @@ _flux_config() {
 
         d|D)
           while true; do
+            clear 2>/dev/null || true
             echo ""
             _cfg_show_dvc
             echo ""
-            local _sub
-            read -rp "  [a] Add   [e N] Edit   [r N] Remove   Enter to go back: " _sub || true
+            local _sub _dvc_n="${#FLUX_DVC_REMOTES[@]}"
+            if (( _dvc_n == 0 )); then
+              read -rp "  [a] Add   Enter to go back: " _sub || true
+            elif (( _dvc_n == 1 )); then
+              read -rp "  [a] Add   [e] Edit   [r] Remove   Enter to go back: " _sub || true
+            else
+              read -rp "  [a] Add   [e #] Edit   [r #] Remove   [p #] Set primary   Enter to go back: " _sub || true
+            fi
             echo ""
             _subcmd="${_sub%% *}"; _subarg="${_sub#* }"
             [[ "$_subcmd" == "$_subarg" ]] && _subarg=""
@@ -513,6 +629,7 @@ _flux_config() {
                   warn "Skipped — bucket and credentials required."
                 fi ;;
               e|E)
+                [[ -z "$_subarg" && _dvc_n -eq 1 ]] && _subarg="1"
                 if [[ "$_subarg" =~ ^[0-9]+$ ]]; then
                   _idx=$(( _subarg - 1 ))
                   if (( _idx >= 0 && _idx < ${#FLUX_DVC_REMOTES[@]} )); then
@@ -520,18 +637,20 @@ _flux_config() {
                     echo ""
                     _cfg_prompt_dvc "${_old%%:*}" "${_old#*:}"
                     if [[ -n "$_DVC_BUCKET" ]]; then
-                      [[ "${_old%%:*}" != "$_DVC_BUCKET" ]] && {
+                      if [[ "${_old%%:*}" != "$_DVC_BUCKET" ]]; then
                         _kc_del_dvc "${_old%%:*}" "access-key-id"
                         _kc_del_dvc "${_old%%:*}" "secret-key"
-                      }
+                        [[ "$FLUX_PRIMARY_DVC_REMOTE" == "${_old%%:*}" ]] && FLUX_PRIMARY_DVC_REMOTE="$_DVC_BUCKET"
+                      fi
                       FLUX_DVC_REMOTES[$_idx]="${_DVC_BUCKET}:${_DVC_ACCOUNT_ID}"
                       [[ -n "$_DVC_ACCESS_KEY" ]] && _kc_set_dvc "$_DVC_BUCKET" "access-key-id" "$_DVC_ACCESS_KEY"
                       [[ -n "$_DVC_SECRET_KEY" ]] && _kc_set_dvc "$_DVC_BUCKET" "secret-key"    "$_DVC_SECRET_KEY"
                       _cfg_save
                     fi
                   else warn "Invalid index."; fi
-                else warn "Usage: e N  (e.g. 'e 1')"; fi ;;
+                else warn "Usage: e #  (e.g. 'e 2')"; fi ;;
               r|R)
+                [[ -z "$_subarg" && _dvc_n -eq 1 ]] && _subarg="1"
                 if [[ "$_subarg" =~ ^[0-9]+$ ]]; then
                   _idx=$(( _subarg - 1 ))
                   if (( _idx >= 0 && _idx < ${#FLUX_DVC_REMOTES[@]} )); then
@@ -539,10 +658,20 @@ _flux_config() {
                     FLUX_DVC_REMOTES=( "${FLUX_DVC_REMOTES[@]:0:$_idx}" "${FLUX_DVC_REMOTES[@]:$((_idx+1))}" )
                     _kc_del_dvc "$_bucket" "access-key-id"
                     _kc_del_dvc "$_bucket" "secret-key"
+                    [[ "$FLUX_PRIMARY_DVC_REMOTE" == "$_bucket" ]] && FLUX_PRIMARY_DVC_REMOTE=""
                     _cfg_save
                     ok "Removed DVC remote '${_bucket}'."
                   else warn "Invalid index."; fi
-                else warn "Usage: r N  (e.g. 'r 1')"; fi ;;
+                else warn "Usage: r #  (e.g. 'r 2')"; fi ;;
+              p|P)
+                if [[ "$_subarg" =~ ^[0-9]+$ ]]; then
+                  _idx=$(( _subarg - 1 ))
+                  if (( _idx >= 0 && _idx < ${#FLUX_DVC_REMOTES[@]} )); then
+                    FLUX_PRIMARY_DVC_REMOTE="${FLUX_DVC_REMOTES[$_idx]%%:*}"
+                    _cfg_save
+                    ok "Primary DVC remote set to '${FLUX_PRIMARY_DVC_REMOTE}'."
+                  else warn "Invalid index."; fi
+                else warn "Usage: p #  (e.g. 'p 2')"; fi ;;
               "") break ;;
               *) warn "Unknown command." ;;
             esac
@@ -550,11 +679,18 @@ _flux_config() {
 
         g|G)
           while true; do
+            clear 2>/dev/null || true
             echo ""
             _cfg_show_git
             echo ""
-            local _sub
-            read -rp "  [a] Add   [e N] Edit   [r N] Remove   Enter to go back: " _sub || true
+            local _sub _git_n="${#FLUX_GIT_ACCOUNTS[@]}"
+            if (( _git_n == 0 )); then
+              read -rp "  [a] Add   Enter to go back: " _sub || true
+            elif (( _git_n == 1 )); then
+              read -rp "  [a] Add   [e] Edit   [r] Remove   Enter to go back: " _sub || true
+            else
+              read -rp "  [a] Add   [e #] Edit   [r #] Remove   Enter to go back: " _sub || true
+            fi
             echo ""
             _subcmd="${_sub%% *}"; _subarg="${_sub#* }"
             [[ "$_subcmd" == "$_subarg" ]] && _subarg=""
@@ -569,6 +705,7 @@ _flux_config() {
                   warn "Skipped — account is required."
                 fi ;;
               e|E)
+                [[ -z "$_subarg" && _git_n -eq 1 ]] && _subarg="1"
                 if [[ "$_subarg" =~ ^[0-9]+$ ]]; then
                   _idx=$(( _subarg - 1 ))
                   if (( _idx >= 0 && _idx < ${#FLUX_GIT_ACCOUNTS[@]} )); then
@@ -581,8 +718,9 @@ _flux_config() {
                       _cfg_save
                     fi
                   else warn "Invalid index."; fi
-                else warn "Usage: e N  (e.g. 'e 1')"; fi ;;
+                else warn "Usage: e #  (e.g. 'e 2')"; fi ;;
               r|R)
+                [[ -z "$_subarg" && _git_n -eq 1 ]] && _subarg="1"
                 if [[ "$_subarg" =~ ^[0-9]+$ ]]; then
                   _idx=$(( _subarg - 1 ))
                   if (( _idx >= 0 && _idx < ${#FLUX_GIT_ACCOUNTS[@]} )); then
@@ -591,13 +729,14 @@ _flux_config() {
                     _cfg_save
                     ok "Removed git account '${_removed}'."
                   else warn "Invalid index."; fi
-                else warn "Usage: r N  (e.g. 'r 1')"; fi ;;
+                else warn "Usage: r #  (e.g. 'r 2')"; fi ;;
               "") break ;;
               *) warn "Unknown command." ;;
             esac
           done ;;
 
         o|O)
+          clear 2>/dev/null || true
           echo ""
           while true; do
             _flux_prompt_value "Size cap MB" "${FLUX_SIZE_CAP_MB:-5}" false
@@ -613,6 +752,7 @@ _flux_config() {
           _cfg_save ;;
 
         r|R)
+          clear 2>/dev/null || true
           local _confirm
           read -rp "  Remove all flux config and credentials? [y/N]: " _confirm || true
           if [[ "${_confirm:-}" =~ ^[Yy]$ ]]; then
@@ -730,6 +870,7 @@ _flux_subrepo_sync() {
 
 _flux_add() {
   _flux_require_macos
+  clear 2>/dev/null || true
 
   echo ""
   echo "  flux ${VERSION} — add"
@@ -963,6 +1104,7 @@ _flux_add() {
 
 _flux_remove_git() {
   git rev-parse --git-dir &>/dev/null || fail "Not inside a Git repository."
+  clear 2>/dev/null || true
 
   local HOOKS_DIR
   HOOKS_DIR="$(git rev-parse --git-dir)/hooks"
@@ -1038,6 +1180,7 @@ _flux_remove_git() {
 _flux_remove_dvc() {
   git rev-parse --git-dir &>/dev/null || fail "Not inside a Git repository."
   local force="${1:-}"
+  clear 2>/dev/null || true
 
   if [[ ! -d ".dvc" ]]; then
     warn "No .dvc/ directory found — nothing to remove."
@@ -1172,6 +1315,7 @@ _flux_pull() {
   _flux_is_configured \
     || fail "Not configured. Run 'flux config' to set up."
   local DVC; _flux_require_dvc
+  clear 2>/dev/null || true
 
   _flux_subrepo_sync
   if [[ "${FLUX_SUBREPO_CHANGED}" == "true" ]]; then
@@ -1197,6 +1341,7 @@ _flux_sync() {
   _flux_is_configured \
     || fail "Not configured. Run 'flux config' to set up."
   local DVC; _flux_require_dvc
+  clear 2>/dev/null || true
 
   _flux_subrepo_sync
 
@@ -1445,6 +1590,8 @@ _flux_dry_run() {
   git rev-parse --git-dir &>/dev/null \
     || fail "Not inside a Git repository."
 
+  clear 2>/dev/null || true
+
   local SIZE_CAP_MB SIZE_CAP_BYTES
   SIZE_CAP_MB=$(git config --get dvc-router.size-cap-mb 2>/dev/null || echo "5")
   SIZE_CAP_BYTES=$(( SIZE_CAP_MB * 1024 * 1024 ))
@@ -1625,6 +1772,7 @@ _flux_doctor_inline() {
 
 _flux_doctor() {
   _flux_require_macos
+  clear 2>/dev/null || true
 
   local pass=true
 
