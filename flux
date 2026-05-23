@@ -987,7 +987,7 @@ _flux_add() {
     local confirm
     read -rp "  Commit with message 'chore: initialise DVC with Cloudflare R2 remote'? [Y/n]: " confirm || true
     if [[ "${confirm:-Y}" =~ ^[Yy]?$ ]]; then
-      git commit -m "chore: initialise DVC with Cloudflare R2 remote"
+      git commit --quiet -m "chore: initialise DVC with Cloudflare R2 remote"
       ok "Initial DVC config committed."
     else
       git restore --staged .dvc/config .gitignore 2>/dev/null || true
@@ -1089,12 +1089,14 @@ _flux_add() {
   echo ""
   echo "  flux added. Your workflow:"
   echo ""
-  echo "    git commit -m 'your message'   # hook routes files automatically"
-  echo "    flux                            # sync everything"
-  echo "    flux pull                       # download the latest"
+  echo "    flux        # commit any changes and push to all remotes"
+  echo "    flux pull   # pull the latest from all remotes"
   echo ""
-  echo "  Tip: run 'flux dry-run' to preview how your files will be routed"
-  echo "       and decide whether the default size cap needs adjusting."
+  echo "  For a named commit: git commit -m 'message'  then flux to push."
+  echo "  The pre-commit hook routes files automatically on every commit:"
+  echo "  large or binary → Cloudflare R2 (DVC), small text → Git."
+  echo ""
+  echo "  Preview routing before committing: flux dry-run"
   echo ""
 }
 
