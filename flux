@@ -1068,22 +1068,24 @@ _flux_add() {
   git add .dvc/config .gitignore 2>/dev/null || true
 
   if ! git diff --cached --quiet 2>/dev/null; then
-    # Warn only about files the user staged themselves (not DVC/flux-created files)
+    # Check for files the user staged themselves (not DVC/flux-created files)
     local _user_staged=""
     if [[ -n "$_pre_staged" ]]; then
       _user_staged=$(echo "$_pre_staged" | grep -v '^\.dvc/' | grep -v '^\.dvcignore$' || true)
     fi
-    echo ""
+    local _do_commit=true
     if [[ -n "$_user_staged" ]]; then
+      echo ""
       warn "Your staged changes will be included in this commit:"
       echo "$_user_staged" | sed 's/^/    /'
       echo ""
+      local confirm
+      read -rp "  Commit now? [Y/n]: " confirm || true
+      [[ "${confirm:-Y}" =~ ^[Yy]?$ ]] || _do_commit=false
     fi
-    local confirm
-    read -rp "  Commit with message 'chore: initialise DVC with Cloudflare R2 remote'? [Y/n]: " confirm || true
-    if [[ "${confirm:-Y}" =~ ^[Yy]?$ ]]; then
+    if [[ "$_do_commit" == "true" ]]; then
       git commit --quiet -m "chore: initialise DVC with Cloudflare R2 remote"
-      ok "Initial DVC config committed."
+      ok "DVC configuration committed."
     else
       git rm --cached .dvc/config .gitignore 2>/dev/null || true
       warn "Skipped commit — stage and commit .dvc/config and .gitignore manually before using flux."
