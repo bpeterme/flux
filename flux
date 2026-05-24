@@ -239,8 +239,10 @@ _flux_is_configured() {
 }
 
 _flux_require_git_remote() {
+  git remote get-url origin &>/dev/null \
+    || fail "No git remote configured. Run: git remote add origin <url>"
   git rev-parse --abbrev-ref --symbolic-full-name '@{u}' &>/dev/null \
-    || fail "No upstream branch configured. Run 'git push -u origin <branch>' first."
+    || fail "No upstream branch set. Run: git push -u origin $(git branch --show-current 2>/dev/null || echo '<branch>')"
 }
 
 # ---------------------------------------------------------------------------
@@ -865,6 +867,53 @@ _flux_subrepo_sync() {
 }
 
 # ---------------------------------------------------------------------------
+# push upstream — probe remote, create if needed, set tracking branch
+# ---------------------------------------------------------------------------
+
+_flux_try_push_upstream() {
+  local _remote_url="$1"
+  local _branch
+  _branch=$(git branch --show-current 2>/dev/null || echo "main")
+
+  local _is_github=false _has_gh=false
+  [[ "$_remote_url" == *"github.com"* ]] && _is_github=true
+  command -v gh &>/dev/null && _has_gh=true
+
+  echo ""
+  if ! git ls-remote origin &>/dev/null 2>&1; then
+    if [[ "$_is_github" == "true" && "$_has_gh" == "true" ]]; then
+      local _slug
+      _slug=$(echo "$_remote_url" | sed 's|.*github\.com[:/]\(.*\)\.git$|\1|; s|.*github\.com[:/]\(.*\)$|\1|')
+      local _vis
+      read -rp "  Create GitHub repo '${_slug}' as [P]rivate or p[u]blic? [P/u]: " _vis || true
+      local _vis_flag="--private"
+      [[ "${_vis:-P}" =~ ^[Uu]$ ]] && _vis_flag="--public"
+      if gh repo create "$_slug" "$_vis_flag" 2>/dev/null; then
+        ok "GitHub repo created: ${_slug}"
+      else
+        warn "Could not create GitHub repo — check: gh auth status"
+        warn "  Then run: git push -u origin ${_branch}"
+        return
+      fi
+    elif [[ "$_is_github" == "true" && "$_has_gh" == "false" ]]; then
+      warn "Remote repo not found. Create it on GitHub first, then:"
+      warn "  git push -u origin ${_branch}"
+      warn "  Tip: install the GitHub CLI (gh) to automate repo creation."
+      return
+    else
+      warn "Remote repo not reachable. Create it, then: git push -u origin ${_branch}"
+      return
+    fi
+  fi
+
+  if git push -u origin HEAD 2>/dev/null; then
+    ok "Upstream set: ${_branch} → origin/${_branch}"
+  else
+    warn "Push failed. Set upstream manually: git push -u origin ${_branch}"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # add — add flux to the current repository
 # ---------------------------------------------------------------------------
 
@@ -898,8 +947,15 @@ _flux_add() {
       (( _i++ ))
     done
     echo ""
-    local _pick; read -rp "  Select DVC remote [1]: " _pick || true
-    _pick="${_pick:-1}"
+    local _pick _n="${#FLUX_DVC_REMOTES[@]}"
+    while true; do
+      read -rp "  Select DVC remote [1]: " _pick || true
+      _pick="${_pick:-1}"
+      if [[ "$_pick" =~ ^[0-9]+$ ]] && (( _pick >= 1 && _pick <= _n )); then
+        break
+      fi
+      warn "Invalid selection — enter a number between 1 and ${_n}."
+    done
     local _sel="${FLUX_DVC_REMOTES[$(( _pick - 1 ))]}"
     chosen_bucket="${_sel%%:*}"; chosen_account_id="${_sel#*:}"
     echo ""
@@ -914,6 +970,7 @@ _flux_add() {
 
   if ! git rev-parse --git-dir &>/dev/null; then
     git init --quiet
+    _flux_registry_write git_initialized true
     ok "Git repository initialised."
   else
     ok "Git repository found."
@@ -925,7 +982,6 @@ _flux_add() {
     _flux_registry_write dvc_initialized true
     ok "DVC initialised."
   else
-    _flux_registry_write dvc_initialized true
     ok "DVC already initialised."
   fi
 
@@ -936,7 +992,13 @@ _flux_add() {
     derived=$(_flux_sanitize_repo_name "$(basename "$(pwd)")")
     local override
     read -rp "  R2 folder${derived:+ [${derived}]}: " override || true
-    FLUX_R2_FOLDER="${override:-$derived}"
+    if [[ -n "$override" ]]; then
+      local _sanitized; _sanitized=$(_flux_sanitize_repo_name "$override")
+      [[ "$_sanitized" != "$override" ]] && warn "Name adjusted to: ${_sanitized}"
+      FLUX_R2_FOLDER="$_sanitized"
+    else
+      FLUX_R2_FOLDER="$derived"
+    fi
   fi
   [[ -n "$FLUX_R2_FOLDER" ]] \
     || fail "Cannot derive R2 folder — run: git config flux.r2-folder <name>"
@@ -978,19 +1040,28 @@ _flux_add() {
   done
   ok ".gitignore updated."
 
+  local _pre_staged
+  _pre_staged=$(git diff --cached --name-only 2>/dev/null || true)
+
   git add .dvc/config .gitignore 2>/dev/null || true
+
   if ! git diff --cached --quiet 2>/dev/null; then
     echo ""
+    if [[ -n "$_pre_staged" ]]; then
+      warn "You have other staged changes — they will be included in this commit:"
+      echo "$_pre_staged" | sed 's/^/    /'
+      echo ""
+    fi
     warn "flux needs to commit the following files to your repository:"
-    git diff --cached --name-only | sed 's/^/    /'
+    git diff --cached --name-only -- .dvc/config .gitignore 2>/dev/null | sed 's/^/    /'
     echo ""
     local confirm
     read -rp "  Commit with message 'chore: initialise DVC with Cloudflare R2 remote'? [Y/n]: " confirm || true
     if [[ "${confirm:-Y}" =~ ^[Yy]?$ ]]; then
-      git commit -m "chore: initialise DVC with Cloudflare R2 remote"
+      git commit --quiet -m "chore: initialise DVC with Cloudflare R2 remote"
       ok "Initial DVC config committed."
     else
-      git restore --staged .dvc/config .gitignore 2>/dev/null || true
+      git rm --cached .dvc/config .gitignore 2>/dev/null || true
       warn "Skipped commit — stage and commit .dvc/config and .gitignore manually before using flux."
     fi
   else
@@ -1026,8 +1097,11 @@ _flux_add() {
   _existing_remote=$(git remote get-url origin 2>/dev/null || true)
   if [[ -n "$_existing_remote" ]]; then
     ok "Git remote: ${_existing_remote}"
+    if ! git rev-parse --abbrev-ref --symbolic-full-name '@{u}' &>/dev/null; then
+      _flux_try_push_upstream "$_existing_remote"
+    fi
   else
-    local _repo_name; _repo_name=$(_flux_sanitize_repo_name "$(basename "$(pwd)")")
+    local _repo_name; _repo_name="${FLUX_R2_FOLDER}"
     local _proposed_url=""
     if [[ "${#FLUX_GIT_ACCOUNTS[@]}" -eq 0 ]]; then
       local _input
@@ -1081,6 +1155,7 @@ _flux_add() {
       git remote add origin "$_proposed_url"
       _flux_registry_write git_remote "$_proposed_url"
       ok "Git remote added: ${_proposed_url}"
+      _flux_try_push_upstream "$_proposed_url"
     else
       warn "No git remote set — add later with: git remote add origin <url>"
     fi
@@ -1089,12 +1164,14 @@ _flux_add() {
   echo ""
   echo "  flux added. Your workflow:"
   echo ""
-  echo "    git commit -m 'your message'   # hook routes files automatically"
-  echo "    flux                            # sync everything"
-  echo "    flux pull                       # download the latest"
+  echo "    flux        # commit any changes and push to all remotes"
+  echo "    flux pull   # pull the latest from all remotes"
   echo ""
-  echo "  Tip: run 'flux dry-run' to preview how your files will be routed"
-  echo "       and decide whether the default size cap needs adjusting."
+  echo "  For a named commit: git commit -m 'message'  then flux to push."
+  echo "  The pre-commit hook routes files automatically on every commit:"
+  echo "  large or binary → Cloudflare R2 (DVC), small text → Git."
+  echo ""
+  echo "  Preview routing before committing: flux dry-run"
   echo ""
 }
 
@@ -1167,6 +1244,11 @@ _flux_remove_git() {
     (( removed_excl++ )) || true
   done
   (( removed_excl > 0 )) && ok "Sub-repo exclusions removed (${removed_excl})."
+
+  if [[ -f ".gitignore" ]] && [[ ! -s ".gitignore" ]]; then
+    rm ".gitignore"
+    ok ".gitignore removed (empty)."
+  fi
 
   if [[ ! -f "${HOOKS_DIR}/pre-commit" ]] && (( removed == 0 )) && (( removed_excl == 0 )); then
     echo -e "${RED}✘${NC} Not a flux-managed project."
@@ -1245,11 +1327,15 @@ _flux_remove_dvc() {
     ok "Removed ${#dvcignores[@]} .dvcignore file(s)."
   fi
 
-  # Remove .dvc/ directory from git index and disk
-  git rm -r --cached -q .dvc/ 2>/dev/null || true
-  rm -rf .dvc/
-  _flux_registry_delete dvc_initialized true
-  ok ".dvc/ directory removed."
+  # Remove .dvc/ directory only if flux created it
+  if [[ "$(_flux_registry_read dvc_initialized)" == "true" ]]; then
+    git rm -r --cached -q .dvc/ 2>/dev/null || true
+    rm -rf .dvc/
+    _flux_registry_delete dvc_initialized true
+    ok ".dvc/ directory removed."
+  else
+    warn ".dvc/ was not created by flux — leaving directory in place."
+  fi
 
   # Clean flux-written .gitignore entries
   if [[ -f ".gitignore" ]]; then
@@ -1269,6 +1355,43 @@ _flux_remove_dvc() {
       done
     fi
     (( removed_gi > 0 )) && ok "Removed ${removed_gi} flux .gitignore entr(ies)." || true
+    if [[ ! -s ".gitignore" ]]; then
+      rm ".gitignore"
+      ok ".gitignore removed (empty)."
+    fi
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# maybe remove .git — offer to remove the repo if flux created it
+# ---------------------------------------------------------------------------
+
+_flux_maybe_remove_git_repo() {
+  [[ "$(_flux_registry_read git_initialized)" == "true" ]] || return 0
+
+  local _extra_branches _stash_count _commit_count
+  _extra_branches=$(git branch 2>/dev/null | grep -v '^\* ' | wc -l | tr -d ' ')
+  _stash_count=$(git stash list 2>/dev/null | wc -l | tr -d ' ')
+  _commit_count=$(git rev-list --count HEAD 2>/dev/null || echo 0)
+
+  echo ""
+  if (( _extra_branches > 0 )); then
+    warn "Other branches: ${_extra_branches}"
+  fi
+  if (( _stash_count > 0 )); then
+    warn "Stashed changes: ${_stash_count}"
+  fi
+  if (( _commit_count > 1 )); then
+    warn "Commits in history: ${_commit_count}"
+  fi
+
+  local _confirm
+  read -rp "  flux created this git repo — remove .git/ too? [Y/n]: " _confirm || true
+  if [[ "${_confirm:-Y}" =~ ^[Yy]?$ ]]; then
+    local _gitdir
+    _gitdir=$(git rev-parse --git-dir 2>/dev/null)
+    rm -rf "$_gitdir"
+    ok "Git repository removed."
   fi
 }
 
@@ -1292,9 +1415,10 @@ _flux_remove() {
       _flux_remove_dvc "$@"
       echo ""
       _flux_remove_git
+      _flux_maybe_remove_git_repo
       echo ""
       warn "Global config and credentials were not touched."
-      warn "Run 'flux config' and choose [r] to remove those."
+      warn "To remove them too (optional): flux config → [r]"
       echo ""
       ;;
     *)
