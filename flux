@@ -876,8 +876,11 @@ _flux_try_push_upstream() {
   _branch=$(git branch --show-current 2>/dev/null || echo "main")
 
   local _is_github=false _has_gh=false
+  local _is_gitlab=false _has_glab=false
   [[ "$_remote_url" == *"github.com"* ]] && _is_github=true
-  command -v gh &>/dev/null && _has_gh=true
+  [[ "$_remote_url" == *"gitlab.com"* ]] && _is_gitlab=true
+  command -v gh   &>/dev/null && _has_gh=true
+  command -v glab &>/dev/null && _has_glab=true
 
   echo ""
   if ! git ls-remote origin &>/dev/null 2>&1; then
@@ -899,6 +902,25 @@ _flux_try_push_upstream() {
       warn "Remote repo not found. Create it on GitHub first, then:"
       warn "  git push -u origin ${_branch}"
       warn "  Tip: install the GitHub CLI (gh) to automate repo creation."
+      return
+    elif [[ "$_is_gitlab" == "true" && "$_has_glab" == "true" ]]; then
+      local _slug
+      _slug=$(echo "$_remote_url" | sed 's|.*gitlab\.com[:/]\(.*\)\.git$|\1|; s|.*gitlab\.com[:/]\(.*\)$|\1|')
+      local _vis
+      read -rp "  Create GitLab repo '${_slug}' as [P]rivate or p[u]blic? [P/u]: " _vis || true
+      local _vis_flag="--private"
+      [[ "${_vis:-P}" =~ ^[Uu]$ ]] && _vis_flag="--public"
+      if glab repo create "$_slug" "$_vis_flag" 2>/dev/null; then
+        ok "GitLab repo created: ${_slug}"
+      else
+        warn "Could not create GitLab repo — check: glab auth status"
+        warn "  Then run: git push -u origin ${_branch}"
+        return
+      fi
+    elif [[ "$_is_gitlab" == "true" && "$_has_glab" == "false" ]]; then
+      warn "Remote repo not reachable. Create it on GitLab first, then:"
+      warn "  git push -u origin ${_branch}"
+      warn "  Tip: install the GitLab CLI (glab) to automate repo creation."
       return
     else
       warn "Remote repo not reachable. Create it, then: git push -u origin ${_branch}"
@@ -1046,15 +1068,17 @@ _flux_add() {
   git add .dvc/config .gitignore 2>/dev/null || true
 
   if ! git diff --cached --quiet 2>/dev/null; then
-    echo ""
+    # Warn only about files the user staged themselves (not DVC/flux-created files)
+    local _user_staged=""
     if [[ -n "$_pre_staged" ]]; then
-      warn "You have other staged changes — they will be included in this commit:"
-      echo "$_pre_staged" | sed 's/^/    /'
+      _user_staged=$(echo "$_pre_staged" | grep -v '^\.dvc/' | grep -v '^\.dvcignore$' || true)
+    fi
+    echo ""
+    if [[ -n "$_user_staged" ]]; then
+      warn "Your staged changes will be included in this commit:"
+      echo "$_user_staged" | sed 's/^/    /'
       echo ""
     fi
-    warn "flux needs to commit the following files to your repository:"
-    git diff --cached --name-only -- .dvc/config .gitignore 2>/dev/null | sed 's/^/    /'
-    echo ""
     local confirm
     read -rp "  Commit with message 'chore: initialise DVC with Cloudflare R2 remote'? [Y/n]: " confirm || true
     if [[ "${confirm:-Y}" =~ ^[Yy]?$ ]]; then
