@@ -1621,12 +1621,12 @@ _flux_dry_run_histogram() {
     done
   done <<< "$all_tracked"
 
-  # Only display when files span more than one bracket
+  # Only suppress when no files at all
   local non_empty=0
   for (( i=0; i<nbrackets; i++ )); do
     if (( counts[$i] > 0 )); then non_empty=$(( non_empty + 1 )); fi
   done
-  if (( non_empty <= 1 )); then return 0; fi
+  if (( non_empty == 0 )); then return 0; fi
 
   # Find separator position (bracket whose upper bound == cap_bytes)
   local sep_after=-1
@@ -1794,13 +1794,10 @@ _flux_dry_run() {
   echo "  flux dry-run — routing preview (${scan_mode}, cap: ${SIZE_CAP_MB} MB)"
   echo ""
 
-  (( ${#git_files[@]} > 0 )) \
-    && printf "  → Git     %d file(s)    %s\n" "${#git_files[@]}" "$(_flux_format_size "$git_bytes")"
-  if (( ${#dvc_files[@]} > 0 )); then
-    local migrating_note=""
-    (( ${#dvc_migrating[@]} > 0 )) && migrating_note="    (${#dvc_migrating[@]} migrating from Git)"
-    printf "  → DVC     %d file(s)    %s%s\n" "${#dvc_files[@]}" "$(_flux_format_size "$dvc_bytes")" "$migrating_note"
-  fi
+  printf "  → Git     %d file(s)    %s\n" "${#git_files[@]}" "$(_flux_format_size "$git_bytes")"
+  local migrating_note=""
+  (( ${#dvc_migrating[@]} > 0 )) && migrating_note="    (${#dvc_migrating[@]} migrating from Git)"
+  printf "  → DVC     %d file(s)    %s%s\n" "${#dvc_files[@]}" "$(_flux_format_size "$dvc_bytes")" "$migrating_note"
   printf "  ↷ Skip    %d file(s)    already in DVC\n" "${#skip_files[@]}"
 
   _flux_dry_run_histogram "$SIZE_CAP_BYTES"
