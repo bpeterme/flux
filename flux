@@ -963,6 +963,7 @@ _flux_add() {
 
   if ! git rev-parse --git-dir &>/dev/null; then
     git init --quiet
+    _flux_registry_write git_initialized true
     ok "Git repository initialised."
   else
     ok "Git repository found."
@@ -1229,6 +1230,11 @@ _flux_remove_git() {
   done
   (( removed_excl > 0 )) && ok "Sub-repo exclusions removed (${removed_excl})."
 
+  if [[ -f ".gitignore" ]] && [[ ! -s ".gitignore" ]]; then
+    rm ".gitignore"
+    ok ".gitignore removed (empty)."
+  fi
+
   if [[ ! -f "${HOOKS_DIR}/pre-commit" ]] && (( removed == 0 )) && (( removed_excl == 0 )); then
     echo -e "${RED}✘${NC} Not a flux-managed project."
   fi
@@ -1330,6 +1336,43 @@ _flux_remove_dvc() {
       done
     fi
     (( removed_gi > 0 )) && ok "Removed ${removed_gi} flux .gitignore entr(ies)." || true
+    if [[ ! -s ".gitignore" ]]; then
+      rm ".gitignore"
+      ok ".gitignore removed (empty)."
+    fi
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# maybe remove .git — offer to remove the repo if flux created it
+# ---------------------------------------------------------------------------
+
+_flux_maybe_remove_git_repo() {
+  [[ "$(_flux_registry_read git_initialized)" == "true" ]] || return 0
+
+  local _extra_branches _stash_count _commit_count
+  _extra_branches=$(git branch 2>/dev/null | grep -v '^\* ' | wc -l | tr -d ' ')
+  _stash_count=$(git stash list 2>/dev/null | wc -l | tr -d ' ')
+  _commit_count=$(git rev-list --count HEAD 2>/dev/null || echo 0)
+
+  echo ""
+  if (( _extra_branches > 0 )); then
+    warn "Other branches: ${_extra_branches}"
+  fi
+  if (( _stash_count > 0 )); then
+    warn "Stashed changes: ${_stash_count}"
+  fi
+  if (( _commit_count > 1 )); then
+    warn "Commits in history: ${_commit_count}"
+  fi
+
+  local _confirm
+  read -rp "  flux created this git repo — remove .git/ too? [Y/n]: " _confirm || true
+  if [[ "${_confirm:-Y}" =~ ^[Yy]?$ ]]; then
+    local _gitdir
+    _gitdir=$(git rev-parse --git-dir 2>/dev/null)
+    rm -rf "$_gitdir"
+    ok "Git repository removed."
   fi
 }
 
@@ -1353,9 +1396,10 @@ _flux_remove() {
       _flux_remove_dvc "$@"
       echo ""
       _flux_remove_git
+      _flux_maybe_remove_git_repo
       echo ""
       warn "Global config and credentials were not touched."
-      warn "Run 'flux config' and choose [r] to remove those."
+      warn "To remove them too (optional): flux config → [r]"
       echo ""
       ;;
     *)
