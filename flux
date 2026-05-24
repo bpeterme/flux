@@ -239,8 +239,10 @@ _flux_is_configured() {
 }
 
 _flux_require_git_remote() {
+  git remote get-url origin &>/dev/null \
+    || fail "No git remote configured. Run: git remote add origin <url>"
   git rev-parse --abbrev-ref --symbolic-full-name '@{u}' &>/dev/null \
-    || fail "No upstream branch configured. Run 'git push -u origin <branch>' first."
+    || fail "No upstream branch set. Run: git push -u origin $(git branch --show-current 2>/dev/null || echo '<branch>')"
 }
 
 # ---------------------------------------------------------------------------
@@ -865,6 +867,53 @@ _flux_subrepo_sync() {
 }
 
 # ---------------------------------------------------------------------------
+# push upstream — probe remote, create if needed, set tracking branch
+# ---------------------------------------------------------------------------
+
+_flux_try_push_upstream() {
+  local _remote_url="$1"
+  local _branch
+  _branch=$(git branch --show-current 2>/dev/null || echo "main")
+
+  local _is_github=false _has_gh=false
+  [[ "$_remote_url" == *"github.com"* ]] && _is_github=true
+  command -v gh &>/dev/null && _has_gh=true
+
+  echo ""
+  if ! git ls-remote origin &>/dev/null 2>&1; then
+    if [[ "$_is_github" == "true" && "$_has_gh" == "true" ]]; then
+      local _slug
+      _slug=$(echo "$_remote_url" | sed 's|.*github\.com[:/]\(.*\)\.git$|\1|; s|.*github\.com[:/]\(.*\)$|\1|')
+      local _vis
+      read -rp "  Create GitHub repo '${_slug}' as [P]rivate or p[u]blic? [P/u]: " _vis || true
+      local _vis_flag="--private"
+      [[ "${_vis:-P}" =~ ^[Uu]$ ]] && _vis_flag="--public"
+      if gh repo create "$_slug" "$_vis_flag" 2>/dev/null; then
+        ok "GitHub repo created: ${_slug}"
+      else
+        warn "Could not create GitHub repo — check: gh auth status"
+        warn "  Then run: git push -u origin ${_branch}"
+        return
+      fi
+    elif [[ "$_is_github" == "true" && "$_has_gh" == "false" ]]; then
+      warn "Remote repo not found. Create it on GitHub first, then:"
+      warn "  git push -u origin ${_branch}"
+      warn "  Tip: install the GitHub CLI (gh) to automate repo creation."
+      return
+    else
+      warn "Remote repo not reachable. Create it, then: git push -u origin ${_branch}"
+      return
+    fi
+  fi
+
+  if git push -u origin HEAD 2>/dev/null; then
+    ok "Upstream set: ${_branch} → origin/${_branch}"
+  else
+    warn "Push failed. Set upstream manually: git push -u origin ${_branch}"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # add — add flux to the current repository
 # ---------------------------------------------------------------------------
 
@@ -936,7 +985,13 @@ _flux_add() {
     derived=$(_flux_sanitize_repo_name "$(basename "$(pwd)")")
     local override
     read -rp "  R2 folder${derived:+ [${derived}]}: " override || true
-    FLUX_R2_FOLDER="${override:-$derived}"
+    if [[ -n "$override" ]]; then
+      local _sanitized; _sanitized=$(_flux_sanitize_repo_name "$override")
+      [[ "$_sanitized" != "$override" ]] && warn "Name adjusted to: ${_sanitized}"
+      FLUX_R2_FOLDER="$_sanitized"
+    else
+      FLUX_R2_FOLDER="$derived"
+    fi
   fi
   [[ -n "$FLUX_R2_FOLDER" ]] \
     || fail "Cannot derive R2 folder — run: git config flux.r2-folder <name>"
@@ -1026,8 +1081,11 @@ _flux_add() {
   _existing_remote=$(git remote get-url origin 2>/dev/null || true)
   if [[ -n "$_existing_remote" ]]; then
     ok "Git remote: ${_existing_remote}"
+    if ! git rev-parse --abbrev-ref --symbolic-full-name '@{u}' &>/dev/null; then
+      _flux_try_push_upstream "$_existing_remote"
+    fi
   else
-    local _repo_name; _repo_name=$(_flux_sanitize_repo_name "$(basename "$(pwd)")")
+    local _repo_name; _repo_name="${FLUX_R2_FOLDER}"
     local _proposed_url=""
     if [[ "${#FLUX_GIT_ACCOUNTS[@]}" -eq 0 ]]; then
       local _input
@@ -1081,6 +1139,7 @@ _flux_add() {
       git remote add origin "$_proposed_url"
       _flux_registry_write git_remote "$_proposed_url"
       ok "Git remote added: ${_proposed_url}"
+      _flux_try_push_upstream "$_proposed_url"
     else
       warn "No git remote set — add later with: git remote add origin <url>"
     fi
