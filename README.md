@@ -35,7 +35,7 @@ contains null bytes it's binary. This catches `.mp4`, `.psd`, `.db`, `.zip`,
 
 - **Zero routing decisions** — binary files and large text files go to R2 automatically
 - **Any Git remote** — works with GitHub, GitLab, Forgejo, or any self-hosted remote
-- **Credentials in Keychain** — nothing secret ever touches a file on disk
+- **Credentials in Keychain** — nothing secret ever touches a file on disk (macOS only)
 - **`.dvcignore` stays in sync** — regenerated from `.gitignore` on every commit; never edit it manually
 - **Automatic migration** — files that grow past or shrink below the threshold are re-routed in place
 - **Orphan cleanup** — deleted or renamed DVC-tracked files are detected and cleaned up automatically
@@ -46,6 +46,7 @@ contains null bytes it's binary. This catches `.mp4`, `.psd`, `.db`, `.zip`,
 brew tap bpeterme/flux
 brew install bpeterme/flux/flux
 pip install "dvc[s3]"
+# or: uv tool install "dvc[s3]"
 ```
 
 Prerequisites: macOS with Homebrew, a Cloudflare R2 bucket with an API token,
@@ -62,7 +63,8 @@ flux config
 Walks through three sections:
 
 - **DVC remotes** — one or more Cloudflare R2 accounts (bucket + account ID + credentials).
-  Add as many as you need (personal, work, client, …).
+  Add as many as you need (personal, work, client, …). If you have multiple remotes, one
+  is marked as primary and used by default for new projects.
 - **Routing** — global size cap and verbose flag.
 - **Git accounts** — one or more hosting accounts (`ssh:github.com:yourname`,
   `https:gitlab.com:workaccount`, …). Used to propose git remote URLs during `flux add`.
@@ -80,6 +82,7 @@ FLUX_DVC_REMOTES=(
   "mybucket:abc123accountid"
   "workbucket:def456accountid"
 )
+FLUX_PRIMARY_DVC_REMOTE=mybucket  # active remote; must match an entry in FLUX_DVC_REMOTES
 FLUX_SIZE_CAP_MB=5
 FLUX_VERBOSE=false
 FLUX_GIT_ACCOUNTS=(
@@ -102,7 +105,7 @@ up the git remote.
 - The R2 folder name defaults to the current directory name (sanitized).
 - If no `origin` remote exists, `flux add` proposes a URL from your configured git
   accounts (pre-filled with the repo name) and runs `git remote add origin` on
-  confirmation.
+  confirmation. For GitHub repos, it can create the remote repo via `gh` if installed.
 
 Config is split by sensitivity:
 
@@ -111,7 +114,7 @@ Config is split by sensitivity:
 | DVC remotes (bucket, account ID) | `~/.config/flux/flux.env` |
 | Git accounts | `~/.config/flux/flux.env` |
 | DVC credentials (access key, secret) | macOS Keychain (per bucket) |
-| R2 folder, DVC remote bucket, threshold, verbose | per-repo `git config` |
+| R2 folder, DVC remote bucket, size cap, verbose | per-repo `git config` |
 
 ## Daily workflow
 
@@ -131,14 +134,28 @@ git pull   # fetches Git content from remote
 dvc pull   # fetches large/binary files from R2
 ```
 
-### Adjusting settings
+### Adjusting the size cap
 
 ```bash
-git config dvc-router.size-threshold-mb 10   # change size threshold (default: 5 MB)
-git config dvc-router.verbose true            # verbose hook output for debugging
+flux cap           # show current cap (global and per-project)
+flux cap 10        # set per-project cap to 10 MB
+flux cap --reset   # revert to global default
 ```
 
-Settings are stored in the repo's local `.git/config` and never committed.
+The global default is set during `flux config`. The per-project cap overrides it for a specific repo and is stored in the repo's local `.git/config` — never committed.
+
+```bash
+git config dvc-router.verbose true   # enable verbose hook output for debugging
+```
+
+### Previewing routing
+
+```bash
+flux dry-run   # preview how staged files (or all tracked files) would be routed
+```
+
+Shows a routing summary (→ Git / → DVC / already in DVC) and an optional file-level
+breakdown. No changes are made.
 
 ### GitHub Desktop
 
@@ -153,15 +170,17 @@ for those steps.
 
 | Command | Description |
 |---|---|
-| `flux add` | Opt current project into sync |
-| `flux remove` | Detach flux from current project |
+| `flux add` | Initialise flux in the current project |
+| `flux remove` | Full detach — remove hook, git config, and all DVC traces |
+| `flux remove git` | Remove hook and git config only |
+| `flux remove dvc` | Remove all DVC traces (pointer files, .dvc/) |
 | `flux pull` | Download the latest (`git pull` + `dvc pull`) |
 | `flux` | Sync both ways (pull then push) |
+| `flux dry-run` | Preview routing without making changes |
+| `flux cap [N\|--reset]` | Show, set, or reset per-project size cap |
 | `flux config` | Configure or update global settings |
 | `flux doctor` | Run environment diagnostics |
 | `flux version` | Show version |
-| `flux claudebox` | Check claudebox install status |
-| `flux claudedot` | Check claudedot install status |
 
 ## Credentials and CI
 
@@ -308,14 +327,22 @@ Tests run automatically on every push to `dev` and `main`, and on pull requests
 targeting `main`, via GitHub Actions. The release workflow runs tests as a gate
 before tagging.
 
-## Companion tools
+## Companion Tools
 
-| Tool | Description | Install |
-|---|---|---|
-| [claudebox](https://github.com/bpeterme/claudebox) | Claude Code container runtime — runs Claude in an isolated container per project, with normal and sandboxed modes | `brew tap bpeterme/claudebox && brew install bpeterme/claudebox/claudebox` |
-| [claudedot](https://github.com/bpeterme/claudedot) | Config and history sync — keeps your Claude configuration consistent across machines via git | `brew tap bpeterme/claudedot && brew install bpeterme/claudedot/claudedot` |
+### [claudebox](https://github.com/bpeterme/claudebox)
+
+[claudebox](https://github.com/bpeterme/claudebox) (`cbox`) runs Claude Code inside an isolated container scoped to your current project directory. When claudebox is installed alongside flux, large-file sync runs automatically at session boundaries for flux-managed projects — no manual `flux pull`/`flux push` needed inside a claudebox session.
 
 ```bash
-flux claudebox   # check claudebox install status
-flux claudedot   # check claudedot install status
+brew tap bpeterme/claudebox && brew install bpeterme/claudebox/claudebox
+cbox           # start Claude Code in a container for the current project
+```
+
+### [claudedot](https://github.com/bpeterme/claudedot)
+
+[claudedot](https://github.com/bpeterme/claudedot) (`cdot`) syncs your Claude configuration and per-project conversation history across machines via a private git remote. Keeps your Claude settings consistent everywhere you work.
+
+```bash
+brew tap bpeterme/claudedot && brew install bpeterme/claudedot/claudedot
+cdot config    # connect to your sync remote
 ```
