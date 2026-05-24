@@ -127,7 +127,7 @@ teardown() { teardown_flux_test; }
   run bash "$REPO_ROOT/flux" add
   [ "$status" -eq 0 ]
   # User must be explicitly told their staged changes are present.
-  [[ "$output" == *"other staged changes"* ]]
+  [[ "$output" == *"Your staged changes will be included"* ]]
 }
 
 @test "flux add does not commit pre-existing staged files when user declines" {
