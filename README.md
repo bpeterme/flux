@@ -116,6 +116,11 @@ Config is split by sensitivity:
 | DVC credentials (access key, secret) | macOS Keychain (per bucket) |
 | R2 folder, DVC remote bucket, size cap, verbose | per-repo `git config` |
 
+> [!WARNING]
+> **Do not place flux-managed project directories on iCloud Drive, Dropbox Smart Sync, Google Drive Stream, or any on-demand cloud storage.** These services evict file contents to stubs when not recently accessed. The pre-commit hook reads each staged file to detect its content type and size; an evicted stub will be misclassified as a tiny text file and routed to Git instead of DVC.
+>
+> **Do not run continuous sync tools (Syncthing, rsync daemons, etc.) on a flux-managed project directory.** They can write into the working tree or DVC cache while a pre-commit hook or `dvc push` is running, risking corrupt pointer files or lost remote data.
+
 ## Daily workflow
 
 ```bash
