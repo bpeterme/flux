@@ -947,8 +947,15 @@ _flux_add() {
       (( _i++ ))
     done
     echo ""
-    local _pick; read -rp "  Select DVC remote [1]: " _pick || true
-    _pick="${_pick:-1}"
+    local _pick _n="${#FLUX_DVC_REMOTES[@]}"
+    while true; do
+      read -rp "  Select DVC remote [1]: " _pick || true
+      _pick="${_pick:-1}"
+      if [[ "$_pick" =~ ^[0-9]+$ ]] && (( _pick >= 1 && _pick <= _n )); then
+        break
+      fi
+      warn "Invalid selection — enter a number between 1 and ${_n}."
+    done
     local _sel="${FLUX_DVC_REMOTES[$(( _pick - 1 ))]}"
     chosen_bucket="${_sel%%:*}"; chosen_account_id="${_sel#*:}"
     echo ""
@@ -975,7 +982,6 @@ _flux_add() {
     _flux_registry_write dvc_initialized true
     ok "DVC initialised."
   else
-    _flux_registry_write dvc_initialized true
     ok "DVC already initialised."
   fi
 
@@ -1034,11 +1040,20 @@ _flux_add() {
   done
   ok ".gitignore updated."
 
+  local _pre_staged
+  _pre_staged=$(git diff --cached --name-only 2>/dev/null || true)
+
   git add .dvc/config .gitignore 2>/dev/null || true
+
   if ! git diff --cached --quiet 2>/dev/null; then
     echo ""
+    if [[ -n "$_pre_staged" ]]; then
+      warn "You have other staged changes — they will be included in this commit:"
+      echo "$_pre_staged" | sed 's/^/    /'
+      echo ""
+    fi
     warn "flux needs to commit the following files to your repository:"
-    git diff --cached --name-only | sed 's/^/    /'
+    git diff --cached --name-only -- .dvc/config .gitignore 2>/dev/null | sed 's/^/    /'
     echo ""
     local confirm
     read -rp "  Commit with message 'chore: initialise DVC with Cloudflare R2 remote'? [Y/n]: " confirm || true
@@ -1046,7 +1061,7 @@ _flux_add() {
       git commit --quiet -m "chore: initialise DVC with Cloudflare R2 remote"
       ok "Initial DVC config committed."
     else
-      git restore --staged .dvc/config .gitignore 2>/dev/null || true
+      git rm --cached .dvc/config .gitignore 2>/dev/null || true
       warn "Skipped commit — stage and commit .dvc/config and .gitignore manually before using flux."
     fi
   else
@@ -1312,11 +1327,15 @@ _flux_remove_dvc() {
     ok "Removed ${#dvcignores[@]} .dvcignore file(s)."
   fi
 
-  # Remove .dvc/ directory from git index and disk
-  git rm -r --cached -q .dvc/ 2>/dev/null || true
-  rm -rf .dvc/
-  _flux_registry_delete dvc_initialized true
-  ok ".dvc/ directory removed."
+  # Remove .dvc/ directory only if flux created it
+  if [[ "$(_flux_registry_read dvc_initialized)" == "true" ]]; then
+    git rm -r --cached -q .dvc/ 2>/dev/null || true
+    rm -rf .dvc/
+    _flux_registry_delete dvc_initialized true
+    ok ".dvc/ directory removed."
+  else
+    warn ".dvc/ was not created by flux — leaving directory in place."
+  fi
 
   # Clean flux-written .gitignore entries
   if [[ -f ".gitignore" ]]; then

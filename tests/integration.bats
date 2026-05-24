@@ -100,6 +100,51 @@ teardown() { teardown_flux_test; }
   assert_dvc_not_called "init"
 }
 
+@test "flux add does not mark dvc_initialized in registry when .dvc pre-existed" {
+  # Simulate a project that already had DVC before flux add was run.
+  mkdir -p .dvc && printf '' > .dvc/config
+  run bash "$REPO_ROOT/flux" add
+  [ "$status" -eq 0 ]
+  # Registry must NOT contain dvc_initialized — flux did not create .dvc/
+  ! grep -q "dvc_initialized" .git/flux-registry
+}
+
+@test "flux remove dvc does not remove pre-existing .dvc directory" {
+  # Create .dvc before flux add so flux does not own it.
+  mkdir -p .dvc && printf '' > .dvc/config
+  bash "$REPO_ROOT/flux" add
+  # flux-registry must not have dvc_initialized (asserted above),
+  # so flux remove dvc should leave .dvc/ intact.
+  run bash "$REPO_ROOT/flux" remove dvc
+  [ "$status" -eq 0 ]
+  [ -d ".dvc" ]
+}
+
+@test "flux add warns about pre-existing staged files before committing" {
+  # Stage a user file before running flux add.
+  echo "my work" > work.txt
+  git add work.txt
+  run bash "$REPO_ROOT/flux" add
+  [ "$status" -eq 0 ]
+  # User must be explicitly told their staged changes are present.
+  [[ "$output" == *"other staged changes"* ]]
+}
+
+@test "flux add does not commit pre-existing staged files when user declines" {
+  # Skip the R2 folder prompt so the only interactive read is the commit confirm.
+  git config flux.r2-folder "test-project"
+  echo "my work" > work.txt
+  git add work.txt
+  # Decline the flux commit (send 'n').
+  run bash -c "echo n | bash '$REPO_ROOT/flux' add"
+  [ "$status" -eq 0 ]
+  # work.txt must still be staged (not committed, not unstaged).
+  run git diff --cached --name-only
+  [[ "$output" == *"work.txt"* ]]
+  # No commit should have been made beyond the initial empty one.
+  [ "$(git rev-list --count HEAD)" -eq 1 ]
+}
+
 # ---------------------------------------------------------------------------
 # flux version and help
 # ---------------------------------------------------------------------------
