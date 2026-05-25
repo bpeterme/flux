@@ -891,10 +891,14 @@ _flux_try_push_upstream() {
       read -rp "  Create GitHub repo '${_slug}' as [P]rivate or p[u]blic? [P/u]: " _vis || true
       local _vis_flag="--private"
       [[ "${_vis:-P}" =~ ^[Uu]$ ]] && _vis_flag="--public"
-      if gh repo create "$_slug" "$_vis_flag" 2>/dev/null; then
+      local _gh_err
+      _gh_err=$(gh repo create "$_slug" "$_vis_flag" 2>&1)
+      local _gh_rc=$?
+      if [[ $_gh_rc -eq 0 ]]; then
         ok "GitHub repo created: ${_slug}"
       else
-        warn "Could not create GitHub repo — check: gh auth status"
+        warn "Could not create GitHub repo: ${_gh_err}"
+        warn "  Check: gh auth status"
         warn "  Then run: git push -u origin ${_branch}"
         return
       fi
@@ -910,10 +914,14 @@ _flux_try_push_upstream() {
       read -rp "  Create GitLab repo '${_slug}' as [P]rivate or p[u]blic? [P/u]: " _vis || true
       local _vis_flag="--private"
       [[ "${_vis:-P}" =~ ^[Uu]$ ]] && _vis_flag="--public"
-      if glab repo create "$_slug" "$_vis_flag" 2>/dev/null; then
+      local _glab_err
+      _glab_err=$(glab repo create "$_slug" "$_vis_flag" 2>&1)
+      local _glab_rc=$?
+      if [[ $_glab_rc -eq 0 ]]; then
         ok "GitLab repo created: ${_slug}"
       else
-        warn "Could not create GitLab repo — check: glab auth status"
+        warn "Could not create GitLab repo: ${_glab_err}"
+        warn "  Check: glab auth status"
         warn "  Then run: git push -u origin ${_branch}"
         return
       fi
