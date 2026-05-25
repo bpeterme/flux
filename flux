@@ -2044,7 +2044,14 @@ flux() {
     remove)            _flux_remove "$@" ;;
     sync|"")           _flux_sync ;;
     _api-version)      echo "1" ;;
-    _pull)             _flux_require_dvc_repo; local DVC; _flux_require_dvc; git pull && "$DVC" pull ;;
+    _pull)
+      _flux_require_dvc_repo
+      local DVC; _flux_require_dvc
+      if git rev-parse --abbrev-ref --symbolic-full-name @{u} >/dev/null 2>&1; then
+        git pull 2>&1 || echo "⚠  Git pull failed — continuing with local state"
+      fi
+      "$DVC" pull
+      ;;
     _push)             _flux_require_dvc_repo; local DVC; _flux_require_dvc; "$DVC" push && git push ;;
     _doctor)           _flux_doctor_inline ;;
     pull)              _flux_pull "$@" ;;
