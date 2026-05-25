@@ -888,9 +888,9 @@ _flux_try_push_upstream() {
       local _slug
       _slug=$(echo "$_remote_url" | sed 's|.*github\.com[:/]\(.*\)\.git$|\1|; s|.*github\.com[:/]\(.*\)$|\1|')
       local _vis
-      read -rp "  Create GitHub repo '${_slug}' as [P]rivate or p[u]blic? [P/u]: " _vis || true
+      read -rp "  Create GitHub repo '${_slug}' as private or public? [private]: " _vis || true
       local _vis_flag="--private"
-      [[ "${_vis:-P}" =~ ^[Uu]$ ]] && _vis_flag="--public"
+      [[ "${_vis:-}" == "public" ]] && _vis_flag="--public"
       local _gh_err=""
       if _gh_err=$(gh repo create "$_slug" "$_vis_flag" 2>&1); then
         ok "GitHub repo created: ${_slug}"
@@ -909,9 +909,9 @@ _flux_try_push_upstream() {
       local _slug
       _slug=$(echo "$_remote_url" | sed 's|.*gitlab\.com[:/]\(.*\)\.git$|\1|; s|.*gitlab\.com[:/]\(.*\)$|\1|')
       local _vis
-      read -rp "  Create GitLab repo '${_slug}' as [P]rivate or p[u]blic? [P/u]: " _vis || true
+      read -rp "  Create GitLab repo '${_slug}' as private or public? [private]: " _vis || true
       local _vis_flag="--private"
-      [[ "${_vis:-P}" =~ ^[Uu]$ ]] && _vis_flag="--public"
+      [[ "${_vis:-}" == "public" ]] && _vis_flag="--public"
       local _glab_err=""
       if _glab_err=$(glab repo create "$_slug" "$_vis_flag" 2>&1); then
         ok "GitLab repo created: ${_slug}"
