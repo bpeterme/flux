@@ -188,6 +188,29 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# make_clone_remote DIR BUCKET R2_FOLDER ACCOUNT_ID
+#
+# Creates a local git repo that looks like a flux-managed repo that was
+# pushed to a remote — suitable as the source for flux clone tests.
+# ---------------------------------------------------------------------------
+make_clone_remote() {
+  local dir="$1" bucket="$2" r2_folder="$3" account_id="$4"
+  mkdir -p "$dir"
+  git -C "$dir" init -q
+  git -C "$dir" config user.email "test@example.com"
+  git -C "$dir" config user.name  "Test"
+  git -C "$dir" checkout -b main 2>/dev/null \
+    || git -C "$dir" checkout main 2>/dev/null \
+    || git -C "$dir" branch -m main 2>/dev/null \
+    || true
+  mkdir -p "$dir/.dvc"
+  printf '[core]\n    remote = r2remote\n[remote "r2remote"]\n    url = s3://%s/%s\n    endpointurl = https://%s.r2.cloudflarestorage.com\n    region = auto\n' \
+    "$bucket" "$r2_folder" "$account_id" > "$dir/.dvc/config"
+  git -C "$dir" add .dvc/config
+  git -C "$dir" commit -q -m "init" --no-verify
+}
+
+# ---------------------------------------------------------------------------
 # make_flux_repo DIR R2_FOLDER BUCKET [CAP_MB]
 #
 # Creates a minimal flux-managed repo at DIR, suitable for testing flux list

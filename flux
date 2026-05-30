@@ -266,6 +266,7 @@ flux - Git + DVC auto-router for Cloudflare R2
 Usage:
   flux                  Sync both ways (pull then push)
   flux add              Opt current project into sync
+  flux clone <url>      Clone a flux-managed repo and wire up DVC + credentials
   flux list             List all flux-managed projects under current directory
   flux remove           Full detach (git + DVC)
   flux remove git       Remove hook and git config only
@@ -2111,6 +2112,138 @@ _flux_list() {
 }
 
 # ---------------------------------------------------------------------------
+# clone — clone a flux-managed git repo and wire up DVC + credentials
+# ---------------------------------------------------------------------------
+
+_flux_clone() {
+  _flux_require_macos
+
+  local git_url="${1:-}"
+  local target_dir="${2:-}"
+  [[ -n "$git_url" ]] || fail "Usage: flux clone <git-url> [directory]"
+
+  if [[ -z "$target_dir" ]]; then
+    target_dir=$(basename "$git_url")
+    target_dir="${target_dir%.git}"
+    target_dir="${target_dir%/}"
+  fi
+
+  clear 2>/dev/null || true
+  echo ""
+  echo "  flux ${VERSION} — clone"
+  echo ""
+
+  local DVC; _flux_require_dvc
+
+  # Step 1: git clone
+  git clone "$git_url" "$target_dir" \
+    || fail "git clone failed."
+  ok "Cloned into: ${target_dir}/"
+
+  # Step 2: verify this is a flux-managed repo
+  [[ -f "$target_dir/.dvc/config" ]] \
+    || fail "This does not look like a flux-managed repository (.dvc/config not found)."
+
+  # Step 3: parse bucket, R2 folder, and account ID from committed .dvc/config
+  local dvc_cfg="$target_dir/.dvc/config"
+  local raw_url endpoint
+  raw_url=$(grep -E '^\s*url\s*='         "$dvc_cfg" 2>/dev/null | head -1 | sed 's/.*=\s*//' | tr -d ' ')
+  endpoint=$(grep -E '^\s*endpointurl\s*=' "$dvc_cfg" 2>/dev/null | head -1 | sed 's/.*=\s*//' | tr -d ' ')
+
+  [[ -n "$raw_url" ]]  || fail "Cannot find DVC remote URL in .dvc/config."
+  [[ -n "$endpoint" ]] || fail "Cannot find DVC endpoint URL in .dvc/config — was this repository set up with flux?"
+
+  local s3_path="${raw_url#s3://}"
+  local bucket="${s3_path%%/*}"
+  local r2_folder="${s3_path#*/}"
+  local hostname="${endpoint#https://}"
+  local account_id="${hostname%%.*}"
+
+  [[ -n "$bucket" && -n "$r2_folder" && -n "$account_id" ]] \
+    || fail "Could not parse remote config from .dvc/config."
+
+  ok "DVC remote: s3://${bucket}/${r2_folder}"
+
+  # Step 4: resolve credentials from Keychain, or prompt and save them
+  local access_key secret_key
+  access_key=$(_kc_get_dvc "$bucket" "access-key-id")
+  secret_key=$(_kc_get_dvc "$bucket" "secret-key")
+
+  if [[ -z "$access_key" || -z "$secret_key" ]]; then
+    echo ""
+    warn "No credentials found in Keychain for bucket '${bucket}'."
+    echo "  These are your Cloudflare R2 API credentials for this bucket."
+    echo ""
+    read -rp  "  Access Key ID: " access_key || true
+    read -rsp "  Secret Key:    " secret_key || true
+    echo ""
+    [[ -n "$access_key" && -n "$secret_key" ]] \
+      || fail "Credentials are required to access the DVC remote."
+    _kc_set_dvc "$bucket" "access-key-id" "$access_key"
+    _kc_set_dvc "$bucket" "secret-key"    "$secret_key"
+    ok "Credentials saved to Keychain."
+  else
+    ok "Credentials found in Keychain for bucket '${bucket}'."
+  fi
+
+  # Step 5: write DVC local credentials
+  (cd "$target_dir" && "$DVC" remote modify --local r2remote access_key_id     "$access_key" --quiet)
+  (cd "$target_dir" && "$DVC" remote modify --local r2remote secret_access_key "$secret_key" --quiet)
+
+  # Step 6: write git config and registry
+  local cap verbose
+  if [[ -f "$FLUX_CONFIG" ]]; then
+    # shellcheck source=/dev/null
+    source "$FLUX_CONFIG" 2>/dev/null || true
+  fi
+  cap="${FLUX_SIZE_CAP_MB:-5}"
+  verbose="${FLUX_VERBOSE:-false}"
+
+  git -C "$target_dir" config dvc-router.size-cap-mb "$cap"
+  git -C "$target_dir" config dvc-router.verbose      "$verbose"
+  git -C "$target_dir" config flux.r2-folder          "$r2_folder"
+  git -C "$target_dir" config flux.dvc-remote-bucket  "$bucket"
+
+  {
+    echo "dvc_remote:r2remote"
+    echo "git_config:dvc-router.size-cap-mb"
+    echo "git_config:dvc-router.verbose"
+    echo "git_config:flux.r2-folder"
+    echo "git_config:flux.dvc-remote-bucket"
+    echo "hook:pre-commit"
+  } > "$target_dir/.git/flux-registry"
+
+  ok "Repository configured."
+
+  # Step 7: install pre-commit hook
+  local _hooks_dir _script_dir _hook_source
+  _hooks_dir="$target_dir/.git/hooks"
+  _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  _hook_source="${_script_dir}/../share/flux/pre-commit"
+  [[ -f "$_hook_source" ]] || _hook_source="${_script_dir}/pre-commit"
+  [[ -f "$_hook_source" ]] || fail "pre-commit hook not found (expected at ${_hook_source})."
+
+  cp "$_hook_source" "${_hooks_dir}/pre-commit"
+  chmod +x "${_hooks_dir}/pre-commit"
+  ok "Pre-commit hook installed."
+
+  # Step 8: dvc pull
+  echo ""
+  echo "  Pulling large files from R2..."
+  if (cd "$target_dir" && "$DVC" pull); then
+    ok "DVC pull complete."
+  else
+    warn "dvc pull encountered issues — run 'dvc pull' manually once the remote is accessible."
+  fi
+
+  echo ""
+  ok "flux clone complete."
+  echo ""
+  echo "  Next: cd ${target_dir}"
+  echo ""
+}
+
+# ---------------------------------------------------------------------------
 # dispatcher
 # ---------------------------------------------------------------------------
 
@@ -2120,6 +2253,7 @@ flux() {
 
   case "$cmd" in
     add)               _flux_add ;;
+    clone)             _flux_clone "$@" ;;
     list)              _flux_list ;;
     remove)            _flux_remove "$@" ;;
     sync|"")           _flux_sync ;;

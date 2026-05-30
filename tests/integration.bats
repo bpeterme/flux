@@ -650,3 +650,101 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"20 MB"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# flux clone
+# ---------------------------------------------------------------------------
+
+@test "flux clone fails without a URL" {
+  run bash "$REPO_ROOT/flux" clone
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Usage"* ]]
+}
+
+@test "flux clone fails when repo has no .dvc/config" {
+  local remote; remote=$(mktemp -d)
+  git -C "$remote" init -q
+  git -C "$remote" config user.email "test@example.com"
+  git -C "$remote" config user.name  "Test"
+  git -C "$remote" checkout -b main 2>/dev/null || true
+  git -C "$remote" commit --allow-empty -q -m "empty" --no-verify
+  run bash "$REPO_ROOT/flux" clone "$remote" "$TEST_REPO/cloned"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *".dvc/config"* ]]
+  rm -rf "$remote"
+}
+
+@test "flux clone succeeds with credentials already in Keychain" {
+  local remote; remote=$(mktemp -d)
+  make_clone_remote "$remote" "test-bucket" "test-project" "abc123"
+  run bash "$REPO_ROOT/flux" clone "$remote" "$TEST_REPO/cloned"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"flux clone complete"* ]]
+  rm -rf "$remote"
+}
+
+@test "flux clone writes git config keys" {
+  local remote; remote=$(mktemp -d)
+  make_clone_remote "$remote" "test-bucket" "test-project" "abc123"
+  bash "$REPO_ROOT/flux" clone "$remote" "$TEST_REPO/cloned"
+  [ "$(git -C "$TEST_REPO/cloned" config --get flux.r2-folder)" = "test-project" ]
+  [ "$(git -C "$TEST_REPO/cloned" config --get flux.dvc-remote-bucket)" = "test-bucket" ]
+  rm -rf "$remote"
+}
+
+@test "flux clone installs pre-commit hook" {
+  local remote; remote=$(mktemp -d)
+  make_clone_remote "$remote" "test-bucket" "test-project" "abc123"
+  bash "$REPO_ROOT/flux" clone "$remote" "$TEST_REPO/cloned"
+  [ -x "$TEST_REPO/cloned/.git/hooks/pre-commit" ]
+  grep -q 'dvc-router\|flux' "$TEST_REPO/cloned/.git/hooks/pre-commit"
+  rm -rf "$remote"
+}
+
+@test "flux clone writes registry file" {
+  local remote; remote=$(mktemp -d)
+  make_clone_remote "$remote" "test-bucket" "test-project" "abc123"
+  bash "$REPO_ROOT/flux" clone "$remote" "$TEST_REPO/cloned"
+  [ -f "$TEST_REPO/cloned/.git/flux-registry" ]
+  grep -q "hook:pre-commit"             "$TEST_REPO/cloned/.git/flux-registry"
+  grep -q "git_config:flux.r2-folder"   "$TEST_REPO/cloned/.git/flux-registry"
+  grep -q "dvc_remote:r2remote"         "$TEST_REPO/cloned/.git/flux-registry"
+  rm -rf "$remote"
+}
+
+@test "flux clone prompts for credentials when not in Keychain" {
+  local remote; remote=$(mktemp -d)
+  make_clone_remote "$remote" "new-bucket" "new-project" "xyz789"
+  run bash -c "printf 'new-key-id\nnew-secret\n' | bash '$REPO_ROOT/flux' clone '$remote' '$TEST_REPO/cloned'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Credentials saved to Keychain"* ]]
+  rm -rf "$remote"
+}
+
+@test "flux clone saves prompted credentials to Keychain" {
+  local remote; remote=$(mktemp -d)
+  make_clone_remote "$remote" "new-bucket" "new-project" "xyz789"
+  printf 'new-key-id\nnew-secret\n' | bash "$REPO_ROOT/flux" clone "$remote" "$TEST_REPO/cloned"
+  local saved
+  saved=$(MOCK_KEYCHAIN_DIR="$MOCK_KEYCHAIN_DIR" "$MOCK_BIN/security" \
+    find-generic-password -s "flux.dvc.new-bucket.access-key-id" -w 2>/dev/null || echo "")
+  [ "$saved" = "new-key-id" ]
+  rm -rf "$remote"
+}
+
+@test "flux clone runs dvc pull" {
+  local remote; remote=$(mktemp -d)
+  make_clone_remote "$remote" "test-bucket" "test-project" "abc123"
+  bash "$REPO_ROOT/flux" clone "$remote" "$TEST_REPO/cloned"
+  assert_dvc_called "pull"
+  rm -rf "$remote"
+}
+
+@test "flux clone shows next-step cd hint" {
+  local remote; remote=$(mktemp -d)
+  make_clone_remote "$remote" "test-bucket" "test-project" "abc123"
+  run bash "$REPO_ROOT/flux" clone "$remote" "$TEST_REPO/cloned"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"cd "$TEST_REPO/cloned""* ]]
+  rm -rf "$remote"
+}
