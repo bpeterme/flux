@@ -427,6 +427,23 @@ EOF
   [[ "$output" == *"migrating from Git"* ]]
 }
 
+@test "flux dry-run includes untracked files when nothing is staged" {
+  echo "untracked content" > untracked.txt
+
+  run bash "$REPO_ROOT/flux" dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"→ Git"* ]]
+  [[ "$output" == *"all files"* ]]
+}
+
+@test "flux dry-run includes large untracked file routed to DVC" {
+  printf '%*s' $(( 6 * 1024 * 1024 + 1 )) '' | tr ' ' 'a' > big_untracked.txt
+
+  run bash "$REPO_ROOT/flux" dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"→ DVC"* ]]
+}
+
 @test "flux dry-run respects per-repo size cap from git config" {
   git config dvc-router.size-cap-mb 1
   # File is 2 KB — above 1 KB but well below default 5 MB; should go to Git at 5 MB cap
