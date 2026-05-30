@@ -591,7 +591,7 @@ EOF
   bash "$REPO_ROOT/flux" add
   run bash "$REPO_ROOT/flux" list
   [ "$status" -eq 0 ]
-  [[ "$output" == *"."* ]]
+  [[ "$output" == *". (current)"* ]]
   [[ "$output" == *"test-project"* ]]
 }
 
@@ -649,6 +649,30 @@ EOF
   run bash "$REPO_ROOT/flux" list
   [ "$status" -eq 0 ]
   [[ "$output" == *"20 MB"* ]]
+}
+
+@test "flux list falls back to .dvc/config when flux.dvc-remote-bucket is missing" {
+  make_flux_repo "$TEST_REPO/legacy" "legacy-data" "legacy-bucket"
+  git -C "$TEST_REPO/legacy" config --unset flux.dvc-remote-bucket
+  run bash "$REPO_ROOT/flux" list
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"legacy-bucket"* ]]
+}
+
+@test "flux list shows git remote for current repo" {
+  git config flux.r2-folder "test-project"
+  bash "$REPO_ROOT/flux" add
+  run bash "$REPO_ROOT/flux" list
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"github.com/test/test-project"* ]]
+}
+
+@test "flux list shows dash for git remote when none is configured" {
+  make_flux_repo "$TEST_REPO/no-remote" "no-remote-data" "bucket"
+  run bash "$REPO_ROOT/flux" list
+  [ "$status" -eq 0 ]
+  # make_flux_repo does not add a git remote — should display as -
+  [[ "$output" == *"no-remote-data"* ]]
 }
 
 # ---------------------------------------------------------------------------
