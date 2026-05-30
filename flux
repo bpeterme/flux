@@ -266,8 +266,8 @@ flux - Git + DVC auto-router for Cloudflare R2
 Usage:
   flux                  Sync both ways (pull then push)
   flux add              Opt current project into sync
-  flux clone <url>      Clone a flux-managed repo and wire up DVC + credentials
   flux list             List all flux-managed projects under current directory
+  flux clone <git-url>  Clone a flux-managed repo and wire up DVC + credentials
   flux remove           Full detach (git + DVC)
   flux remove git       Remove hook and git config only
   flux remove dvc       Remove all DVC traces (pointer files, .dvc/)
