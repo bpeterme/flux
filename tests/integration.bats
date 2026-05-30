@@ -145,6 +145,26 @@ teardown() { teardown_flux_test; }
   [ "$(git rev-list --count HEAD)" -eq 1 ]
 }
 
+@test "flux add on an already-initialized repo shows status and exits cleanly" {
+  bash "$REPO_ROOT/flux" add
+  run bash "$REPO_ROOT/flux" add
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already managed by flux"* ]]
+  [[ "$output" != *"flux added"* ]]
+}
+
+@test "flux add on an already-initialized repo still syncs sub-repos" {
+  bash "$REPO_ROOT/flux" add
+
+  mkdir -p late
+  git -C late init -q
+
+  run bash "$REPO_ROOT/flux" add
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already managed by flux"* ]]
+  grep -qF "late/" .gitignore
+}
+
 # ---------------------------------------------------------------------------
 # flux version and help
 # ---------------------------------------------------------------------------
