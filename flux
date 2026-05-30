@@ -1635,7 +1635,9 @@ _flux_dry_run_histogram() {
   local BAR_WIDTH=20
 
   local all_tracked
-  all_tracked=$(git ls-files 2>/dev/null || true)
+  all_tracked=$(
+    { git ls-files 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | sort -u
+  )
   [[ -z "$all_tracked" ]] && return 0
 
   # Fixed log-scale boundaries, with cap inserted as a dynamic boundary
@@ -1817,8 +1819,10 @@ _flux_dry_run() {
   staged_files=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)
 
   if [[ -z "$staged_files" ]]; then
-    staged_files=$(git ls-files 2>/dev/null || true)
-    scan_mode="all tracked files"
+    staged_files=$(
+      { git ls-files 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | sort -u
+    )
+    scan_mode="all files"
   else
     scan_mode="staged files"
   fi
