@@ -44,12 +44,16 @@ teardown() { teardown_flux_test; }
   rm -rf "$partial_keychain"
 }
 
-@test "flux add fails when not inside a git repo" {
+@test "flux add initialises a new git repo when not already in one" {
   local no_git
   no_git=$(mktemp -d)
-  run bash -c "cd '$no_git' && HOME='$MOCK_HOME' XDG_CONFIG_HOME='$MOCK_HOME/.config' MOCK_KEYCHAIN_DIR='$MOCK_KEYCHAIN_DIR' PATH='$PATH' bash '$REPO_ROOT/flux' add"
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"Git repository"* ]]
+  git -C "$no_git" config --global user.email "test@example.com" 2>/dev/null || true
+  git -C "$no_git" config --global user.name  "Test"             2>/dev/null || true
+  run bash -c "cd '$no_git' && HOME='$MOCK_HOME' XDG_CONFIG_HOME='$MOCK_HOME/.config' MOCK_KEYCHAIN_DIR='$MOCK_KEYCHAIN_DIR' PATH='$PATH' GIT_AUTHOR_EMAIL=test@example.com GIT_AUTHOR_NAME=Test GIT_COMMITTER_EMAIL=test@example.com GIT_COMMITTER_NAME=Test bash '$REPO_ROOT/flux' add"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Git repository initialised"* ]]
+  [[ "$output" == *"flux added"* ]]
+  [ -d "$no_git/.git" ]
   rm -rf "$no_git"
 }
 

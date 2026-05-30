@@ -66,11 +66,6 @@ _flux_is_repo_initialized() {
 # Format:   one "key:value" per line
 # ---------------------------------------------------------------------------
 
-_flux_registry_path() {
-  git rev-parse --git-dir 2>/dev/null && return 0
-  echo ""
-}
-
 _flux_registry_write() {
   local key="$1" value="$2"
   local reg; reg="$(git rev-parse --git-dir 2>/dev/null)/flux-registry"
@@ -962,8 +957,6 @@ _flux_add() {
   echo "  flux ${VERSION} — add"
   echo ""
 
-  local DVC; _flux_require_dvc
-
   _flux_is_configured \
     || fail "Not configured. Run 'flux config' to set up."
 
@@ -992,6 +985,8 @@ _flux_add() {
     return 0
   fi
   # ───────────────────────────────────────────────────────────────────────────
+
+  local DVC; _flux_require_dvc
 
   # Values available after _flux_is_configured sourced flux.env
   local cap="${FLUX_SIZE_CAP_MB:-5}"
@@ -1038,6 +1033,12 @@ _flux_add() {
   else
     ok "Git repository found."
   fi
+
+  # Capture pre-staged files before subrepo sync so that git rm --cached
+  # operations performed by subrepo cleanup do not appear as user-staged changes.
+  local _pre_staged
+  _pre_staged=$(git diff --cached --name-only 2>/dev/null || true)
+
   _flux_subrepo_sync
 
   if [[ ! -d .dvc ]]; then
@@ -1102,9 +1103,6 @@ _flux_add() {
     _flux_registry_write gitignore "$entry"
   done
   ok ".gitignore updated."
-
-  local _pre_staged
-  _pre_staged=$(git diff --cached --name-only 2>/dev/null || true)
 
   git add .dvc/config .gitignore 2>/dev/null || true
 
