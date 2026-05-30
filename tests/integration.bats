@@ -347,6 +347,36 @@ teardown() { teardown_flux_test; }
   rm -rf "$(dirname "$bare")"
 }
 
+@test "flux sync commits and pushes untracked files (not just modified tracked files)" {
+  local bare; bare="$(mktemp -d)/origin.git"
+  git clone --bare -q "$TEST_REPO" "$bare"
+  git remote set-url origin "file://$bare"
+  git push -u origin main -q
+
+  bash "$REPO_ROOT/flux" add
+
+  # Create an untracked file — never staged, never added to git
+  echo "brand new content" > new_file.txt
+
+  run bash "$REPO_ROOT/flux" sync
+  [ "$status" -eq 0 ]
+
+  # The sync commit must have been created locally
+  local sync_commit
+  sync_commit=$(git log --oneline | grep "^.\{7\} sync:" | head -1)
+  [[ -n "$sync_commit" ]]
+
+  # The sync commit must have been pushed to the bare remote
+  local remote_log
+  remote_log=$(git -C "$bare" log --oneline)
+  [[ "$remote_log" == *"sync:"* ]]
+
+  # The file must be tracked in git after the sync commit
+  git ls-files new_file.txt | grep -q "new_file.txt"
+
+  rm -rf "$(dirname "$bare")"
+}
+
 # ---------------------------------------------------------------------------
 # flux dry-run
 # ---------------------------------------------------------------------------

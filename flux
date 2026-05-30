@@ -1562,7 +1562,7 @@ _flux_sync() {
   _flux_hook_update
   _flux_subrepo_sync
 
-  if ! git diff --quiet || ! git diff --cached --quiet; then
+  if [[ -n "$(git status --porcelain 2>/dev/null | head -1)" ]]; then
     git add -A
     git commit --quiet -m "sync: $(date '+%Y-%m-%d %H:%M')"
   fi
