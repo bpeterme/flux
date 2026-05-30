@@ -145,6 +145,26 @@ teardown() { teardown_flux_test; }
   [ "$(git rev-list --count HEAD)" -eq 1 ]
 }
 
+@test "flux add on an already-initialized repo shows status and exits cleanly" {
+  bash "$REPO_ROOT/flux" add
+  run bash "$REPO_ROOT/flux" add
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already managed by flux"* ]]
+  [[ "$output" != *"flux added"* ]]
+}
+
+@test "flux add on an already-initialized repo still syncs sub-repos" {
+  bash "$REPO_ROOT/flux" add
+
+  mkdir -p late
+  git -C late init -q
+
+  run bash "$REPO_ROOT/flux" add
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already managed by flux"* ]]
+  grep -qF "late/" .gitignore
+}
+
 # ---------------------------------------------------------------------------
 # flux version and help
 # ---------------------------------------------------------------------------
@@ -549,4 +569,84 @@ EOF
 
   bash "$REPO_ROOT/flux" remove git
   ! grep -qF "sub/" .gitignore
+}
+
+# ---------------------------------------------------------------------------
+# flux list
+# ---------------------------------------------------------------------------
+
+@test "flux list exits zero with no flux repos present" {
+  run bash "$REPO_ROOT/flux" list
+  [ "$status" -eq 0 ]
+}
+
+@test "flux list reports no projects when none are flux-managed" {
+  run bash "$REPO_ROOT/flux" list
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"No flux-managed projects"* ]]
+}
+
+@test "flux list finds the current directory when it is flux-managed" {
+  git config flux.r2-folder "test-project"
+  bash "$REPO_ROOT/flux" add
+  run bash "$REPO_ROOT/flux" list
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"."* ]]
+  [[ "$output" == *"test-project"* ]]
+}
+
+@test "flux list shows correct remote and cap for current repo" {
+  git config flux.r2-folder "test-project"
+  bash "$REPO_ROOT/flux" add
+  run bash "$REPO_ROOT/flux" list
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"test-bucket"* ]]
+  [[ "$output" == *"5 MB"* ]]
+}
+
+@test "flux list finds a flux-managed subdirectory" {
+  make_flux_repo "$TEST_REPO/child" "child-data" "my-bucket"
+  run bash "$REPO_ROOT/flux" list
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"child"* ]]
+  [[ "$output" == *"child-data"* ]]
+  [[ "$output" == *"my-bucket"* ]]
+}
+
+@test "flux list finds multiple flux repos in subdirectories" {
+  make_flux_repo "$TEST_REPO/alpha" "alpha-data" "bucket-a"
+  make_flux_repo "$TEST_REPO/beta"  "beta-data"  "bucket-b"
+  run bash "$REPO_ROOT/flux" list
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"alpha"* ]]
+  [[ "$output" == *"beta"* ]]
+  [[ "$output" == *"alpha-data"* ]]
+  [[ "$output" == *"beta-data"* ]]
+}
+
+@test "flux list excludes plain git repos that are not flux-managed" {
+  mkdir -p "$TEST_REPO/plain"
+  git -C "$TEST_REPO/plain" init -q
+  run bash "$REPO_ROOT/flux" list
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"plain"* ]]
+  [[ "$output" == *"No flux-managed projects"* ]]
+}
+
+@test "flux list finds nested flux repos" {
+  make_flux_repo "$TEST_REPO/outer"        "outer-data" "bucket"
+  make_flux_repo "$TEST_REPO/outer/inner"  "inner-data" "bucket"
+  run bash "$REPO_ROOT/flux" list
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"outer"* ]]
+  [[ "$output" == *"inner"* ]]
+  [[ "$output" == *"outer-data"* ]]
+  [[ "$output" == *"inner-data"* ]]
+}
+
+@test "flux list shows custom cap when set" {
+  make_flux_repo "$TEST_REPO/capped" "capped-data" "bucket" 20
+  run bash "$REPO_ROOT/flux" list
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"20 MB"* ]]
 }

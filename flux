@@ -51,6 +51,15 @@ _flux_require_dvc_repo() {
     || fail "Not a flux-managed project. Run 'flux add' to initialise."
 }
 
+_flux_is_repo_initialized() {
+  git rev-parse --git-dir &>/dev/null || return 1
+  [[ -d ".dvc" ]] || return 1
+  [[ -n "$(git config --get flux.r2-folder 2>/dev/null)" ]] || return 1
+  local _hook; _hook="$(git rev-parse --git-dir)/hooks/pre-commit"
+  [[ -f "$_hook" ]] && grep -q 'dvc-router\|flux' "$_hook" 2>/dev/null || return 1
+  grep -q 'r2remote' .dvc/config 2>/dev/null || return 1
+}
+
 # ---------------------------------------------------------------------------
 # Registry — tracks what flux has written to this repo for clean removal
 # Location: .git/flux-registry (not tracked by git, local to repo)
@@ -257,6 +266,7 @@ flux - Git + DVC auto-router for Cloudflare R2
 Usage:
   flux                  Sync both ways (pull then push)
   flux add              Opt current project into sync
+  flux list             List all flux-managed projects under current directory
   flux remove           Full detach (git + DVC)
   flux remove git       Remove hook and git config only
   flux remove dvc       Remove all DVC traces (pointer files, .dvc/)
@@ -955,6 +965,32 @@ _flux_add() {
 
   _flux_is_configured \
     || fail "Not configured. Run 'flux config' to set up."
+
+  # ── already-initialized check ──────────────────────────────────────────────
+  if _flux_is_repo_initialized; then
+    local _r2_folder _bucket _remote
+    _r2_folder=$(git config --get flux.r2-folder 2>/dev/null || echo "")
+    _bucket=$(git config --get flux.dvc-remote-bucket 2>/dev/null || echo "")
+    _remote=$(git remote get-url origin 2>/dev/null || echo "(none)")
+    echo ""
+    ok "This project is already managed by flux."
+    echo ""
+    [[ -n "$_r2_folder" ]] && echo "  R2 folder:   ${_r2_folder}"
+    [[ -n "$_bucket"    ]] && echo "  DVC bucket:  ${_bucket}"
+    echo "  Git remote:  ${_remote}"
+    echo ""
+    _flux_subrepo_sync
+    if [[ "${FLUX_SUBREPO_CHANGED}" == "true" ]]; then
+      git add -A 2>/dev/null || true
+      if ! git diff --cached --quiet 2>/dev/null; then
+        git commit --quiet -m "chore: sync sub-repo exclusions"
+      fi
+    fi
+    echo "  Run 'flux remove' to detach, or 'flux doctor' to check the setup."
+    echo ""
+    return 0
+  fi
+  # ───────────────────────────────────────────────────────────────────────────
 
   # Values available after _flux_is_configured sourced flux.env
   local cap="${FLUX_SIZE_CAP_MB:-5}"
@@ -2032,6 +2068,49 @@ _flux_doctor() {
 }
 
 # ---------------------------------------------------------------------------
+# list — find all flux-managed projects under the current directory
+# ---------------------------------------------------------------------------
+
+_flux_list() {
+  local base_dir; base_dir="$(pwd)"
+  local found=0
+
+  printf "%-40s  %-20s  %-16s  %s\n" "PATH" "R2 FOLDER" "REMOTE" "CAP"
+  printf "%-40s  %-20s  %-16s  %s\n" \
+    "$(printf '%0.s-' {1..40})" \
+    "$(printf '%0.s-' {1..20})" \
+    "$(printf '%0.s-' {1..16})" \
+    "---"
+
+  while IFS= read -r git_dir; do
+    local repo_dir; repo_dir="$(cd "$(dirname "$git_dir")" 2>/dev/null && pwd)" || continue
+
+    [[ -d "$repo_dir/.dvc" ]] || continue
+    local r2_folder; r2_folder="$(git -C "$repo_dir" config --get flux.r2-folder 2>/dev/null || true)"
+    [[ -n "$r2_folder" ]] || continue
+    grep -q 'r2remote' "$repo_dir/.dvc/config" 2>/dev/null || continue
+
+    local bucket cap rel_path
+    bucket="$(git -C "$repo_dir" config --get flux.dvc-remote-bucket 2>/dev/null || echo "-")"
+    cap="$(git -C "$repo_dir" config --get dvc-router.size-cap-mb 2>/dev/null || echo "5")"
+
+    if [[ "$repo_dir" == "$base_dir" ]]; then
+      rel_path="."
+    else
+      rel_path="./${repo_dir#${base_dir}/}"
+    fi
+
+    printf "%-40s  %-20s  %-16s  %s MB\n" "$rel_path" "$r2_folder" "$bucket" "$cap"
+    (( found++ )) || true
+  done < <(find . -type d -name ".git" -prune -print 2>/dev/null | sort)
+
+  if (( found == 0 )); then
+    echo ""
+    echo "  No flux-managed projects found under $(pwd)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # dispatcher
 # ---------------------------------------------------------------------------
 
@@ -2041,6 +2120,7 @@ flux() {
 
   case "$cmd" in
     add)               _flux_add ;;
+    list)              _flux_list ;;
     remove)            _flux_remove "$@" ;;
     sync|"")           _flux_sync ;;
     _api-version)      echo "1" ;;

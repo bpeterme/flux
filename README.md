@@ -176,6 +176,7 @@ for those steps.
 | Command | Description |
 |---|---|
 | `flux add` | Initialise flux in the current project |
+| `flux list` | List all flux-managed projects under the current directory |
 | `flux remove` | Full detach — remove hook, git config, and all DVC traces |
 | `flux remove git` | Remove hook and git config only |
 | `flux remove dvc` | Remove all DVC traces (pointer files, .dvc/) |

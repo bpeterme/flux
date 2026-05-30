@@ -188,6 +188,26 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# make_flux_repo DIR R2_FOLDER BUCKET [CAP_MB]
+#
+# Creates a minimal flux-managed repo at DIR, suitable for testing flux list
+# without invoking flux add (no mock DVC or Keychain required).
+# ---------------------------------------------------------------------------
+make_flux_repo() {
+  local dir="$1" r2_folder="$2" bucket="$3" cap="${4:-5}"
+  mkdir -p "$dir"
+  git -C "$dir" init -q
+  git -C "$dir" config user.email "test@example.com"
+  git -C "$dir" config user.name  "Test"
+  git -C "$dir" config flux.r2-folder          "$r2_folder"
+  git -C "$dir" config flux.dvc-remote-bucket  "$bucket"
+  git -C "$dir" config dvc-router.size-cap-mb  "$cap"
+  mkdir -p "$dir/.dvc"
+  printf '[core]\n    remote = r2remote\n[remote "r2remote"]\n    url = s3://%s/%s\n' \
+    "$bucket" "$r2_folder" > "$dir/.dvc/config"
+}
+
+# ---------------------------------------------------------------------------
 # teardown_flux_test — cleans up temp dirs created by setup_flux_test
 # ---------------------------------------------------------------------------
 teardown_flux_test() {
