@@ -177,6 +177,7 @@ for those steps.
 |---|---|
 | `flux add` | Initialise flux in the current project |
 | `flux list` | List all flux-managed projects under the current directory |
+| `flux clone <git-url>` | Clone a flux-managed repo and wire up DVC + credentials |
 | `flux remove` | Full detach — remove hook, git config, and all DVC traces |
 | `flux remove git` | Remove hook and git config only |
 | `flux remove dvc` | Remove all DVC traces (pointer files, .dvc/) |
@@ -203,10 +204,18 @@ dvc remote modify --local r2remote secret_access_key "$R2_SECRET_KEY"
 ```bash
 brew tap bpeterme/flux && brew install bpeterme/flux/flux
 pip install "dvc[s3]"
-flux config          # stores credentials in macOS Keychain
-git clone <remote-url> && cd <repo>
-flux add
-dvc pull             # fetch large files from R2
+flux clone <remote-url>   # clones, wires up DVC, and pulls large files
+cd <repo>
+```
+
+`flux clone` reads the bucket and endpoint from the committed `.dvc/config`, looks up credentials in macOS Keychain, and prompts for them once if they are not found. After that, the repo is fully configured with no additional steps.
+
+If you prefer to set up credentials globally first (so `flux clone` never prompts):
+
+```bash
+flux config   # stores credentials in macOS Keychain
+flux clone <remote-url>
+cd <repo>
 ```
 
 ## File structure after first use
