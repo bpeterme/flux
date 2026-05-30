@@ -2076,11 +2076,10 @@ _flux_list() {
   local base_dir; base_dir="$(pwd)"
   local found=0
 
-  printf "%-38s  %-20s  %-18s  %-36s  %s\n" "PATH" "DVC FOLDER" "DVC REMOTE" "GIT REMOTE" "CAP"
-  printf "%-38s  %-20s  %-18s  %-36s  %s\n" \
+  printf "%-38s  %-32s  %-36s  %s\n" "PATH" "DVC REMOTE" "GIT REMOTE" "CAP"
+  printf "%-38s  %-32s  %-36s  %s\n" \
     "$(printf '%0.s-' {1..38})" \
-    "$(printf '%0.s-' {1..20})" \
-    "$(printf '%0.s-' {1..18})" \
+    "$(printf '%0.s-' {1..32})" \
     "$(printf '%0.s-' {1..36})" \
     "---"
 
@@ -2092,13 +2091,13 @@ _flux_list() {
     [[ -n "$dvc_folder" ]] || continue
     grep -q 'r2remote' "$repo_dir/.dvc/config" 2>/dev/null || continue
 
-    local bucket cap rel_path git_remote
+    local bucket cap rel_path git_remote dvc_remote
     bucket="$(git -C "$repo_dir" config --get flux.dvc-remote-bucket 2>/dev/null || true)"
     if [[ -z "$bucket" ]]; then
       bucket="$(grep -E '^\s*url\s*=' "$repo_dir/.dvc/config" 2>/dev/null \
         | head -1 | sed 's|.*s3://||' | cut -d'/' -f1 | tr -d ' ')"
     fi
-    [[ -z "$bucket" ]] && bucket="-"
+    [[ -n "$bucket" ]] && dvc_remote="${bucket}/${dvc_folder}" || dvc_remote="-"
 
     cap="$(git -C "$repo_dir" config --get dvc-router.size-cap-mb 2>/dev/null || echo "5")"
     git_remote="$(git -C "$repo_dir" remote get-url origin 2>/dev/null || echo "-")"
@@ -2109,7 +2108,7 @@ _flux_list() {
       rel_path="./${repo_dir#${base_dir}/}"
     fi
 
-    printf "%-38s  %-20s  %-18s  %-36s  %s MB\n" "$rel_path" "$dvc_folder" "$bucket" "$git_remote" "$cap"
+    printf "%-38s  %-32s  %-36s  %s MB\n" "$rel_path" "$dvc_remote" "$git_remote" "$cap"
     (( found++ )) || true
   done < <(find . -type d -name ".git" -prune -print 2>/dev/null | sort)
 

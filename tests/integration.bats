@@ -595,12 +595,12 @@ EOF
   [[ "$output" == *"test-project"* ]]
 }
 
-@test "flux list shows correct remote and cap for current repo" {
+@test "flux list shows combined bucket/folder as DVC REMOTE" {
   git config flux.r2-folder "test-project"
   bash "$REPO_ROOT/flux" add
   run bash "$REPO_ROOT/flux" list
   [ "$status" -eq 0 ]
-  [[ "$output" == *"test-bucket"* ]]
+  [[ "$output" == *"test-bucket/test-project"* ]]
   [[ "$output" == *"5 MB"* ]]
 }
 
@@ -609,8 +609,7 @@ EOF
   run bash "$REPO_ROOT/flux" list
   [ "$status" -eq 0 ]
   [[ "$output" == *"child"* ]]
-  [[ "$output" == *"child-data"* ]]
-  [[ "$output" == *"my-bucket"* ]]
+  [[ "$output" == *"my-bucket/child-data"* ]]
 }
 
 @test "flux list finds multiple flux repos in subdirectories" {
@@ -618,10 +617,8 @@ EOF
   make_flux_repo "$TEST_REPO/beta"  "beta-data"  "bucket-b"
   run bash "$REPO_ROOT/flux" list
   [ "$status" -eq 0 ]
-  [[ "$output" == *"alpha"* ]]
-  [[ "$output" == *"beta"* ]]
-  [[ "$output" == *"alpha-data"* ]]
-  [[ "$output" == *"beta-data"* ]]
+  [[ "$output" == *"bucket-a/alpha-data"* ]]
+  [[ "$output" == *"bucket-b/beta-data"* ]]
 }
 
 @test "flux list excludes plain git repos that are not flux-managed" {
