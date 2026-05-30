@@ -1495,6 +1495,31 @@ _flux_remove() {
 }
 
 # ---------------------------------------------------------------------------
+# hook update — silently refresh the pre-commit hook if it is outdated
+# Called during sync so repos stay current after brew upgrade flux.
+# ---------------------------------------------------------------------------
+
+_flux_hook_update() {
+  local _hooks_dir _installed _script_dir _hook_source
+  _hooks_dir="$(git rev-parse --git-dir 2>/dev/null)/hooks"
+  _installed="${_hooks_dir}/pre-commit"
+
+  [[ -f "$_installed" ]] || return 0
+  grep -q 'dvc-router\|flux' "$_installed" 2>/dev/null || return 0
+
+  _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  _hook_source="${_script_dir}/../share/flux/pre-commit"
+  [[ -f "$_hook_source" ]] || _hook_source="${_script_dir}/pre-commit"
+  [[ -f "$_hook_source" ]] || return 0
+
+  if ! cmp -s "$_hook_source" "$_installed"; then
+    cp "$_hook_source" "$_installed"
+    chmod +x "$_installed"
+    warn "Pre-commit hook updated to latest version."
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # pull — download the latest (git pull + dvc pull)
 # ---------------------------------------------------------------------------
 
@@ -1534,6 +1559,7 @@ _flux_sync() {
   local DVC; _flux_require_dvc
   clear 2>/dev/null || true
 
+  _flux_hook_update
   _flux_subrepo_sync
 
   if ! git diff --quiet || ! git diff --cached --quiet; then
