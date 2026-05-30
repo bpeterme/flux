@@ -1495,6 +1495,31 @@ _flux_remove() {
 }
 
 # ---------------------------------------------------------------------------
+# hook update — silently refresh the pre-commit hook if it is outdated
+# Called during sync so repos stay current after brew upgrade flux.
+# ---------------------------------------------------------------------------
+
+_flux_hook_update() {
+  local _hooks_dir _installed _script_dir _hook_source
+  _hooks_dir="$(git rev-parse --git-dir 2>/dev/null)/hooks"
+  _installed="${_hooks_dir}/pre-commit"
+
+  [[ -f "$_installed" ]] || return 0
+  grep -q 'dvc-router\|flux' "$_installed" 2>/dev/null || return 0
+
+  _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  _hook_source="${_script_dir}/../share/flux/pre-commit"
+  [[ -f "$_hook_source" ]] || _hook_source="${_script_dir}/pre-commit"
+  [[ -f "$_hook_source" ]] || return 0
+
+  if ! cmp -s "$_hook_source" "$_installed"; then
+    cp "$_hook_source" "$_installed"
+    chmod +x "$_installed"
+    warn "Pre-commit hook updated to latest version."
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # pull — download the latest (git pull + dvc pull)
 # ---------------------------------------------------------------------------
 
@@ -1534,6 +1559,7 @@ _flux_sync() {
   local DVC; _flux_require_dvc
   clear 2>/dev/null || true
 
+  _flux_hook_update
   _flux_subrepo_sync
 
   if ! git diff --quiet || ! git diff --cached --quiet; then
@@ -2076,12 +2102,7 @@ _flux_list() {
   local base_dir; base_dir="$(pwd)"
   local found=0
 
-  printf "%-38s  %-32s  %-36s  %s\n" "PATH" "DVC REMOTE" "GIT REMOTE" "CAP"
-  printf "%-38s  %-32s  %-36s  %s\n" \
-    "$(printf '%0.s-' {1..38})" \
-    "$(printf '%0.s-' {1..32})" \
-    "$(printf '%0.s-' {1..36})" \
-    "---"
+  local -a _paths _dvc_remotes _git_remotes _caps
 
   while IFS= read -r git_dir; do
     local repo_dir; repo_dir="$(cd "$(dirname "$git_dir")" 2>/dev/null && pwd)" || continue
@@ -2108,9 +2129,32 @@ _flux_list() {
       rel_path="./${repo_dir#${base_dir}/}"
     fi
 
-    printf "%-38s  %-32s  %-36s  %s MB\n" "$rel_path" "$dvc_remote" "$git_remote" "$cap"
+    _paths+=("$rel_path")
+    _dvc_remotes+=("$dvc_remote")
+    _git_remotes+=("$git_remote")
+    _caps+=("$cap")
     (( found++ )) || true
   done < <(find . -type d -name ".git" -prune -print 2>/dev/null | sort)
+
+  local w1=4 w2=10 w3=10  # minimum = header label lengths
+  for i in "${!_paths[@]}"; do
+    (( ${#_paths[$i]}        > w1 )) && w1=${#_paths[$i]}
+    (( ${#_dvc_remotes[$i]}  > w2 )) && w2=${#_dvc_remotes[$i]}
+    (( ${#_git_remotes[$i]}  > w3 )) && w3=${#_git_remotes[$i]}
+  done
+
+  local sep1 sep2 sep3
+  sep1="$(printf '%*s' "$w1" '' | tr ' ' '-')"
+  sep2="$(printf '%*s' "$w2" '' | tr ' ' '-')"
+  sep3="$(printf '%*s' "$w3" '' | tr ' ' '-')"
+
+  printf "%-${w1}s  %-${w2}s  %-${w3}s  %s\n" "PATH" "DVC REMOTE" "GIT REMOTE" "CAP"
+  printf "%-${w1}s  %-${w2}s  %-${w3}s  %s\n" "$sep1" "$sep2" "$sep3" "---"
+
+  for i in "${!_paths[@]}"; do
+    printf "%-${w1}s  %-${w2}s  %-${w3}s  %s MB\n" \
+      "${_paths[$i]}" "${_dvc_remotes[$i]}" "${_git_remotes[$i]}" "${_caps[$i]}"
+  done
 
   if (( found == 0 )); then
     echo ""

@@ -313,6 +313,40 @@ teardown() { teardown_flux_test; }
   [[ "$output" == *"flux add"* ]]
 }
 
+@test "flux sync updates an outdated pre-commit hook" {
+  # Wire up a local bare remote so sync can complete
+  local bare; bare="$(mktemp -d)/origin.git"
+  git clone --bare -q "$TEST_REPO" "$bare"
+  git remote set-url origin "file://$bare"
+  git push -u origin main -q
+
+  bash "$REPO_ROOT/flux" add
+
+  # Simulate an outdated hook: still a flux hook but different content
+  printf '#!/usr/bin/env bash\n# flux dvc-router v0.0 (outdated)\n' > .git/hooks/pre-commit
+
+  run bash "$REPO_ROOT/flux" sync
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Pre-commit hook updated"* ]]
+  # Hook must now match the current pre-commit script
+  cmp -s "$REPO_ROOT/pre-commit" .git/hooks/pre-commit
+  rm -rf "$(dirname "$bare")"
+}
+
+@test "flux sync does not print hook update notice when hook is current" {
+  local bare; bare="$(mktemp -d)/origin.git"
+  git clone --bare -q "$TEST_REPO" "$bare"
+  git remote set-url origin "file://$bare"
+  git push -u origin main -q
+
+  bash "$REPO_ROOT/flux" add
+
+  run bash "$REPO_ROOT/flux" sync
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Pre-commit hook updated"* ]]
+  rm -rf "$(dirname "$bare")"
+}
+
 # ---------------------------------------------------------------------------
 # flux dry-run
 # ---------------------------------------------------------------------------
