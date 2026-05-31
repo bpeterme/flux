@@ -1923,6 +1923,8 @@ _flux_render_histogram() {
     (( counts[$i] > max_count )) && max_count=${counts[$i]}
   done
   (( max_count == 0 )) && return 0
+  (( ${_FLUX_BAR_MAX:-0} > max_count )) && max_count=${_FLUX_BAR_MAX:-0}
+  _FLUX_BAR_MAX=$max_count
 
   local count_digits=${#max_count}
   local max_lo_width=0 max_right_width=0 lw rw lo_str hi_str
@@ -1944,6 +1946,7 @@ _flux_render_histogram() {
 
   local label_width=$(( max_lo_width + 3 + max_right_width ))
   local sep_width=$(( label_width + 2 + BAR_WIDTH ))
+  _FLUX_HIST_LABEL_WIDTH=$label_width
 
   echo ""
   echo "  $section_title"
@@ -1982,15 +1985,25 @@ _flux_render_histogram() {
     fi
   done
 
-  local git_n=${#_H_GIT[@]} dvc_n=${#_H_DVC[@]}
   echo ""
-  if (( git_n > 0 && dvc_n > 0 )); then
-    printf "  ░ → Git  %d   █ → DVC  %d\n" "$git_n" "$dvc_n"
-  elif (( git_n > 0 )); then
-    printf "  ░ → Git  %d\n" "$git_n"
-  else
-    printf "  █ → DVC  %d\n" "$dvc_n"
-  fi
+}
+
+# Summary row rendered below the text histogram — one bar line per category.
+# $1=label  $2=bar-char  $3=count  $4=total-bytes  $5=count-field-width
+# Uses _FLUX_BAR_MAX (shared scale) and _FLUX_HIST_LABEL_WIDTH (label padding).
+# Skipped silently when count==0.
+_flux_render_summary_row() {
+  local label="$1" char="$2" count="$3" total_bytes="$4" count_w="${5:-1}"
+  (( count == 0 )) && return 0
+  local BAR_WIDTH=20
+  local bar_len=$(( count * BAR_WIDTH / _FLUX_BAR_MAX ))
+  (( bar_len < 1 )) && bar_len=1
+  local bar="" bar_pad="" j
+  for (( j=0; j<bar_len; j++ )); do bar="${bar}${char}"; done
+  for (( j=bar_len; j<BAR_WIDTH; j++ )); do bar_pad="${bar_pad} "; done
+  printf "    %-*s  %s%s  %*d  (%s)\n" \
+    "${_FLUX_HIST_LABEL_WIDTH:-10}" "$label" "$bar" "$bar_pad" \
+    "$count_w" "$count" "$(_flux_size_unit "$total_bytes")"
 }
 
 # ---------------------------------------------------------------------------
@@ -2078,6 +2091,25 @@ _flux_dry_run() {
     fi
   done <<< "$staged_files"
 
+  # .dvc pointer files that landed in dvc_files (because they're in a pinned dir) were sized
+  # via wc -c, giving the tiny pointer-file size instead of the actual data size.  Fix that now.
+  local _pdi=0 _pdf _pds _pline _old_ptr_sz
+  for _pdf in "${dvc_files[@]+"${dvc_files[@]}"}"; do
+    if [[ "$_pdf" == *.dvc ]]; then
+      _pds=0
+      while IFS= read -r _pline; do
+        [[ "$_pline" =~ ^[[:space:]]*size:[[:space:]]*([0-9]+) ]] && \
+          _pds=$(( _pds + BASH_REMATCH[1] ))
+      done < "$_pdf"
+      if (( _pds > 0 )); then
+        _old_ptr_sz="${dvc_file_sizes[$_pdi]:-0}"
+        dvc_bytes=$(( dvc_bytes - _old_ptr_sz + _pds ))
+        dvc_file_sizes[$_pdi]=$_pds
+      fi
+    fi
+    (( _pdi++ )) || true
+  done
+
   local dvc_managed_paths=() dvc_managed_sizes=() dvc_managed_total=0
   local _pm _pp _ps _pd _line
   for _pm in "${git_files[@]}"; do
@@ -2152,16 +2184,33 @@ _flux_dry_run() {
     (( _dm++ )) || true
   done
 
+  local _pin_git_n=${#_H_PIN_GIT[@]} _pin_dvc_n=${#_H_PIN_DVC[@]} _bin_n=${#_H_BIN[@]}
+  local _pin_git_bytes=0 _pin_dvc_bytes=0 _bin_bytes=0 _sz
+  for _sz in "${_H_PIN_GIT[@]+"${_H_PIN_GIT[@]}"}"; do _pin_git_bytes=$(( _pin_git_bytes + _sz )); done
+  for _sz in "${_H_PIN_DVC[@]+"${_H_PIN_DVC[@]}"}"; do _pin_dvc_bytes=$(( _pin_dvc_bytes + _sz )); done
+  for _sz in "${_H_BIN[@]+"${_H_BIN[@]}"}"; do          _bin_bytes=$(( _bin_bytes + _sz )); done
+
+  # Shared bar scale: seed with max summary count; text histogram raises it if needed
+  local _FLUX_BAR_MAX _FLUX_HIST_LABEL_WIDTH=10
+  _FLUX_BAR_MAX=$(( _pin_git_n > _pin_dvc_n ? _pin_git_n : _pin_dvc_n ))
+  (( _bin_n > _FLUX_BAR_MAX )) && _FLUX_BAR_MAX=$_bin_n
+
+  local _sum_max_n=$(( _pin_git_n > _pin_dvc_n ? _pin_git_n : _pin_dvc_n ))
+  (( _bin_n > _sum_max_n )) && _sum_max_n=$_bin_n
+  local _sum_count_w=${#_sum_max_n}; (( _sum_count_w < 1 )) && _sum_count_w=1
+
   _H_GIT=("${_H_TEXT_GIT[@]}"); _H_DVC=("${_H_TEXT_DVC[@]}")
   _flux_render_histogram "Text files" "$SIZE_CAP_BYTES"
+  echo ""
+  _flux_render_summary_row "Pinned Git" "░" "$_pin_git_n" "$_pin_git_bytes" "$_sum_count_w"
+  _flux_render_summary_row "Pinned DVC" "█" "$_pin_dvc_n" "$_pin_dvc_bytes" "$_sum_count_w"
+  _flux_render_summary_row "Binary"     "█" "$_bin_n"     "$_bin_bytes"     "$_sum_count_w"
 
-  _H_GIT=(); _H_DVC=("${_H_BIN[@]}")
-  _flux_render_histogram "Binary files  (→ DVC regardless of size)" 0
-
-  if (( ${#_H_PIN_GIT[@]} + ${#_H_PIN_DVC[@]} > 0 )); then
-    _H_GIT=("${_H_PIN_GIT[@]}"); _H_DVC=("${_H_PIN_DVC[@]}")
-    _flux_render_histogram "Pinned files" 0
-  fi
+  local _leg_git=$(( ${#_H_TEXT_GIT[@]} + _pin_git_n ))
+  local _leg_dvc=$(( ${#_H_TEXT_DVC[@]} + _pin_dvc_n + _bin_n ))
+  echo ""
+  (( _leg_git > 0 )) && printf "  ░ → Git\n"
+  (( _leg_dvc > 0 )) && printf "  █ → DVC\n"
 
   local show_details=false
   if [[ -t 0 && -t 1 ]]; then

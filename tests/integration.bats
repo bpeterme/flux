@@ -530,6 +530,27 @@ EOF
   [[ "$output" != *"already in DVC"* ]]
 }
 
+@test "flux dry-run uses actual data size for .dvc pointer file in force-dvc pin" {
+  mkdir -p artifacts
+  cat > artifacts/dataset.dvc << 'EOF'
+outs:
+- md5: abc123.dir
+  size: 94371840
+  nfiles: 10
+  path: dataset
+EOF
+  echo "/dataset" >> .gitignore
+  git add artifacts/dataset.dvc .gitignore
+  git commit -m "pointer in pinned dir" --no-verify -q
+  git config dvc-router.force-dvc "artifacts"
+
+  run bash "$REPO_ROOT/flux" dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"→ DVC"* ]]
+  # Total should reflect 94371840 bytes (90 MB), not the tiny pointer-file size
+  [[ "$output" == *"90 MB"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # flux cap
 # ---------------------------------------------------------------------------
