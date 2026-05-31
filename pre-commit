@@ -327,6 +327,7 @@ fi
 
 dvc_routed=()
 git_kept=()
+git_migrated=0
 
 # ---------------------------------------------------------------------------
 # Process each staged file
@@ -375,14 +376,16 @@ while IFS= read -r file; do
   # ------------------------------------------------------------------
   if [[ "$route" == "dvc" ]]; then
     # Detect Git → DVC transition: file previously committed to Git history
-    # but has now grown or changed type past the routing cap.
+    # but belongs in DVC (binary, or grew past the size cap).
     # git rm --cached removes it from the index cleanly in both cases
     # (whether it was tracked or merely staged), so no separate branch needed.
     if git ls-files --error-unmatch "$file" &>/dev/null 2>&1; then
-      info "Migrating Git → DVC (crossed cap): $file"
-      info "  Note: old version remains in Git history. Run 'dvc gc' periodically"
-      info "  to clean up orphaned R2 data, and 'git filter-repo' if you need to"
-      info "  scrub history entirely."
+      if [[ "$is_binary" == "true" ]]; then
+        log "Moving to DVC (binary, was tracked by Git): $file"
+      else
+        log "Moving to DVC (crossed size cap, was tracked by Git): $file"
+      fi
+      git_migrated=$(( git_migrated + 1 ))
     fi
 
     # Unstage from Git (handles both newly staged and previously tracked files)
@@ -433,13 +436,10 @@ sync_dvcignore
 # Summary
 # ---------------------------------------------------------------------------
 if (( ${#dvc_routed[@]} > 0 )); then
-  info "Routed to DVC / Cloudflare R2 (${#dvc_routed[@]} file(s)):"
+  log "Routed to DVC / Cloudflare R2 (${#dvc_routed[@]} file(s)):"
   for f in "${dvc_routed[@]}"; do
-    info "  ✦ $f"
+    log "  ✦ $f"
   done
-  info ""
-  info "Remember to push DVC data after committing:"
-  info "  dvc push"
 fi
 
 if (( ${#git_kept[@]} > 0 )); then
@@ -447,6 +447,20 @@ if (( ${#git_kept[@]} > 0 )); then
   for f in "${git_kept[@]}"; do
     log "  · $f"
   done
+fi
+
+# Compact always-visible summary
+_dvc_n=${#dvc_routed[@]}
+_git_n=${#git_kept[@]}
+if (( _dvc_n > 0 || _git_n > 0 )); then
+  _summary="[dvc-router] Routed: ${_dvc_n} → R2  |  ${_git_n} → Git"
+  if (( git_migrated > 0 )); then
+    _summary+="  (${git_migrated} moved out of Git history — run 'dvc push' then optionally 'git filter-repo' to scrub)"
+  fi
+  echo "$_summary"
+fi
+if (( _dvc_n > 0 )); then
+  info "Remember: dvc push"
 fi
 
 exit 0

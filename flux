@@ -1590,10 +1590,18 @@ _flux_sync() {
   fi
 
   _flux_sync_summary
-  ok "Pulling from Git remote..."; git pull --quiet
-  ok "Pulling DVC data from R2..."; "$DVC" pull --quiet
-  ok "Pushing to Git remote...";   git push --quiet
-  ok "Pushing DVC data to R2...";  "$DVC" push --quiet
+  if git pull --quiet 2>&1; then
+    ok "Pulled from Git remote."
+  else
+    warn "Git pull failed — check remote or resolve conflicts."
+  fi
+  if "$DVC" pull --quiet 2>/dev/null; then
+    ok "Pulled DVC data from R2."
+  else
+    warn "DVC pull skipped — R2 may be empty (first push)."
+  fi
+  git push --quiet  && ok "Pushed to Git remote."  || warn "Git push failed — check remote."
+  "$DVC" push --quiet && ok "Pushed DVC data to R2." || warn "DVC push failed — check credentials."
 }
 
 _flux_sync_summary() {
