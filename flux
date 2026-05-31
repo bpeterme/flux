@@ -1990,9 +1990,12 @@ _flux_dry_run_histogram() {
     if (( count > 0 && max_count > 0 )); then
       bar_len=$(( count * BAR_WIDTH / max_count ))
       if (( bar_len < 1 )); then bar_len=1; fi
-      local bar_char
-      if (( sep_after >= 0 && i <= sep_after )); then bar_char="░"; else bar_char="█"; fi
-      for (( j=0; j<bar_len; j++ )); do bar="${bar}${bar_char}"; done
+      # Split bar: ░ for git-routed portion, █ for dvc-routed portion
+      local git_chars dvc_chars
+      git_chars=$(( git_in_bucket[$i] * bar_len / count ))
+      dvc_chars=$(( bar_len - git_chars ))
+      for (( j=0; j<git_chars; j++ )); do bar="${bar}░"; done
+      for (( j=0; j<dvc_chars; j++ )); do bar="${bar}█"; done
     fi
     bar_pad=""; for (( j=bar_len; j<BAR_WIDTH; j++ )); do bar_pad="${bar_pad} "; done
 
@@ -2003,17 +2006,7 @@ _flux_dry_run_histogram() {
       size_str=""
     fi
 
-    # Pin annotations: files routed against the size-based default
-    # - DVC files in a Git-zone bucket → small files pinned to DVC (▲)
-    # - Git files in a DVC-zone bucket → large files pinned to Git (▼)
-    local pin_ann=""
-    if (( sep_after >= 0 && i <= sep_after && dvc_in_bucket[$i] > 0 )); then
-      pin_ann="   ▲ ${dvc_in_bucket[$i]}"
-    elif (( sep_after >= 0 && i > sep_after && git_in_bucket[$i] > 0 )); then
-      pin_ann="   ▼ ${git_in_bucket[$i]}"
-    fi
-
-    printf "  %s%s  %*d%s%s\n" "$bar" "$bar_pad" "$count_digits" "$count" "$size_str" "$pin_ann"
+    printf "  %s%s  %*d%s\n" "$bar" "$bar_pad" "$count_digits" "$count" "$size_str"
 
     if (( i == sep_after )); then
       local sep_line=""
@@ -2022,18 +2015,8 @@ _flux_dry_run_histogram() {
     fi
   done
 
-  local _any_pin_ovr=false
-  for (( i=0; i<nbrackets; i++ )); do
-    if (( sep_after >= 0 && i <= sep_after && dvc_in_bucket[$i] > 0 )); then
-      _any_pin_ovr=true; break
-    elif (( sep_after >= 0 && i > sep_after && git_in_bucket[$i] > 0 )); then
-      _any_pin_ovr=true; break
-    fi
-  done
-  if [[ "$_any_pin_ovr" == "true" ]]; then
-    echo ""
-    printf "  ▲ pinned → DVC   ▼ pinned → Git\n"
-  fi
+  echo ""
+  printf "  ░ → Git   █ → DVC\n"
 }
 
 # ---------------------------------------------------------------------------
