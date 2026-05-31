@@ -1829,135 +1829,116 @@ _flux_size_unit() {
   fi
 }
 
-_flux_dry_run_histogram() {
-  local cap_bytes=$1
+# Generic histogram renderer called multiple times by _flux_dry_run.
+# $1 = section title   $2 = cap_bytes (0 = no separator line)
+# Reads _H_GIT[] and _H_DVC[] globals (byte sizes for ░ and █ bars).
+_flux_render_histogram() {
+  local section_title="$1" cap_bytes="${2:-0}"
   local BAR_WIDTH=20
 
-  # Reads _FLUX_HIST_GIT and _FLUX_HIST_DVC (arrays of byte sizes) set by _flux_dry_run.
-  local _hist_total=$(( ${#_FLUX_HIST_GIT[@]} + ${#_FLUX_HIST_DVC[@]} ))
-  [[ $_hist_total -eq 0 ]] && return 0
+  local total=$(( ${#_H_GIT[@]} + ${#_H_DVC[@]} ))
+  [[ $total -eq 0 ]] && return 0
 
-  # Fixed log-scale boundaries, with cap inserted as a dynamic boundary
   local fixed_thresholds=(1024 10240 102400 1048576 10485760 104857600 1073741824)
   local boundaries=(0) cap_added=false t last_idx
 
-  for t in "${fixed_thresholds[@]}"; do
-    if [[ "$cap_added" == "false" ]] && (( cap_bytes <= t )); then
-      last_idx=$(( ${#boundaries[@]} - 1 ))
-      if (( cap_bytes > boundaries[last_idx] )); then
-        boundaries+=("$cap_bytes")
+  if (( cap_bytes > 0 )); then
+    for t in "${fixed_thresholds[@]}"; do
+      if [[ "$cap_added" == "false" ]] && (( cap_bytes <= t )); then
+        last_idx=$(( ${#boundaries[@]} - 1 ))
+        (( cap_bytes > boundaries[last_idx] )) && boundaries+=("$cap_bytes")
+        cap_added=true
       fi
-      cap_added=true
+      last_idx=$(( ${#boundaries[@]} - 1 ))
+      (( t != boundaries[last_idx] )) && boundaries+=("$t")
+    done
+    if [[ "$cap_added" == "false" ]]; then
+      last_idx=$(( ${#boundaries[@]} - 1 ))
+      (( cap_bytes > boundaries[last_idx] )) && boundaries+=("$cap_bytes")
     fi
-    last_idx=$(( ${#boundaries[@]} - 1 ))
-    if (( t != boundaries[last_idx] )); then
-      boundaries+=("$t")
-    fi
-  done
-
-  if [[ "$cap_added" == "false" ]]; then
-    last_idx=$(( ${#boundaries[@]} - 1 ))
-    if (( cap_bytes > boundaries[last_idx] )); then
-      boundaries+=("$cap_bytes")
-    fi
+  else
+    for t in "${fixed_thresholds[@]}"; do
+      last_idx=$(( ${#boundaries[@]} - 1 ))
+      (( t != boundaries[last_idx] )) && boundaries+=("$t")
+    done
   fi
-  boundaries+=(0)  # 0 = infinity sentinel
+  boundaries+=(0)
 
   local nbrackets=$(( ${#boundaries[@]} - 1 ))
-
-  local i
-  local counts=()
-  local sizes=()
-  local git_in_bucket=()
-  local dvc_in_bucket=()
-  for (( i=0; i<nbrackets; i++ )); do
-    counts+=( 0 )
-    sizes+=( 0 )
-    git_in_bucket+=( 0 )
-    dvc_in_bucket+=( 0 )
-  done
+  local i counts=() sizes=() git_in=() dvc_in=()
+  for (( i=0; i<nbrackets; i++ )); do counts+=( 0 ); sizes+=( 0 ); git_in+=( 0 ); dvc_in+=( 0 ); done
 
   local sz lo hi
-  for sz in "${_FLUX_HIST_GIT[@]+"${_FLUX_HIST_GIT[@]}"}"; do
+  for sz in "${_H_GIT[@]+"${_H_GIT[@]}"}"; do
     for (( i=0; i<nbrackets; i++ )); do
-      lo="${boundaries[$i]}"
-      hi="${boundaries[$((i+1))]}"
+      lo="${boundaries[$i]}"; hi="${boundaries[$((i+1))]}"
       if (( sz >= lo )) && (( hi == 0 || sz < hi )); then
-        counts[$i]=$(( counts[$i] + 1 ))
-        sizes[$i]=$(( sizes[$i] + sz ))
-        git_in_bucket[$i]=$(( git_in_bucket[$i] + 1 ))
-        break
+        counts[$i]=$(( counts[$i] + 1 )); sizes[$i]=$(( sizes[$i] + sz ))
+        git_in[$i]=$(( git_in[$i] + 1 )); break
+      fi
+    done
+  done
+  for sz in "${_H_DVC[@]+"${_H_DVC[@]}"}"; do
+    for (( i=0; i<nbrackets; i++ )); do
+      lo="${boundaries[$i]}"; hi="${boundaries[$((i+1))]}"
+      if (( sz >= lo )) && (( hi == 0 || sz < hi )); then
+        counts[$i]=$(( counts[$i] + 1 )); sizes[$i]=$(( sizes[$i] + sz ))
+        dvc_in[$i]=$(( dvc_in[$i] + 1 )); break
       fi
     done
   done
 
-  for sz in "${_FLUX_HIST_DVC[@]+"${_FLUX_HIST_DVC[@]}"}"; do
-    for (( i=0; i<nbrackets; i++ )); do
-      lo="${boundaries[$i]}"
-      hi="${boundaries[$((i+1))]}"
-      if (( sz >= lo )) && (( hi == 0 || sz < hi )); then
-        counts[$i]=$(( counts[$i] + 1 ))
-        sizes[$i]=$(( sizes[$i] + sz ))
-        dvc_in_bucket[$i]=$(( dvc_in_bucket[$i] + 1 ))
-        break
-      fi
-    done
-  done
-
-  # Only suppress when no files at all
   local non_empty=0
   for (( i=0; i<nbrackets; i++ )); do
     if (( counts[$i] > 0 )); then non_empty=$(( non_empty + 1 )); fi
   done
   if (( non_empty == 0 )); then return 0; fi
 
-  # Find separator position (bracket whose upper bound == cap_bytes)
   local sep_after=-1
-  for (( i=0; i<nbrackets; i++ )); do
-    if (( boundaries[$((i+1))] == cap_bytes )); then sep_after=$i; break; fi
-  done
-
-  # Trim DVC side: show at least the first DVC bucket; stop at last non-empty one
-  local dvc_first dvc_last display_last
-  if (( sep_after >= 0 )); then
-    dvc_first=$(( sep_after + 1 ))
-    dvc_last=$dvc_first
-    for (( i=dvc_first; i<nbrackets; i++ )); do
-      if (( counts[$i] > 0 )); then dvc_last=$i; fi
+  if (( cap_bytes > 0 )); then
+    for (( i=0; i<nbrackets; i++ )); do
+      (( boundaries[$((i+1))] == cap_bytes )) && { sep_after=$i; break; }
     done
+  fi
+
+  # Display range: with cap → full git zone + trimmed dvc zone; without → trim both ends
+  local display_first=0 display_last
+  if (( sep_after >= 0 )); then
+    display_first=0
+    local dvc_first=$(( sep_after + 1 )) dvc_last=$(( sep_after + 1 ))
+    for (( i=dvc_first; i<nbrackets; i++ )); do (( counts[$i] > 0 )) && dvc_last=$i; done
     display_last=$dvc_last
   else
     display_last=$(( nbrackets - 1 ))
+    for (( i=0; i<nbrackets; i++ )); do
+      if (( counts[$i] > 0 )); then display_first=$i; break; fi
+    done
+    for (( i=nbrackets-1; i>=0; i-- )); do
+      if (( counts[$i] > 0 )); then display_last=$i; break; fi
+    done
   fi
 
-  # Max count across displayed range (for bar scaling)
   local max_count=0
-  for (( i=0; i<=display_last; i++ )); do
-    if (( counts[$i] > max_count )); then max_count=${counts[$i]}; fi
+  for (( i=display_first; i<=display_last; i++ )); do
+    (( counts[$i] > max_count )) && max_count=${counts[$i]}
   done
+  (( max_count == 0 )) && return 0
 
-  # Width of the count column (right-aligned)
   local count_digits=${#max_count}
-
-  # Two-column label alignment:
-  #   left col  (max_lo_width)  : lo value, right-aligned; empty for "< hi" and "> lo"
-  #   separator (3 chars)       : " - " / " < " / " > "
-  #   right col (max_right_width): hi value for ranges; lo value for "> lo"; hi for "< hi"
   local max_lo_width=0 max_right_width=0 lw rw lo_str hi_str
-  for (( i=0; i<=display_last; i++ )); do
-    lo="${boundaries[$i]}"
-    hi="${boundaries[$((i+1))]}"
+  for (( i=display_first; i<=display_last; i++ )); do
+    lo="${boundaries[$i]}"; hi="${boundaries[$((i+1))]}"
     if (( lo != 0 && hi != 0 )); then
       lo_str=$(_flux_size_unit "$lo"); hi_str=$(_flux_size_unit "$hi")
       lw=${#lo_str}; rw=${#hi_str}
-      if (( lw > max_lo_width ));    then max_lo_width=$lw;    fi
-      if (( rw > max_right_width )); then max_right_width=$rw; fi
+      (( lw > max_lo_width ))    && max_lo_width=$lw
+      (( rw > max_right_width )) && max_right_width=$rw
     elif (( lo == 0 )); then
       hi_str=$(_flux_size_unit "$hi"); rw=${#hi_str}
-      if (( rw > max_right_width )); then max_right_width=$rw; fi
+      (( rw > max_right_width )) && max_right_width=$rw
     else
       lo_str=$(_flux_size_unit "$lo"); lw=${#lo_str}
-      if (( lw > max_right_width )); then max_right_width=$lw; fi
+      (( lw > max_right_width )) && max_right_width=$lw
     fi
   done
 
@@ -1965,16 +1946,13 @@ _flux_dry_run_histogram() {
   local sep_width=$(( label_width + 2 + BAR_WIDTH ))
 
   echo ""
-  echo "  Routing by file size"
+  echo "  $section_title"
   echo ""
 
-  local bar bar_len bar_pad j count size_str
-  for (( i=0; i<=display_last; i++ )); do
-    lo="${boundaries[$i]}"
-    hi="${boundaries[$((i+1))]}"
-    count="${counts[$i]}"
+  local bar bar_len bar_pad j count size_str git_chars dvc_chars
+  for (( i=display_first; i<=display_last; i++ )); do
+    lo="${boundaries[$i]}"; hi="${boundaries[$((i+1))]}"; count="${counts[$i]}"
 
-    # Label: right-aligned lo, fixed-width separator, left-aligned right value
     if (( lo == 0 )); then
       printf "    %*s < %-*s" "$max_lo_width" "" "$max_right_width" "$(_flux_size_unit "$hi")"
     elif (( hi == 0 )); then
@@ -1983,29 +1961,18 @@ _flux_dry_run_histogram() {
       printf "    %*s - %-*s" "$max_lo_width" "$(_flux_size_unit "$lo")" "$max_right_width" "$(_flux_size_unit "$hi")"
     fi
 
-    # Bar: build blocks then pad explicitly in display columns (block chars are
-    # multi-byte, so %-*s byte-based padding would misalign counts for partial bars).
-    # Shading: ░ for Git-routed buckets, █ for DVC-routed buckets.
     bar=""; bar_len=0
-    if (( count > 0 && max_count > 0 )); then
+    if (( count > 0 )); then
       bar_len=$(( count * BAR_WIDTH / max_count ))
-      if (( bar_len < 1 )); then bar_len=1; fi
-      # Split bar: ░ for git-routed portion, █ for dvc-routed portion
-      local git_chars dvc_chars
-      git_chars=$(( git_in_bucket[$i] * bar_len / count ))
+      (( bar_len < 1 )) && bar_len=1
+      git_chars=$(( git_in[$i] * bar_len / count ))
       dvc_chars=$(( bar_len - git_chars ))
       for (( j=0; j<git_chars; j++ )); do bar="${bar}░"; done
       for (( j=0; j<dvc_chars; j++ )); do bar="${bar}█"; done
     fi
     bar_pad=""; for (( j=bar_len; j<BAR_WIDTH; j++ )); do bar_pad="${bar_pad} "; done
 
-    # Size annotation shown only when bucket is non-empty
-    if (( count > 0 )); then
-      size_str="  ($(_flux_size_unit "${sizes[$i]}"))"
-    else
-      size_str=""
-    fi
-
+    (( count > 0 )) && size_str="  ($(_flux_size_unit "${sizes[$i]}"))" || size_str=""
     printf "  %s%s  %*d%s\n" "$bar" "$bar_pad" "$count_digits" "$count" "$size_str"
 
     if (( i == sep_after )); then
@@ -2015,10 +1982,15 @@ _flux_dry_run_histogram() {
     fi
   done
 
-  local _git_total=${#_FLUX_HIST_GIT[@]}
-  local _dvc_total=${#_FLUX_HIST_DVC[@]}
+  local git_n=${#_H_GIT[@]} dvc_n=${#_H_DVC[@]}
   echo ""
-  printf "  ░ → Git  %d   █ → DVC  %d\n" "$_git_total" "$_dvc_total"
+  if (( git_n > 0 && dvc_n > 0 )); then
+    printf "  ░ → Git  %d   █ → DVC  %d\n" "$git_n" "$dvc_n"
+  elif (( git_n > 0 )); then
+    printf "  ░ → Git  %d\n" "$git_n"
+  else
+    printf "  █ → DVC  %d\n" "$dvc_n"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -2059,7 +2031,7 @@ _flux_dry_run() {
   fi
 
   local git_files=() git_bytes=0 git_notes=() git_file_sizes=()
-  local dvc_files=() dvc_bytes=0 dvc_migrating=() dvc_notes=() dvc_file_sizes=()
+  local dvc_files=() dvc_bytes=0 dvc_migrating=() dvc_notes=() dvc_file_sizes=() dvc_file_is_binary=()
   local skip_files=()
 
   while IFS= read -r file; do
@@ -2079,6 +2051,7 @@ _flux_dry_run() {
       dvc_files+=("$file")
       dvc_notes+=("[pinned]")
       dvc_file_sizes+=("$file_size")
+      dvc_file_is_binary+=(0)
       dvc_bytes=$(( dvc_bytes + file_size ))
       if git ls-files --error-unmatch "$file" &>/dev/null 2>&1; then
         dvc_migrating+=("$file")
@@ -2092,6 +2065,7 @@ _flux_dry_run() {
       dvc_files+=("$file")
       dvc_notes+=("")
       dvc_file_sizes+=("$file_size")
+      dvc_file_is_binary+=("$( [[ "$is_binary" == "true" ]] && echo 1 || echo 0 )")
       dvc_bytes=$(( dvc_bytes + file_size ))
       if git ls-files --error-unmatch "$file" &>/dev/null 2>&1; then
         dvc_migrating+=("$file")
@@ -2148,18 +2122,46 @@ _flux_dry_run() {
   printf "  → Git     %d file(s)    %s\n" "${#git_files[@]}" "$(_flux_format_size "$git_bytes")"
   printf "  → DVC     %d file(s)    %s\n" "$_dvc_total_n" "$(_flux_format_size "$_dvc_total_b")"
 
-  # Build histogram input from already-computed routing — avoids re-scanning git ls-files
-  # which would only see .dvc pointer files, not the actual large data files.
-  _FLUX_HIST_GIT=("${git_file_sizes[@]+"${git_file_sizes[@]}"}")
-  _FLUX_HIST_DVC=("${dvc_file_sizes[@]+"${dvc_file_sizes[@]}"}" "${skip_file_sizes[@]+"${skip_file_sizes[@]}"}")
+  # Split routed files into three histogram categories:
+  #   text  — text files; threshold line separates git (below) from dvc (above)
+  #   binary — binary files; always DVC regardless of size, no threshold line
+  #   pinned — explicitly pinned files; no threshold line
+  local _H_TEXT_GIT=() _H_TEXT_DVC=() _H_BIN=() _H_PIN_GIT=() _H_PIN_DVC=()
+
+  local _hi=0
+  for _hsz in "${git_file_sizes[@]+"${git_file_sizes[@]}"}"; do
+    if [[ "${git_notes[$_hi]:-}" == "[pinned]" ]]; then _H_PIN_GIT+=("$_hsz")
+    else                                                  _H_TEXT_GIT+=("$_hsz"); fi
+    (( _hi++ )) || true
+  done
+
+  local _hj=0
+  for _hsz in "${dvc_file_sizes[@]+"${dvc_file_sizes[@]}"}"; do
+    if   [[ "${dvc_notes[$_hj]:-}" == "[pinned]" ]];    then _H_PIN_DVC+=("$_hsz")
+    elif [[ "${dvc_file_is_binary[$_hj]:-0}" == "1" ]]; then _H_BIN+=("$_hsz")
+    else                                                      _H_TEXT_DVC+=("$_hsz"); fi
+    (( _hj++ )) || true
+  done
+
+  # Already-DVC-managed files (skip_files + dvc_managed_paths) → binary category
+  _H_BIN+=("${skip_file_sizes[@]+"${skip_file_sizes[@]}"}")
   local _dm=0
   for _dmp in "${dvc_managed_paths[@]}"; do
     local _dmsz="${dvc_managed_sizes[$_dm]:-0}"
-    (( _dmsz > 0 )) && _FLUX_HIST_DVC+=("$_dmsz")
+    (( _dmsz > 0 )) && _H_BIN+=("$_dmsz")
     (( _dm++ )) || true
   done
 
-  _flux_dry_run_histogram "$SIZE_CAP_BYTES"
+  _H_GIT=("${_H_TEXT_GIT[@]}"); _H_DVC=("${_H_TEXT_DVC[@]}")
+  _flux_render_histogram "Text files" "$SIZE_CAP_BYTES"
+
+  _H_GIT=(); _H_DVC=("${_H_BIN[@]}")
+  _flux_render_histogram "Binary files  (→ DVC regardless of size)" 0
+
+  if (( ${#_H_PIN_GIT[@]} + ${#_H_PIN_DVC[@]} > 0 )); then
+    _H_GIT=("${_H_PIN_GIT[@]}"); _H_DVC=("${_H_PIN_DVC[@]}")
+    _flux_render_histogram "Pinned files" 0
+  fi
 
   local show_details=false
   if [[ -t 0 && -t 1 ]]; then
