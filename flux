@@ -1971,7 +1971,7 @@ _flux_dry_run_histogram() {
   local sep_width=$(( label_width + 2 + BAR_WIDTH ))
 
   echo ""
-  echo "  Size distribution  (git-visible files)"
+  echo "  Routing by file size"
   echo ""
 
   local bar bar_len bar_pad j count size_str
@@ -2151,16 +2151,10 @@ _flux_dry_run() {
     [[ -f "$_sf" ]] && skip_bytes=$(( skip_bytes + $(wc -c < "$_sf" | tr -d ' ') ))
   done
 
+  local _dvc_total_n=$(( ${#dvc_files[@]} + ${#skip_files[@]} + ${#dvc_managed_paths[@]} ))
+  local _dvc_total_b=$(( dvc_bytes + skip_bytes + dvc_managed_total ))
   printf "  → Git     %d file(s)    %s\n" "${#git_files[@]}" "$(_flux_format_size "$git_bytes")"
-  local migrating_note=""
-  (( ${#dvc_migrating[@]} > 0 )) && migrating_note="    (${#dvc_migrating[@]} migrating from Git)"
-  printf "  → DVC     %d file(s)    %s%s\n" "${#dvc_files[@]}" "$(_flux_format_size "$dvc_bytes")" "$migrating_note"
-  local _already_n=$(( ${#skip_files[@]} + ${#dvc_managed_paths[@]} ))
-  local _already_b=$(( skip_bytes + dvc_managed_total ))
-  if (( _already_n > 0 )); then
-    printf "  ⊙ DVC     %d items      %s    (already in DVC)\n" \
-      "$_already_n" "$(_flux_format_size "$_already_b")"
-  fi
+  printf "  → DVC     %d file(s)    %s\n" "$_dvc_total_n" "$(_flux_format_size "$_dvc_total_b")"
 
   _flux_dry_run_histogram "$SIZE_CAP_BYTES"
 
@@ -2186,27 +2180,20 @@ _flux_dry_run() {
       done
     fi
 
-    if (( ${#dvc_files[@]} > 0 )); then
+    if (( _dvc_total_n > 0 )); then
       echo ""
       printf "  DVC files:\n"
       local _j=0
       for f in "${dvc_files[@]}"; do
         local sz; sz=$(wc -c < "$f" | tr -d ' ')
         local note="${dvc_notes[_j]:-}"
-        for m in "${dvc_migrating[@]+"${dvc_migrating[@]}"}"; do
-          [[ "$m" == "$f" ]] && { [[ -n "$note" ]] && note+=" "; note+="[migrating from Git]"; } && break
-        done
         local _note_str; _note_str="${note:+   ${note}}"
         printf "    ✦  %-42s %s%s\n" "$f" "$(_flux_format_size "$sz")" "$_note_str"
         (( _j++ )) || true
       done
-    fi
-
-    if (( _already_n > 0 )); then
-      echo ""
-      printf "  Already in DVC:\n"
       for f in "${skip_files[@]}"; do
-        printf "    ⊙  %-42s (tracked via pointer)\n" "$f"
+        local sz; sz=$(wc -c < "$f" | tr -d ' ')
+        printf "    ✦  %-42s %s\n" "$f" "$(_flux_format_size "$sz")"
       done
       local _dm=0
       for _dmp in "${dvc_managed_paths[@]}"; do
@@ -2215,9 +2202,9 @@ _flux_dry_run() {
         if (( _dmsz > 0 )); then
           _dmsz_str=$(_flux_format_size "$_dmsz")
         else
-          _dmsz_str="? (size not in .dvc file)"
+          _dmsz_str="(size unknown)"
         fi
-        printf "    ⊙  %-42s %s\n" "$_dmp" "$_dmsz_str"
+        printf "    ✦  %-42s %s\n" "$_dmp" "$_dmsz_str"
         (( _dm++ )) || true
       done
     fi

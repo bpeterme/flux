@@ -430,7 +430,7 @@ teardown() { teardown_flux_test; }
   [[ "$output" == *"→ DVC"* ]]
 }
 
-@test "flux dry-run shows already-DVC-tracked file as skipped" {
+@test "flux dry-run includes already-DVC-tracked file in DVC total" {
   printf '\x00\x01\x02' > asset.bin
   cat > asset.bin.dvc << 'EOF'
 outs:
@@ -445,10 +445,12 @@ EOF
 
   run bash "$REPO_ROOT/flux" dry-run
   [ "$status" -eq 0 ]
-  [[ "$output" == *"already in DVC"* ]]
+  [[ "$output" == *"→ Git"* ]]
+  [[ "$output" == *"→ DVC"* ]]
+  [[ "$output" != *"already in DVC"* ]]
 }
 
-@test "flux dry-run flags Git-tracked file that now exceeds cap as migrating" {
+@test "flux dry-run routes Git-tracked file exceeding cap to DVC" {
   echo "small" > growing.txt
   git add growing.txt
   git commit -m "small file" --no-verify -q
@@ -458,7 +460,8 @@ EOF
 
   run bash "$REPO_ROOT/flux" dry-run
   [ "$status" -eq 0 ]
-  [[ "$output" == *"migrating from Git"* ]]
+  [[ "$output" == *"→ DVC"* ]]
+  [[ "$output" != *"migrating from Git"* ]]
 }
 
 @test "flux dry-run includes untracked files when nothing is staged" {
@@ -492,7 +495,7 @@ EOF
   [[ "$output" == *"cap: 1 MB"* ]]
 }
 
-@test "flux dry-run surfaces DVC-managed paths from pointer files in all-files mode" {
+@test "flux dry-run includes DVC-managed paths from pointer files in DVC total" {
   mkdir -p dataset
   echo "row" > dataset/sample.csv
   cat > dataset.dvc << 'EOF'
@@ -508,10 +511,11 @@ EOF
 
   run bash "$REPO_ROOT/flux" dry-run
   [ "$status" -eq 0 ]
-  [[ "$output" == *"already in DVC"* ]]
+  [[ "$output" == *"→ DVC"* ]]
+  [[ "$output" != *"already in DVC"* ]]
 }
 
-@test "flux dry-run shows DVC-managed path with zero size when size absent from pointer" {
+@test "flux dry-run includes DVC-managed path in DVC total when size absent from pointer" {
   cat > model.dvc << 'EOF'
 outs:
 - md5: deadbeef
@@ -522,7 +526,8 @@ EOF
 
   run bash "$REPO_ROOT/flux" dry-run
   [ "$status" -eq 0 ]
-  [[ "$output" == *"already in DVC"* ]]
+  [[ "$output" == *"→ DVC"* ]]
+  [[ "$output" != *"already in DVC"* ]]
 }
 
 # ---------------------------------------------------------------------------
