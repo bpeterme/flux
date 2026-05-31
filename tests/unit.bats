@@ -421,3 +421,63 @@ EOF
   # No .dvcignore should be created inside the gitignored directory
   [ ! -f "Website/.dvcignore" ]
 }
+
+@test "DVC-tracked root file pattern is excluded from .dvcignore" {
+  # When dvc add routes a root-level binary file it writes /<basename> to
+  # .gitignore. That pattern must NOT appear in .dvcignore or DVC will refuse
+  # to push (conflict: file both tracked by DVC and ignored by .dvcignore).
+  make_binary_file data.bin
+  git add data.bin
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+
+  # mock dvc add wrote /data.bin to .gitignore — verify the premise
+  grep -qxF "/data.bin" .gitignore
+
+  # .dvcignore must NOT contain the pattern for a DVC-tracked file
+  [ -f ".dvcignore" ]
+  ! grep -qF "data.bin" .dvcignore
+}
+
+@test "DVC-tracked non-root file full path is excluded from .dvcignore" {
+  # For non-root files the hook writes the full relative path to the root
+  # .gitignore (e.g. "subdir/img.png"). That path must NOT be copied to
+  # .dvcignore or dvc push fails with "path is ignored by .dvcignore".
+  mkdir -p subdir
+  make_binary_file subdir/img.png
+  git add subdir/img.png
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+
+  # hook wrote full path to root .gitignore — verify the premise
+  grep -qxF "subdir/img.png" .gitignore
+
+  # .dvcignore must NOT contain the full path or any basename variant
+  [ -f ".dvcignore" ]
+  ! grep -qF "img.png" .dvcignore
+}
+
+@test "gitignored file is not routed to DVC and is unstaged" {
+  # A gitignored file must never be routed to DVC.  This edge case occurs when
+  # a previously-tracked file is now ignored (e.g. .gitignore updated in the
+  # same commit) or when git add -f force-staged a file.
+  printf '/.DS_Store\n' > .gitignore
+  git add .gitignore
+  git commit -m "add gitignore" --no-verify -q
+
+  printf '\x00\x01\x02' > .DS_Store
+  git add -f .DS_Store   # force-stage, bypassing gitignore
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+
+  # File must not have been routed to DVC
+  [ ! -f ".DS_Store.dvc" ]
+  assert_dvc_not_called "add .DS_Store"
+
+  # File must have been unstaged by the hook
+  run git diff --cached --name-only
+  [[ "$output" != *".DS_Store"* ]]
+}

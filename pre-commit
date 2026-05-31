@@ -87,6 +87,31 @@ warn() {
 # Mental model: anything in .gitignore is invisible to both Git and DVC.
 # ---------------------------------------------------------------------------
 sync_dvcignore() {
+  # Collect every .gitignore pattern that corresponds to a DVC-tracked file.
+  # These patterns must be excluded from .dvcignore: they exist to keep git
+  # away from data files managed by DVC, but if DVC also sees them it refuses
+  # to collect its own workspace and dvc push/pull fail.
+  #
+  # Three pattern forms are excluded per tracked file:
+  #   "dir/file"   — full relative path written by the hook for non-root files
+  #   "/basename"  — written by dvc add into the sibling .gitignore
+  #   "basename"   — bare name (fallback)
+  local -a _dvc_patterns=()
+  while IFS= read -r _ptr; do
+    local _rel _dir _base
+    _rel=$(grep '^\s*path:' "$_ptr" 2>/dev/null \
+      | head -1 | sed 's/.*path:[[:space:]]*//' | tr -d '"' | tr -d "'" \
+      || true)
+    [[ -z "$_rel" ]] && continue
+    _dir=$(dirname "$_ptr")
+    _base=$(basename "$_rel")
+    if [[ "$_dir" == "." ]]; then
+      _dvc_patterns+=("$_rel" "/$_rel")
+    else
+      _dvc_patterns+=("$_dir/$_rel" "/$_base" "$_base")
+    fi
+  done < <(git ls-files '*.dvc' 2>/dev/null)
+
   # Only process tracked/staged .gitignore files — git ls-files skips gitignored
   # sub-repos and excluded directories, which find would otherwise traverse.
   while IFS= read -r gitignore_path; do
@@ -96,6 +121,13 @@ sync_dvcignore() {
 
     # Strip comment lines and blank lines; an empty result is still valid
     grep -v '^\s*#' "$gitignore_path" | grep -v '^\s*$' > "$dvcignore_path" || true
+
+    # Remove every pattern that belongs to a DVC-tracked file.
+    for _pat in "${_dvc_patterns[@]}"; do
+      local _tmp; _tmp=$(mktemp)
+      grep -vxF "$_pat" "$dvcignore_path" > "$_tmp" || true
+      mv "$_tmp" "$dvcignore_path"
+    done
 
     git add "$dvcignore_path"
     log "Synced: $dvcignore_path ← $gitignore_path"
@@ -131,7 +163,8 @@ cleanup_orphaned_dvc_pointers() {
       | head -1 \
       | sed 's/.*path:[[:space:]]*//' \
       | tr -d '"' \
-      | tr -d "'")
+      | tr -d "'" \
+      || true)
     [[ -z "$target_rel" ]] && continue
 
     # Target path is relative to the directory containing the .dvc file
@@ -212,7 +245,8 @@ migrate_dvc_to_git() {
       | head -1 \
       | sed 's/.*path:[[:space:]]*//' \
       | tr -d '"' \
-      | tr -d "'")
+      | tr -d "'" \
+      || true)
     [[ -z "$target_rel" ]] && continue
 
     local dvc_dir target_abs
@@ -342,6 +376,17 @@ while IFS= read -r file; do
   # Skip files already tracked by DVC (have a corresponding .dvc file)
   if [[ -f "${file}.dvc" ]]; then
     log "Already DVC-tracked, skipping: $file"
+    continue
+  fi
+
+  # Skip gitignored files — they must not be routed to Git or DVC.
+  # Reached when a previously-tracked file is now gitignored (e.g. .gitignore
+  # updated in the same commit) or a file was force-staged.
+  # --no-index is required: without it git check-ignore silently skips files
+  # that are already in the index (staged), giving a false negative.
+  if git check-ignore --no-index -q "$file" 2>/dev/null; then
+    git rm --cached "$file" &>/dev/null || true
+    log "Skipping gitignored file (unstaged): $file"
     continue
   fi
 
