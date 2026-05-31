@@ -100,7 +100,8 @@ sync_dvcignore() {
   while IFS= read -r _ptr; do
     local _rel _dir _base
     _rel=$(grep '^\s*path:' "$_ptr" 2>/dev/null \
-      | head -1 | sed 's/.*path:[[:space:]]*//' | tr -d '"' | tr -d "'")
+      | head -1 | sed 's/.*path:[[:space:]]*//' | tr -d '"' | tr -d "'" \
+      || true)
     [[ -z "$_rel" ]] && continue
     _dir=$(dirname "$_ptr")
     _base=$(basename "$_rel")
@@ -162,7 +163,8 @@ cleanup_orphaned_dvc_pointers() {
       | head -1 \
       | sed 's/.*path:[[:space:]]*//' \
       | tr -d '"' \
-      | tr -d "'")
+      | tr -d "'" \
+      || true)
     [[ -z "$target_rel" ]] && continue
 
     # Target path is relative to the directory containing the .dvc file
@@ -243,7 +245,8 @@ migrate_dvc_to_git() {
       | head -1 \
       | sed 's/.*path:[[:space:]]*//' \
       | tr -d '"' \
-      | tr -d "'")
+      | tr -d "'" \
+      || true)
     [[ -z "$target_rel" ]] && continue
 
     local dvc_dir target_abs
