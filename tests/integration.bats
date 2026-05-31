@@ -492,6 +492,39 @@ EOF
   [[ "$output" == *"cap: 1 MB"* ]]
 }
 
+@test "flux dry-run surfaces DVC-managed paths from pointer files in all-files mode" {
+  mkdir -p dataset
+  echo "row" > dataset/sample.csv
+  cat > dataset.dvc << 'EOF'
+outs:
+- md5: abc123.dir
+  size: 94371840
+  nfiles: 1
+  path: dataset
+EOF
+  echo "/dataset" >> .gitignore
+  git add dataset.dvc .gitignore
+  git commit -m "dvc-tracked dataset" --no-verify -q
+
+  run bash "$REPO_ROOT/flux" dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already in DVC"* ]]
+}
+
+@test "flux dry-run shows DVC-managed path with zero size when size absent from pointer" {
+  cat > model.dvc << 'EOF'
+outs:
+- md5: deadbeef
+  path: model.pkl
+EOF
+  git add model.dvc
+  git commit -m "dvc pointer no size" --no-verify -q
+
+  run bash "$REPO_ROOT/flux" dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already in DVC"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # flux cap
 # ---------------------------------------------------------------------------

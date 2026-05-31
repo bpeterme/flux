@@ -1833,6 +1833,10 @@ _flux_dry_run_histogram() {
   local cap_bytes=$1
   local BAR_WIDTH=20
 
+  local -a _fdvc=() _fgit=()
+  mapfile -t _fdvc < <(git config --get-all dvc-router.force-dvc 2>/dev/null || true)
+  mapfile -t _fgit < <(git config --get-all dvc-router.force-git 2>/dev/null || true)
+
   local all_tracked
   all_tracked=$(
     { git ls-files 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | sort -u
@@ -1870,9 +1874,13 @@ _flux_dry_run_histogram() {
   local i
   local counts=()
   local sizes=()
+  local pin_dvc_counts=()
+  local pin_git_counts=()
   for (( i=0; i<nbrackets; i++ )); do
     counts+=( 0 )
     sizes+=( 0 )
+    pin_dvc_counts+=( 0 )
+    pin_git_counts+=( 0 )
   done
 
   # Count all tracked files per bracket and accumulate sizes
@@ -1886,6 +1894,17 @@ _flux_dry_run_histogram() {
       if (( sz >= lo )) && (( hi == 0 || sz < hi )); then
         counts[$i]=$(( counts[$i] + 1 ))
         sizes[$i]=$(( sizes[$i] + sz ))
+        local _pdvc=false _pgit=false
+        if (( ${#_fdvc[@]} > 0 )) && _flux_in_dir_override "$file" "${_fdvc[@]}"; then
+          _pdvc=true
+        elif (( ${#_fgit[@]} > 0 )) && _flux_in_dir_override "$file" "${_fgit[@]}"; then
+          _pgit=true
+        fi
+        if [[ "$_pdvc" == "true" ]] && (( sz < cap_bytes )); then
+          pin_dvc_counts[$i]=$(( pin_dvc_counts[$i] + 1 ))
+        elif [[ "$_pgit" == "true" ]] && (( sz >= cap_bytes )); then
+          pin_git_counts[$i]=$(( pin_git_counts[$i] + 1 ))
+        fi
         break
       fi
     done
@@ -1952,7 +1971,7 @@ _flux_dry_run_histogram() {
   local sep_width=$(( label_width + 2 + BAR_WIDTH ))
 
   echo ""
-  echo "  Size distribution  (all tracked files)"
+  echo "  Size distribution  (git-visible files)"
   echo ""
 
   local bar bar_len bar_pad j count size_str
@@ -1990,7 +2009,14 @@ _flux_dry_run_histogram() {
       size_str=""
     fi
 
-    printf "  %s%s  %*d%s\n" "$bar" "$bar_pad" "$count_digits" "$count" "$size_str"
+    local pin_ann=""
+    if (( pin_dvc_counts[$i] > 0 )); then
+      pin_ann="   ▲ ${pin_dvc_counts[$i]}"
+    elif (( pin_git_counts[$i] > 0 )); then
+      pin_ann="   ▼ ${pin_git_counts[$i]}"
+    fi
+
+    printf "  %s%s  %*d%s%s\n" "$bar" "$bar_pad" "$count_digits" "$count" "$size_str" "$pin_ann"
 
     if (( i == sep_after )); then
       local sep_line=""
@@ -1998,6 +2024,17 @@ _flux_dry_run_histogram() {
       printf "    %s  cap: %s\n" "$sep_line" "$(_flux_size_unit "$cap_bytes")"
     fi
   done
+
+  local _any_pin_ovr=false
+  for (( i=0; i<nbrackets; i++ )); do
+    if (( pin_dvc_counts[$i] > 0 || pin_git_counts[$i] > 0 )); then
+      _any_pin_ovr=true; break
+    fi
+  done
+  if [[ "$_any_pin_ovr" == "true" ]]; then
+    echo ""
+    printf "  ▲ pinned → DVC   ▼ pinned → Git\n"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -2079,6 +2116,27 @@ _flux_dry_run() {
     fi
   done <<< "$staged_files"
 
+  local dvc_managed_paths=() dvc_managed_sizes=() dvc_managed_total=0
+  local _pm _pp _ps _pd _line
+  for _pm in "${git_files[@]}"; do
+    [[ "$_pm" != *.dvc ]] && continue
+    _pp=""; _ps=0
+    while IFS= read -r _line; do
+      if [[ -z "$_pp" ]] && [[ "$_line" =~ ^[[:space:]]*path:[[:space:]]+(.+)$ ]]; then
+        _pp="${BASH_REMATCH[1]#\"}" ; _pp="${_pp%\"}"
+        _pp="${_pp#\'}"             ; _pp="${_pp%\'}"
+      elif [[ "$_line" =~ ^[[:space:]]*size:[[:space:]]*([0-9]+) ]]; then
+        _ps=$(( _ps + BASH_REMATCH[1] ))
+      fi
+    done < "$_pm"
+    [[ -z "$_pp" ]] && continue
+    _pd=$(dirname "$_pm")
+    [[ "$_pd" != "." ]] && _pp="${_pd}/${_pp}"
+    dvc_managed_paths+=("$_pp")
+    dvc_managed_sizes+=("$_ps")
+    dvc_managed_total=$(( dvc_managed_total + _ps ))
+  done
+
   local _pin_count=$(( ${#FORCE_DVC_DIRS[@]} + ${#FORCE_GIT_DIRS[@]} ))
   local _pin_note=""
   (( _pin_count > 0 )) && _pin_note=", ${_pin_count} pin(s) active"
@@ -2087,11 +2145,22 @@ _flux_dry_run() {
   echo "  flux dry-run — routing preview (${scan_mode}, cap: ${SIZE_CAP_MB} MB${_pin_note})"
   echo ""
 
+  local skip_bytes=0
+  local _sf
+  for _sf in "${skip_files[@]}"; do
+    [[ -f "$_sf" ]] && skip_bytes=$(( skip_bytes + $(wc -c < "$_sf" | tr -d ' ') ))
+  done
+
   printf "  → Git     %d file(s)    %s\n" "${#git_files[@]}" "$(_flux_format_size "$git_bytes")"
   local migrating_note=""
   (( ${#dvc_migrating[@]} > 0 )) && migrating_note="    (${#dvc_migrating[@]} migrating from Git)"
   printf "  → DVC     %d file(s)    %s%s\n" "${#dvc_files[@]}" "$(_flux_format_size "$dvc_bytes")" "$migrating_note"
-  printf "  ↷ Skip    %d file(s)    already in DVC\n" "${#skip_files[@]}"
+  local _already_n=$(( ${#skip_files[@]} + ${#dvc_managed_paths[@]} ))
+  local _already_b=$(( skip_bytes + dvc_managed_total ))
+  if (( _already_n > 0 )); then
+    printf "  ⊙ DVC     %d items      %s    (already in DVC)\n" \
+      "$_already_n" "$(_flux_format_size "$_already_b")"
+  fi
 
   _flux_dry_run_histogram "$SIZE_CAP_BYTES"
 
@@ -2133,11 +2202,23 @@ _flux_dry_run() {
       done
     fi
 
-    if (( ${#skip_files[@]} > 0 )); then
+    if (( _already_n > 0 )); then
       echo ""
-      printf "  Skipped (already in DVC):\n"
+      printf "  Already in DVC:\n"
       for f in "${skip_files[@]}"; do
-        printf "    ·  %s\n" "$f"
+        printf "    ⊙  %-42s (tracked via pointer)\n" "$f"
+      done
+      local _dm=0
+      for _dmp in "${dvc_managed_paths[@]}"; do
+        local _dmsz="${dvc_managed_sizes[$_dm]:-0}"
+        local _dmsz_str
+        if (( _dmsz > 0 )); then
+          _dmsz_str=$(_flux_format_size "$_dmsz")
+        else
+          _dmsz_str="? (size not in .dvc file)"
+        fi
+        printf "    ⊙  %-42s %s\n" "$_dmp" "$_dmsz_str"
+        (( _dm++ )) || true
       done
     fi
   fi
