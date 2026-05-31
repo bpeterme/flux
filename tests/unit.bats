@@ -401,3 +401,23 @@ EOF
 
   grep -q '\*.tmp' .dvcignore
 }
+
+@test "sync_dvcignore skips .gitignore files inside gitignored sub-repos" {
+  # Simulate a sub-repo (Website/) that is excluded from the workspace git.
+  echo "Website/" >> .gitignore
+  git add .gitignore
+
+  mkdir -p Website
+  echo "*.js" > Website/.gitignore   # sub-repo has its own .gitignore
+
+  echo "trigger" > t.txt
+  git add t.txt
+
+  # Hook must succeed — previously it would try to git add Website/.dvcignore
+  # which fails because Website/ is gitignored, causing the hook to abort.
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+
+  # No .dvcignore should be created inside the gitignored directory
+  [ ! -f "Website/.dvcignore" ]
+}

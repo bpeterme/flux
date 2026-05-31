@@ -251,9 +251,10 @@ teardown() { teardown_flux_test; }
 
 @test "flux remove dvc removes .dvc pointer files" {
   bash "$REPO_ROOT/flux" add
-  # create pointer + matching data file so the missing-data guard does not trigger
+  # create pointer + matching data file; stage the pointer as the hook always does
   echo "data" > model.bin
   echo "outs:" > model.bin.dvc
+  git add model.bin.dvc
   run bash "$REPO_ROOT/flux" remove dvc
   [ "$status" -eq 0 ]
   [ ! -f "model.bin.dvc" ]
@@ -853,4 +854,44 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"cd "$TEST_REPO/cloned""* ]]
   rm -rf "$remote"
+}
+
+@test "flux remove dvc cleans consolidated full-path entry from root .gitignore" {
+  bash "$REPO_ROOT/flux" add
+
+  # Simulate the current flux design: the hook writes the full path into the
+  # root .gitignore (not a sibling), and the pointer is staged.
+  mkdir -p assets
+  echo "data" > assets/photo.png
+  printf 'outs:\n- md5: abc123\n  path: photo.png\n' > assets/photo.png.dvc
+  echo "assets/photo.png" >> .gitignore
+  git add assets/photo.png.dvc .gitignore
+
+  run bash "$REPO_ROOT/flux" remove dvc
+  [ "$status" -eq 0 ]
+
+  # Pointer file must be gone
+  [ ! -f "assets/photo.png.dvc" ]
+
+  # Full-path entry must be removed from root .gitignore
+  ! grep -qxF 'assets/photo.png' .gitignore 2>/dev/null
+}
+
+@test "flux remove dvc does not touch user-created subdirectory .gitignore files" {
+  bash "$REPO_ROOT/flux" add
+
+  mkdir -p assets
+  echo "data" > assets/photo.png
+  printf 'outs:\n- md5: abc123\n  path: photo.png\n' > assets/photo.png.dvc
+  # User has their own .gitignore in the subdirectory — flux must not modify it
+  printf '*.tmp\n*.log\n' > assets/.gitignore
+  git add assets/photo.png.dvc assets/.gitignore
+
+  run bash "$REPO_ROOT/flux" remove dvc
+  [ "$status" -eq 0 ]
+
+  # User's sibling .gitignore must be completely untouched
+  [ -f "assets/.gitignore" ]
+  grep -qxF '*.tmp' assets/.gitignore
+  grep -qxF '*.log' assets/.gitignore
 }

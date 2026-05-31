@@ -87,10 +87,8 @@ warn() {
 # Mental model: anything in .gitignore is invisible to both Git and DVC.
 # ---------------------------------------------------------------------------
 sync_dvcignore() {
-  local repo_root
-  repo_root=$(git rev-parse --show-toplevel)
-
-  # Find every .gitignore in the repo, excluding .git/ internals
+  # Only process tracked/staged .gitignore files — git ls-files skips gitignored
+  # sub-repos and excluded directories, which find would otherwise traverse.
   while IFS= read -r gitignore_path; do
     local dir dvcignore_path
     dir=$(dirname "$gitignore_path")
@@ -101,7 +99,7 @@ sync_dvcignore() {
 
     git add "$dvcignore_path"
     log "Synced: $dvcignore_path ← $gitignore_path"
-  done < <(find "$repo_root" -name ".gitignore" -not -path "*/.git/*" 2>/dev/null)
+  done < <(git ls-files | grep '\.gitignore$')
 }
 
 # ---------------------------------------------------------------------------
@@ -149,16 +147,29 @@ cleanup_orphaned_dvc_pointers() {
     # Stage the .dvc pointer for deletion
     git rm --cached "$dvc_file" &>/dev/null || true
 
-    # Remove the DVC-added entry from the sibling .gitignore so it doesn't
-    # accumulate stale entries (and so .dvcignore stays clean after sync)
+    # Remove the DVC-added /<basename> entry from the sibling .gitignore
+    # (backward-compat) and the full-path entry from the root .gitignore
+    # (current consolidated style). Delete the sibling if it becomes empty.
+    local target_name; target_name=$(basename "$target_rel")
     local gitignore_path="${dvc_dir}/.gitignore"
     if [[ -f "$gitignore_path" ]]; then
-      local target_name
-      target_name=$(basename "$target_rel")
-      # DVC adds entries in the form /filename — remove that exact line
-      grep -vxF "/$target_name" "$gitignore_path" > "${gitignore_path}.tmp" || true
-      mv "${gitignore_path}.tmp" "$gitignore_path"
-      git add "$gitignore_path"
+      local _tmp; _tmp=$(mktemp)
+      grep -vxF "/$target_name" "$gitignore_path" > "$_tmp" || true
+      mv "$_tmp" "$gitignore_path"
+      if [[ ! -s "$gitignore_path" ]]; then
+        rm -f "$gitignore_path"
+      else
+        git add "$gitignore_path"
+      fi
+    fi
+    if [[ "$dvc_dir" != "." ]]; then
+      local root_path; root_path="${dvc_dir}/${target_rel}"
+      if [[ -f ".gitignore" ]] && grep -qxF "$root_path" .gitignore 2>/dev/null; then
+        local _tmp; _tmp=$(mktemp)
+        grep -vxF "$root_path" .gitignore > "$_tmp" || true
+        mv "$_tmp" .gitignore
+        git add .gitignore
+      fi
     fi
 
     cleaned+=("$dvc_file")
@@ -234,6 +245,17 @@ migrate_dvc_to_git() {
       warn "  dvc remove failed for $dvc_file — skipping migration"
       continue
     }
+
+    # dvc remove cleaned the sibling .gitignore entry; also clean the root
+    # .gitignore (consolidated format used for non-root files).
+    if [[ "$dvc_dir" != "." ]]; then
+      if [[ -f ".gitignore" ]] && grep -qxF "$target_abs" .gitignore 2>/dev/null; then
+        local _tmp; _tmp=$(mktemp)
+        grep -vxF "$target_abs" .gitignore > "$_tmp" || true
+        mv "$_tmp" .gitignore
+        git add .gitignore
+      fi
+    fi
 
     # Stage the file — it's no longer gitignored, so git add works now
     git add "$target_abs"
@@ -369,14 +391,30 @@ while IFS= read -r file; do
     # Hand off to DVC — creates <file>.dvc and updates .gitignore
     "$DVC" add "$file" --quiet
 
-    # Stage the DVC pointer and the updated .gitignore for the commit
+    # Stage the DVC pointer.
     git add "${file}.dvc"
 
-    # Stage the nearest .gitignore that DVC updated
-    gitignore_path="$(dirname "$file")/.gitignore"
-    if [[ -f "$gitignore_path" ]]; then
-      git add "$gitignore_path"
+    # DVC wrote /<basename> into the sibling .gitignore. For non-root files,
+    # move that entry to the root .gitignore as a full path so DVC tracking
+    # never creates nested .gitignore files. For root-level files the sibling
+    # IS the root, so just stage it as-is.
+    _dvc_dir=$(dirname "$file")
+    _dvc_name=$(basename "$file")
+    if [[ "$_dvc_dir" != "." ]]; then
+      _dvc_gi="${_dvc_dir}/.gitignore"
+      if [[ -f "$_dvc_gi" ]] && grep -qxF "/$_dvc_name" "$_dvc_gi" 2>/dev/null; then
+        _tmp=$(mktemp)
+        grep -vxF "/$_dvc_name" "$_dvc_gi" > "$_tmp" || true
+        mv "$_tmp" "$_dvc_gi"
+        if [[ ! -s "$_dvc_gi" ]]; then
+          rm -f "$_dvc_gi"
+        else
+          git add "$_dvc_gi"
+        fi
+      fi
+      grep -qxF "$file" .gitignore 2>/dev/null || echo "$file" >> .gitignore
     fi
+    git add .gitignore
 
     dvc_routed+=("$file")
   else
