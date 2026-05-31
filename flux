@@ -1726,6 +1726,10 @@ _flux_sync() {
     _flux_spin_stop; ok "Pulled DVC data from R2."
   elif grep -qiE 'AccessDenied|Access Denied' "$_dvc_err" 2>/dev/null; then
     _flux_spin_stop; warn "DVC pull failed — access denied. Check R2 API token permissions (Admin Read & Write required)."
+  elif grep -qiE 'Checkout failed|missing-files|do not exist neither' "$_dvc_err" 2>/dev/null; then
+    _flux_spin_stop; warn "DVC pull failed — some files missing from remote. Run 'dvc pull' for details."
+  elif grep -q . "$_dvc_err" 2>/dev/null; then
+    _flux_spin_stop; warn "DVC pull failed — run 'dvc pull' to see the full error."
   else
     _flux_spin_stop; warn "DVC pull skipped — R2 may be empty (first push)."
   fi

@@ -177,8 +177,10 @@ cleanup_orphaned_dvc_pointers() {
 
     log "Orphaned .dvc pointer: $dvc_file (target missing: $target_abs)"
 
-    # Stage the .dvc pointer for deletion
-    git rm --cached "$dvc_file" &>/dev/null || true
+    # Remove the .dvc pointer from git index and from disk.
+    # --cached-only would leave the file on disk where DVC reads it and then
+    # fails to pull the missing data on every subsequent sync.
+    git rm "$dvc_file" &>/dev/null || true
 
     # Remove the DVC-added /<basename> entry from the sibling .gitignore
     # (backward-compat) and the full-path entry from the root .gitignore
