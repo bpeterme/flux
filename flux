@@ -1372,11 +1372,35 @@ _flux_remove_dvc() {
   fi
   _flux_registry_delete dvc_remote r2remote
 
-  # Remove *.dvc pointer files from git index and disk
+  # Remove *.dvc pointer files from git index and disk.
+  # Use git ls-files (not find) so we never touch files inside gitignored
+  # sub-repos. Staged-but-uncommitted pointers are included because git ls-files
+  # reads the index, not just committed history.
+  # Also clean the DVC-written entry from the sibling .gitignore for each pointer,
+  # and remove the sibling .gitignore entirely if it becomes empty.
   local -a ptrs=()
   while IFS= read -r line; do [[ -n "$line" ]] && ptrs+=("$line"); done \
-    < <(find . -type f -name "*.dvc" -not -path "./.git/*" -not -path "./.dvc/*" 2>/dev/null)
+    < <(git ls-files | grep '\.dvc$')
   if (( ${#ptrs[@]} > 0 )); then
+    for ptr in "${ptrs[@]}"; do
+      local _target_rel _ptr_dir _target_name _gi_entry _tmp
+      _target_rel=$(grep '^\s*path:' "$ptr" 2>/dev/null \
+        | head -1 | sed 's/.*path:[[:space:]]*//' | tr -d '"' | tr -d "'" || true)
+      [[ -z "$_target_rel" ]] && continue
+      _ptr_dir=$(dirname "$ptr")
+      _target_name=$(basename "$_target_rel")
+      # Root-level files: DVC writes /basename; non-root: flux writes subdir/file.
+      if [[ "$_ptr_dir" == "." ]]; then
+        _gi_entry="/$_target_name"
+      else
+        _gi_entry="${_ptr_dir}/${_target_rel}"
+      fi
+      if [[ -f ".gitignore" ]] && grep -qxF "$_gi_entry" .gitignore 2>/dev/null; then
+        _tmp=$(mktemp)
+        grep -vxF "$_gi_entry" .gitignore > "$_tmp" || true
+        mv "$_tmp" .gitignore
+      fi
+    done
     git rm --cached -q "${ptrs[@]}" 2>/dev/null || true
     rm -f "${ptrs[@]}"
     ok "Removed ${#ptrs[@]} .dvc pointer file(s)."
