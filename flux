@@ -13,6 +13,26 @@ ok()   { echo -e "${GREEN}✔${NC} $*"; }
 warn() { echo -e "${YELLOW}⚠${NC}  $*"; }
 fail() { echo -e "${RED}✘${NC} $*"; exit 1; }
 
+_FLUX_SPINNER_PID=""
+_flux_spin_start() {
+  [[ -t 1 ]] || return 0
+  local msg="${1:-flux syncing...}"
+  ( local f=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏) i=0
+    while true; do
+      printf "\r  %s %s" "${f[$i]}" "$msg"
+      i=$(( (i+1) % 10 ))
+      sleep 0.1
+    done ) &
+  _FLUX_SPINNER_PID=$!
+}
+_flux_spin_stop() {
+  [[ -n "${_FLUX_SPINNER_PID:-}" ]] || return 0
+  kill "$_FLUX_SPINNER_PID" 2>/dev/null || true
+  wait "$_FLUX_SPINNER_PID" 2>/dev/null || true
+  printf "\r\033[K"
+  _FLUX_SPINNER_PID=""
+}
+
 FLUX_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/flux/flux.env"
 
 # ---------------------------------------------------------------------------
@@ -1580,28 +1600,48 @@ _flux_sync() {
     || fail "Not configured. Run 'flux config' to set up."
   local DVC; _flux_require_dvc
   clear 2>/dev/null || true
+  _flux_spin_start "flux syncing..."
 
   _flux_hook_update
   _flux_subrepo_sync
 
   if [[ -n "$(git status --porcelain 2>/dev/null | head -1)" ]]; then
     git add -A
+    _flux_spin_stop  # stop before commit so hook output appears cleanly
     git commit --quiet -m "sync: $(date '+%Y-%m-%d %H:%M')"
+  else
+    _flux_spin_stop
   fi
 
   _flux_sync_summary
-  if git pull --quiet 2>&1; then
-    ok "Pulled from Git remote."
+
+  _flux_spin_start "pulling from Git..."
+  if git pull --quiet 2>/dev/null; then
+    _flux_spin_stop; ok "Pulled from Git remote."
   else
-    warn "Git pull failed — check remote or resolve conflicts."
+    _flux_spin_stop; warn "Git pull failed — check remote or resolve conflicts."
   fi
+
+  _flux_spin_start "pulling DVC data..."
   if "$DVC" pull --quiet 2>/dev/null; then
-    ok "Pulled DVC data from R2."
+    _flux_spin_stop; ok "Pulled DVC data from R2."
   else
-    warn "DVC pull skipped — R2 may be empty (first push)."
+    _flux_spin_stop; warn "DVC pull skipped — R2 may be empty (first push)."
   fi
-  git push --quiet  && ok "Pushed to Git remote."  || warn "Git push failed — check remote."
-  "$DVC" push --quiet && ok "Pushed DVC data to R2." || warn "DVC push failed — check credentials."
+
+  _flux_spin_start "pushing to Git..."
+  if git push --quiet 2>/dev/null; then
+    _flux_spin_stop; ok "Pushed to Git remote."
+  else
+    _flux_spin_stop; warn "Git push failed — check remote."
+  fi
+
+  _flux_spin_start "pushing DVC data..."
+  if "$DVC" push --quiet 2>/dev/null; then
+    _flux_spin_stop; ok "Pushed DVC data to R2."
+  else
+    _flux_spin_stop; warn "DVC push failed — check credentials."
+  fi
 }
 
 _flux_sync_summary() {
