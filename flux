@@ -2015,8 +2015,10 @@ _flux_dry_run_histogram() {
     fi
   done
 
+  local _git_total=${#_FLUX_HIST_GIT[@]}
+  local _dvc_total=${#_FLUX_HIST_DVC[@]}
   echo ""
-  printf "  ░ → Git   █ → DVC\n"
+  printf "  ░ → Git  %d   █ → DVC  %d\n" "$_git_total" "$_dvc_total"
 }
 
 # ---------------------------------------------------------------------------
