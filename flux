@@ -1171,7 +1171,17 @@ _flux_add() {
     || fail "Cannot derive R2 folder — run: git config flux.r2-folder <name>"
   ok "R2 folder: ${FLUX_R2_FOLDER}"
 
-  local R2_ENDPOINT="https://${chosen_account_id}.r2.cloudflarestorage.com"
+  local R2_ENDPOINT _jur_pick
+  read -rp "  R2 jurisdiction: [1] Default  [2] EU  [3] FedRAMP [1]: " _jur_pick || true
+  case "${_jur_pick:-1}" in
+    2) R2_ENDPOINT="https://${chosen_account_id}.eu.r2.cloudflarestorage.com"
+       ok "R2 jurisdiction: EU" ;;
+    3) R2_ENDPOINT="https://${chosen_account_id}.fedramp.r2.cloudflarestorage.com"
+       ok "R2 jurisdiction: FedRAMP" ;;
+    *) R2_ENDPOINT="https://${chosen_account_id}.r2.cloudflarestorage.com"
+       ok "R2 jurisdiction: Default (global)" ;;
+  esac
+
   local remote_verb="added"
   grep -q 'r2remote' .dvc/config 2>/dev/null && remote_verb="updated"
   "$DVC" remote add    -f      r2remote "s3://${chosen_bucket}/${FLUX_R2_FOLDER}" --quiet
