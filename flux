@@ -150,6 +150,78 @@ _kc_del_dvc() {
 }
 
 # ---------------------------------------------------------------------------
+# DVC credential-process helpers
+# ---------------------------------------------------------------------------
+
+# Called by boto3 via credential_process — reads Keychain and outputs JSON.
+# Must run inside a flux-managed project (needs git config flux.dvc-remote-bucket).
+_flux_credential_helper() {
+  local _bucket
+  _bucket=$(git config --get flux.dvc-remote-bucket 2>/dev/null || true)
+  if [[ -z "$_bucket" ]]; then
+    echo "flux _credential-helper: not inside a flux-managed project" >&2
+    exit 1
+  fi
+  local _ak _sk
+  _ak=$(_kc_get_dvc "$_bucket" "access-key-id")
+  _sk=$(_kc_get_dvc "$_bucket" "secret-key")
+  if [[ -z "$_ak" || -z "$_sk" ]]; then
+    echo "flux _credential-helper: no credentials for bucket '${_bucket}' — run: flux config" >&2
+    exit 1
+  fi
+  printf '{"Version":1,"AccessKeyId":"%s","SecretAccessKey":"%s"}\n' "$_ak" "$_sk"
+}
+
+# Write (or update) the [profile flux-dvc] credential_process entry in the
+# AWS config file. Idempotent: fast-paths when already correct, otherwise
+# removes the stale section and appends a fresh one. Uses FLUX_AWS_CONFIG_FILE
+# when set, otherwise the default ~/.aws/config.
+_flux_setup_aws_credential_process() {
+  local _cfg_file="${FLUX_AWS_CONFIG_FILE:-$HOME/.aws/config}"
+  local _flux_bin
+  _flux_bin=$(command -v flux 2>/dev/null || true)
+  [[ -z "$_flux_bin" ]] \
+    && _flux_bin="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+  local _cred_line="credential_process = ${_flux_bin} _credential-helper"
+
+  mkdir -p "$(dirname "$_cfg_file")"
+  [[ -f "$_cfg_file" ]] || touch "$_cfg_file"
+
+  # Fast path: section already has the correct credential_process line
+  if grep -qF '[profile flux-dvc]' "$_cfg_file" 2>/dev/null \
+  && grep -qF "$_cred_line"        "$_cfg_file" 2>/dev/null; then
+    return 0
+  fi
+
+  # Remove existing [profile flux-dvc] section (if any), then append fresh one.
+  local _tmp; _tmp=$(mktemp)
+  awk '/^\[profile flux-dvc\]/{skip=1;next} skip && /^\[/{skip=0} !skip{print}' \
+    "$_cfg_file" > "$_tmp" || true
+  printf '\n[profile flux-dvc]\n%s\n' "$_cred_line" >> "$_tmp"
+  cp "$_tmp" "$_cfg_file"
+  rm -f "$_tmp"
+}
+
+# Point .dvc/config.local at the flux-dvc AWS profile instead of storing
+# plaintext credentials. Also removes legacy credential lines from older flux
+# versions. Calls _flux_setup_aws_credential_process to ensure the profile
+# exists in the AWS config file before DVC tries to use it.
+_flux_apply_dvc_profile() {
+  local _dvc="${1:-}"
+  [[ -n "$_dvc" ]] || _dvc=$(_flux_find_dvc 2>/dev/null || true)
+  [[ -x "$_dvc" ]] || return 0
+  _flux_setup_aws_credential_process
+  "$_dvc" remote modify --local r2remote profile flux-dvc --quiet 2>/dev/null || true
+  # Strip legacy plaintext credentials written by older flux versions
+  local _cfg=".dvc/config.local"
+  if [[ -f "$_cfg" ]]; then
+    local _tmp; _tmp=$(mktemp)
+    grep -vE '^\s*(access_key_id|secret_access_key)\s*=' "$_cfg" > "$_tmp" || true
+    mv "$_tmp" "$_cfg"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Write non-sensitive global config to flux.env
 # ---------------------------------------------------------------------------
 
@@ -159,7 +231,8 @@ _flux_write_config() {
   # $3: verbose
   # $4: newline-separated "proto:host:account" git account entries
   # $5: primary DVC remote bucket name
-  local dvc_str="$1" cap="$2" verbose="$3" git_str="$4" primary_dvc="${5:-}"
+  # $6: FLUX_AWS_CONFIG_FILE value (empty = leave commented out)
+  local dvc_str="$1" cap="$2" verbose="$3" git_str="$4" primary_dvc="${5:-}" aws_cfg="${6:-}"
   mkdir -p "$(dirname "$FLUX_CONFIG")"
   local tmp; tmp=$(mktemp)
   {
@@ -183,6 +256,16 @@ _flux_write_config() {
     echo "# ── routing ───────────────────────────────────────────────────────────────────"
     echo "FLUX_SIZE_CAP_MB=${cap}        # files larger than this go to R2; smaller stay in Git"
     echo "FLUX_VERBOSE=${verbose}        # verbose hook output (true/false)"
+    echo ""
+    echo "# ── DVC credential process ────────────────────────────────────────────────────"
+    echo "# AWS config file that holds the [profile flux-dvc] credential_process entry."
+    echo "# Leave commented to use the default ~/.aws/config; uncomment and set a custom"
+    echo "# path to keep flux credentials isolated from your personal AWS setup."
+    if [[ -n "$aws_cfg" ]]; then
+      echo "FLUX_AWS_CONFIG_FILE=${aws_cfg}"
+    else
+      echo "# FLUX_AWS_CONFIG_FILE=~/.config/flux/aws.conf"
+    fi
     echo ""
     echo "# ── git accounts ──────────────────────────────────────────────────────────────"
     echo "# One or more hosting accounts used to propose git remote URLs during 'flux add'."
@@ -340,7 +423,7 @@ _flux_config() {
     if [[ -z "$FLUX_PRIMARY_DVC_REMOTE" ]] && [[ "${#FLUX_DVC_REMOTES[@]}" -gt 0 ]]; then
       FLUX_PRIMARY_DVC_REMOTE="${FLUX_DVC_REMOTES[0]%%:*}"
     fi
-    _flux_write_config "$(_cfg_dvc_str)" "${FLUX_SIZE_CAP_MB:-5}" "${FLUX_VERBOSE:-false}" "$(_cfg_git_str)" "$FLUX_PRIMARY_DVC_REMOTE"
+    _flux_write_config "$(_cfg_dvc_str)" "${FLUX_SIZE_CAP_MB:-5}" "${FLUX_VERBOSE:-false}" "$(_cfg_git_str)" "$FLUX_PRIMARY_DVC_REMOTE" "${FLUX_AWS_CONFIG_FILE:-}"
     ok "Config saved: $FLUX_CONFIG"
   }
 
@@ -1088,15 +1171,24 @@ _flux_add() {
     || fail "Cannot derive R2 folder — run: git config flux.r2-folder <name>"
   ok "R2 folder: ${FLUX_R2_FOLDER}"
 
-  local R2_ENDPOINT="https://${chosen_account_id}.r2.cloudflarestorage.com"
+  local R2_ENDPOINT _jur_pick
+  read -rp "  R2 jurisdiction: [1] Default  [2] EU  [3] FedRAMP [1]: " _jur_pick || true
+  case "${_jur_pick:-1}" in
+    2) R2_ENDPOINT="https://${chosen_account_id}.eu.r2.cloudflarestorage.com"
+       ok "R2 jurisdiction: EU" ;;
+    3) R2_ENDPOINT="https://${chosen_account_id}.fedramp.r2.cloudflarestorage.com"
+       ok "R2 jurisdiction: FedRAMP" ;;
+    *) R2_ENDPOINT="https://${chosen_account_id}.r2.cloudflarestorage.com"
+       ok "R2 jurisdiction: Default (global)" ;;
+  esac
+
   local remote_verb="added"
   grep -q 'r2remote' .dvc/config 2>/dev/null && remote_verb="updated"
   "$DVC" remote add    -f      r2remote "s3://${chosen_bucket}/${FLUX_R2_FOLDER}" --quiet
   "$DVC" remote default        r2remote                                            --quiet
   "$DVC" remote modify         r2remote endpointurl "$R2_ENDPOINT"                --quiet
   "$DVC" remote modify         r2remote region      auto                          --quiet
-  "$DVC" remote modify --local r2remote access_key_id     "$chosen_access_key"    --quiet
-  "$DVC" remote modify --local r2remote secret_access_key "$chosen_secret_key"    --quiet
+  _flux_apply_dvc_profile "$DVC"
   _flux_registry_write dvc_remote r2remote
   ok "DVC remote ${remote_verb}: s3://${chosen_bucket}/${FLUX_R2_FOLDER}"
 
@@ -1583,6 +1675,8 @@ _flux_pull() {
     fi
   fi
 
+  [[ -n "${FLUX_AWS_CONFIG_FILE:-}" ]] && export AWS_CONFIG_FILE="$FLUX_AWS_CONFIG_FILE"
+  _flux_apply_dvc_profile "$DVC"
   ok "Pulling from Git remote..."; git pull "$@"
   ok "Pulling DVC data from R2..."; "$DVC" pull
 }
@@ -1622,12 +1716,20 @@ _flux_sync() {
     _flux_spin_stop; warn "Git pull failed — check remote or resolve conflicts."
   fi
 
+  [[ -n "${FLUX_AWS_CONFIG_FILE:-}" ]] && export AWS_CONFIG_FILE="$FLUX_AWS_CONFIG_FILE"
+  _flux_apply_dvc_profile "$DVC"
+
+  local _dvc_err
   _flux_spin_start "pulling DVC data..."
-  if "$DVC" pull --quiet 2>/dev/null; then
+  _dvc_err=$(mktemp)
+  if "$DVC" pull --quiet 2>"$_dvc_err"; then
     _flux_spin_stop; ok "Pulled DVC data from R2."
+  elif grep -qiE 'AccessDenied|Access Denied' "$_dvc_err" 2>/dev/null; then
+    _flux_spin_stop; warn "DVC pull failed — access denied. Check R2 API token permissions (Admin Read & Write required)."
   else
     _flux_spin_stop; warn "DVC pull skipped — R2 may be empty (first push)."
   fi
+  rm -f "$_dvc_err"
 
   _flux_spin_start "pushing to Git..."
   if git push --quiet 2>/dev/null; then
@@ -1637,11 +1739,15 @@ _flux_sync() {
   fi
 
   _flux_spin_start "pushing DVC data..."
-  if "$DVC" push --quiet 2>/dev/null; then
+  _dvc_err=$(mktemp)
+  if "$DVC" push --quiet 2>"$_dvc_err"; then
     _flux_spin_stop; ok "Pushed DVC data to R2."
+  elif grep -qiE 'AccessDenied|Access Denied' "$_dvc_err" 2>/dev/null; then
+    _flux_spin_stop; warn "DVC push failed — access denied. Check R2 API token permissions (Admin Read & Write required)."
   else
-    _flux_spin_stop; warn "DVC push failed — check credentials."
+    _flux_spin_stop; warn "DVC push failed — run 'dvc push' to see the full error."
   fi
+  rm -f "$_dvc_err"
 }
 
 _flux_sync_summary() {
@@ -2243,6 +2349,9 @@ _flux_list() {
 _flux_clone() {
   _flux_require_macos
 
+  # Source flux.env early so FLUX_AWS_CONFIG_FILE is available for credential setup.
+  [[ -f "$FLUX_CONFIG" ]] && source "$FLUX_CONFIG" 2>/dev/null || true
+
   local git_url="${1:-}"
   local target_dir="${2:-}"
   [[ -n "$git_url" ]] || fail "Usage: flux clone <git-url> [directory]"
@@ -2311,9 +2420,8 @@ _flux_clone() {
     ok "Credentials found in Keychain for bucket '${bucket}'."
   fi
 
-  # Step 5: write DVC local credentials
-  (cd "$target_dir" && "$DVC" remote modify --local r2remote access_key_id     "$access_key" --quiet)
-  (cd "$target_dir" && "$DVC" remote modify --local r2remote secret_access_key "$secret_key" --quiet)
+  # Step 5: wire up AWS credential process and point .dvc/config.local at the profile
+  (cd "$target_dir" && _flux_apply_dvc_profile "$DVC")
 
   # Step 6: write git config and registry
   local cap verbose
@@ -2383,6 +2491,7 @@ flux() {
     remove)            _flux_remove "$@" ;;
     sync|"")           _flux_sync ;;
     _api-version)      echo "1" ;;
+    _credential-helper) _flux_credential_helper ;;
     _pull)
       _flux_require_dvc_repo
       local DVC; _flux_require_dvc

@@ -135,12 +135,11 @@ teardown() { teardown_flux_test; }
 }
 
 @test "flux add does not commit pre-existing staged files when user declines" {
-  # Skip the R2 folder prompt so the only interactive read is the commit confirm.
+  # Skip the R2 folder prompt; send newline for jurisdiction (default), then 'n' for commit confirm.
   git config flux.r2-folder "test-project"
   echo "my work" > work.txt
   git add work.txt
-  # Decline the flux commit (send 'n').
-  run bash -c "echo n | bash '$REPO_ROOT/flux' add"
+  run bash -c "printf '\nn\n' | bash '$REPO_ROOT/flux' add"
   [ "$status" -eq 0 ]
   # work.txt must still be staged (not committed, not unstaged).
   run git diff --cached --name-only
