@@ -1833,15 +1833,9 @@ _flux_dry_run_histogram() {
   local cap_bytes=$1
   local BAR_WIDTH=20
 
-  local -a _fdvc=() _fgit=()
-  mapfile -t _fdvc < <(git config --get-all dvc-router.force-dvc 2>/dev/null || true)
-  mapfile -t _fgit < <(git config --get-all dvc-router.force-git 2>/dev/null || true)
-
-  local all_tracked
-  all_tracked=$(
-    { git ls-files 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | sort -u
-  )
-  [[ -z "$all_tracked" ]] && return 0
+  # Reads _FLUX_HIST_GIT and _FLUX_HIST_DVC (arrays of byte sizes) set by _flux_dry_run.
+  local _hist_total=$(( ${#_FLUX_HIST_GIT[@]} + ${#_FLUX_HIST_DVC[@]} ))
+  [[ $_hist_total -eq 0 ]] && return 0
 
   # Fixed log-scale boundaries, with cap inserted as a dynamic boundary
   local fixed_thresholds=(1024 10240 102400 1048576 10485760 104857600 1073741824)
@@ -1874,41 +1868,41 @@ _flux_dry_run_histogram() {
   local i
   local counts=()
   local sizes=()
-  local pin_dvc_counts=()
-  local pin_git_counts=()
+  local git_in_bucket=()
+  local dvc_in_bucket=()
   for (( i=0; i<nbrackets; i++ )); do
     counts+=( 0 )
     sizes+=( 0 )
-    pin_dvc_counts+=( 0 )
-    pin_git_counts+=( 0 )
+    git_in_bucket+=( 0 )
+    dvc_in_bucket+=( 0 )
   done
 
-  # Count all tracked files per bracket and accumulate sizes
-  local file sz lo hi
-  while IFS= read -r file; do
-    [[ ! -f "$file" ]] && continue
-    sz=$(wc -c < "$file" | tr -d ' ')
+  local sz lo hi
+  for sz in "${_FLUX_HIST_GIT[@]+"${_FLUX_HIST_GIT[@]}"}"; do
     for (( i=0; i<nbrackets; i++ )); do
       lo="${boundaries[$i]}"
       hi="${boundaries[$((i+1))]}"
       if (( sz >= lo )) && (( hi == 0 || sz < hi )); then
         counts[$i]=$(( counts[$i] + 1 ))
         sizes[$i]=$(( sizes[$i] + sz ))
-        local _pdvc=false _pgit=false
-        if (( ${#_fdvc[@]} > 0 )) && _flux_in_dir_override "$file" "${_fdvc[@]}"; then
-          _pdvc=true
-        elif (( ${#_fgit[@]} > 0 )) && _flux_in_dir_override "$file" "${_fgit[@]}"; then
-          _pgit=true
-        fi
-        if [[ "$_pdvc" == "true" ]] && (( sz < cap_bytes )); then
-          pin_dvc_counts[$i]=$(( pin_dvc_counts[$i] + 1 ))
-        elif [[ "$_pgit" == "true" ]] && (( sz >= cap_bytes )); then
-          pin_git_counts[$i]=$(( pin_git_counts[$i] + 1 ))
-        fi
+        git_in_bucket[$i]=$(( git_in_bucket[$i] + 1 ))
         break
       fi
     done
-  done <<< "$all_tracked"
+  done
+
+  for sz in "${_FLUX_HIST_DVC[@]+"${_FLUX_HIST_DVC[@]}"}"; do
+    for (( i=0; i<nbrackets; i++ )); do
+      lo="${boundaries[$i]}"
+      hi="${boundaries[$((i+1))]}"
+      if (( sz >= lo )) && (( hi == 0 || sz < hi )); then
+        counts[$i]=$(( counts[$i] + 1 ))
+        sizes[$i]=$(( sizes[$i] + sz ))
+        dvc_in_bucket[$i]=$(( dvc_in_bucket[$i] + 1 ))
+        break
+      fi
+    done
+  done
 
   # Only suppress when no files at all
   local non_empty=0
@@ -2009,11 +2003,14 @@ _flux_dry_run_histogram() {
       size_str=""
     fi
 
+    # Pin annotations: files routed against the size-based default
+    # - DVC files in a Git-zone bucket → small files pinned to DVC (▲)
+    # - Git files in a DVC-zone bucket → large files pinned to Git (▼)
     local pin_ann=""
-    if (( pin_dvc_counts[$i] > 0 )); then
-      pin_ann="   ▲ ${pin_dvc_counts[$i]}"
-    elif (( pin_git_counts[$i] > 0 )); then
-      pin_ann="   ▼ ${pin_git_counts[$i]}"
+    if (( sep_after >= 0 && i <= sep_after && dvc_in_bucket[$i] > 0 )); then
+      pin_ann="   ▲ ${dvc_in_bucket[$i]}"
+    elif (( sep_after >= 0 && i > sep_after && git_in_bucket[$i] > 0 )); then
+      pin_ann="   ▼ ${git_in_bucket[$i]}"
     fi
 
     printf "  %s%s  %*d%s%s\n" "$bar" "$bar_pad" "$count_digits" "$count" "$size_str" "$pin_ann"
@@ -2027,7 +2024,9 @@ _flux_dry_run_histogram() {
 
   local _any_pin_ovr=false
   for (( i=0; i<nbrackets; i++ )); do
-    if (( pin_dvc_counts[$i] > 0 || pin_git_counts[$i] > 0 )); then
+    if (( sep_after >= 0 && i <= sep_after && dvc_in_bucket[$i] > 0 )); then
+      _any_pin_ovr=true; break
+    elif (( sep_after >= 0 && i > sep_after && git_in_bucket[$i] > 0 )); then
       _any_pin_ovr=true; break
     fi
   done
@@ -2074,8 +2073,8 @@ _flux_dry_run() {
     return 0
   fi
 
-  local git_files=() git_bytes=0 git_notes=()
-  local dvc_files=() dvc_bytes=0 dvc_migrating=() dvc_notes=()
+  local git_files=() git_bytes=0 git_notes=() git_file_sizes=()
+  local dvc_files=() dvc_bytes=0 dvc_migrating=() dvc_notes=() dvc_file_sizes=()
   local skip_files=()
 
   while IFS= read -r file; do
@@ -2094,6 +2093,7 @@ _flux_dry_run() {
     if _flux_in_dir_override "$file" "${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}"; then
       dvc_files+=("$file")
       dvc_notes+=("[pinned]")
+      dvc_file_sizes+=("$file_size")
       dvc_bytes=$(( dvc_bytes + file_size ))
       if git ls-files --error-unmatch "$file" &>/dev/null 2>&1; then
         dvc_migrating+=("$file")
@@ -2101,10 +2101,12 @@ _flux_dry_run() {
     elif _flux_in_dir_override "$file" "${FORCE_GIT_DIRS[@]+"${FORCE_GIT_DIRS[@]}"}"; then
       git_files+=("$file")
       git_notes+=("[pinned]")
+      git_file_sizes+=("$file_size")
       git_bytes=$(( git_bytes + file_size ))
     elif [[ "$is_binary" == "true" ]] || (( file_size > SIZE_CAP_BYTES )); then
       dvc_files+=("$file")
       dvc_notes+=("")
+      dvc_file_sizes+=("$file_size")
       dvc_bytes=$(( dvc_bytes + file_size ))
       if git ls-files --error-unmatch "$file" &>/dev/null 2>&1; then
         dvc_migrating+=("$file")
@@ -2112,6 +2114,7 @@ _flux_dry_run() {
     else
       git_files+=("$file")
       git_notes+=("")
+      git_file_sizes+=("$file_size")
       git_bytes=$(( git_bytes + file_size ))
     fi
   done <<< "$staged_files"
@@ -2145,16 +2148,31 @@ _flux_dry_run() {
   echo "  flux dry-run — routing preview (${scan_mode}, cap: ${SIZE_CAP_MB} MB${_pin_note})"
   echo ""
 
-  local skip_bytes=0
-  local _sf
+  local skip_bytes=0 skip_file_sizes=()
+  local _sf _ssz
   for _sf in "${skip_files[@]}"; do
-    [[ -f "$_sf" ]] && skip_bytes=$(( skip_bytes + $(wc -c < "$_sf" | tr -d ' ') ))
+    if [[ -f "$_sf" ]]; then
+      _ssz=$(wc -c < "$_sf" | tr -d ' ')
+      skip_bytes=$(( skip_bytes + _ssz ))
+      skip_file_sizes+=("$_ssz")
+    fi
   done
 
   local _dvc_total_n=$(( ${#dvc_files[@]} + ${#skip_files[@]} + ${#dvc_managed_paths[@]} ))
   local _dvc_total_b=$(( dvc_bytes + skip_bytes + dvc_managed_total ))
   printf "  → Git     %d file(s)    %s\n" "${#git_files[@]}" "$(_flux_format_size "$git_bytes")"
   printf "  → DVC     %d file(s)    %s\n" "$_dvc_total_n" "$(_flux_format_size "$_dvc_total_b")"
+
+  # Build histogram input from already-computed routing — avoids re-scanning git ls-files
+  # which would only see .dvc pointer files, not the actual large data files.
+  _FLUX_HIST_GIT=("${git_file_sizes[@]+"${git_file_sizes[@]}"}")
+  _FLUX_HIST_DVC=("${dvc_file_sizes[@]+"${dvc_file_sizes[@]}"}" "${skip_file_sizes[@]+"${skip_file_sizes[@]}"}")
+  local _dm=0
+  for _dmp in "${dvc_managed_paths[@]}"; do
+    local _dmsz="${dvc_managed_sizes[$_dm]:-0}"
+    (( _dmsz > 0 )) && _FLUX_HIST_DVC+=("$_dmsz")
+    (( _dm++ )) || true
+  done
 
   _flux_dry_run_histogram "$SIZE_CAP_BYTES"
 
