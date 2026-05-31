@@ -481,3 +481,109 @@ EOF
   run git diff --cached --name-only
   [[ "$output" != *".DS_Store"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# Directory pins
+# ---------------------------------------------------------------------------
+
+@test "small text file in force-dvc dir is routed to DVC" {
+  mkdir -p data
+  echo "tiny content" > data/small.txt
+  git config --add dvc-router.force-dvc "data"
+  git add data/small.txt
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+  [ -f "data/small.txt.dvc" ]
+  assert_dvc_called "add data/small.txt"
+  run git ls-files data/small.txt
+  [ -z "$output" ]
+}
+
+@test "binary file in force-git dir is routed to Git" {
+  mkdir -p assets
+  make_binary_file assets/icon.bin
+  git config --add dvc-router.force-git "assets"
+  git add assets/icon.bin
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+  [ ! -f "assets/icon.bin.dvc" ]
+  assert_dvc_not_called "add assets/icon.bin"
+  run git diff --cached --name-only
+  [[ "$output" == *"assets/icon.bin"* ]]
+}
+
+@test "large text file in force-git dir is routed to Git" {
+  mkdir -p docs
+  make_large_text_file docs/report.txt
+  git config --add dvc-router.force-git "docs"
+  git add docs/report.txt
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+  [ ! -f "docs/report.txt.dvc" ]
+  assert_dvc_not_called "add docs/report.txt"
+  run git diff --cached --name-only
+  [[ "$output" == *"docs/report.txt"* ]]
+}
+
+@test "file in subdirectory of force-dvc dir is also pinned to DVC" {
+  mkdir -p data/subdir
+  echo "nested content" > data/subdir/nested.txt
+  git config --add dvc-router.force-dvc "data"
+  git add data/subdir/nested.txt
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+  [ -f "data/subdir/nested.txt.dvc" ]
+  assert_dvc_called "add data/subdir/nested.txt"
+}
+
+@test "trailing slash in stored pin path still matches" {
+  mkdir -p media
+  make_binary_file media/clip.bin
+  git config --add dvc-router.force-git "media/"
+  git add media/clip.bin
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+  [ ! -f "media/clip.bin.dvc" ]
+  assert_dvc_not_called "add media/clip.bin"
+}
+
+@test "root pin (.) routes all files to DVC" {
+  echo "any content" > rootfile.txt
+  git config --add dvc-router.force-dvc "."
+  git add rootfile.txt
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+  [ -f "rootfile.txt.dvc" ]
+  assert_dvc_called "add rootfile.txt"
+}
+
+@test "normal routing is unaffected when no pins are set" {
+  echo "plain text" > plain.txt
+  git add plain.txt
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+  [ ! -f "plain.txt.dvc" ]
+  assert_dvc_not_called "add plain.txt"
+  run git diff --cached --name-only
+  [[ "$output" == *"plain.txt"* ]]
+}
+
+@test "force-dvc takes priority over force-git when both match" {
+  mkdir -p overlap
+  echo "text" > overlap/file.txt
+  git config --add dvc-router.force-dvc "overlap"
+  git config --add dvc-router.force-git "overlap"
+  git add overlap/file.txt
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+  [ -f "overlap/file.txt.dvc" ]
+  assert_dvc_called "add overlap/file.txt"
+}

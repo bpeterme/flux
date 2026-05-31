@@ -60,6 +60,10 @@ SIZE_CAP_MB=$(git config --get dvc-router.size-cap-mb 2>/dev/null || echo "5")
 SIZE_CAP_BYTES=$(( SIZE_CAP_MB * 1024 * 1024 ))
 VERBOSE=$(git config --get dvc-router.verbose 2>/dev/null || echo "false")
 
+# Directory pins — multi-value git config; empty array when key is absent
+mapfile -t FORCE_DVC_DIRS < <(git config --get-all dvc-router.force-dvc 2>/dev/null || true)
+mapfile -t FORCE_GIT_DIRS < <(git config --get-all dvc-router.force-git 2>/dev/null || true)
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -75,6 +79,19 @@ info() {
 
 warn() {
   echo "[dvc-router] WARNING: $*" >&2
+}
+
+# Returns 0 if FILE's path starts with any directory in the named array.
+# Handles both "data" and "data/" stored forms. "." matches all files.
+_in_dir_override() {
+  local file="$1"; local -n _dirs=$2
+  local dir
+  for dir in "${_dirs[@]+"${_dirs[@]}"}"; do
+    [[ "$dir" == "." ]] && return 0
+    local prefix="${dir%/}/"
+    [[ "$file" == "$prefix"* || "$file" == "${dir%/}" ]] && return 0
+  done
+  return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -364,6 +381,7 @@ fi
 dvc_routed=()
 git_kept=()
 git_migrated=0
+pin_overridden=0
 
 # ---------------------------------------------------------------------------
 # Process each staged file
@@ -405,9 +423,17 @@ while IFS= read -r file; do
   file_size=$(wc -c < "$file" | tr -d ' ')
 
   # ------------------------------------------------------------------
-  # Routing decision
+  # Routing decision — directory pins take priority over size/binary
   # ------------------------------------------------------------------
-  if [[ "$is_binary" == "true" ]]; then
+  if _in_dir_override "$file" FORCE_DVC_DIRS; then
+    log "Pinned → DVC: $file"
+    route="dvc"
+    pin_overridden=$(( pin_overridden + 1 ))
+  elif _in_dir_override "$file" FORCE_GIT_DIRS; then
+    log "Pinned → Git: $file"
+    route="git"
+    pin_overridden=$(( pin_overridden + 1 ))
+  elif [[ "$is_binary" == "true" ]]; then
     log "Binary file detected → DVC: $file"
     route="dvc"
   elif (( file_size > SIZE_CAP_BYTES )); then
@@ -503,6 +529,9 @@ if (( _dvc_n > 0 || _git_n > 0 )); then
   _summary="[dvc-router] Routed: ${_dvc_n} → R2  |  ${_git_n} → Git"
   if (( git_migrated > 0 )); then
     _summary+="  (${git_migrated} moved out of Git history — run 'dvc push' then optionally 'git filter-repo' to scrub)"
+  fi
+  if (( pin_overridden > 0 )); then
+    _summary+="  (${pin_overridden} pinned)"
   fi
   echo "$_summary"
 fi

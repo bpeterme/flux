@@ -117,6 +117,19 @@ _flux_format_size() {
   fi
 }
 
+# Returns 0 if FILE starts with any of the directory paths passed as arguments.
+# "." matches all files; paths are normalised by stripping trailing slashes.
+_flux_in_dir_override() {
+  local file="$1"; shift
+  local dir
+  for dir in "$@"; do
+    [[ "$dir" == "." ]] && return 0
+    local prefix="${dir%/}/"
+    [[ "$file" == "$prefix"* || "$file" == "${dir%/}" ]] && return 0
+  done
+  return 1
+}
+
 # ---------------------------------------------------------------------------
 # Keychain helpers
 # ---------------------------------------------------------------------------
@@ -362,16 +375,16 @@ _flux_help() {
 flux - Git + DVC auto-router for Cloudflare R2
 
 Usage:
-  flux                  Sync both ways (pull then push)
-  flux add              Opt current project into sync
-  flux list             List all flux-managed projects under current directory
-  flux clone <git-url>  Clone a flux-managed repo and wire up DVC + credentials
-  flux remove           Full detach (git + DVC)
-  flux remove git       Remove hook and git config only
-  flux remove dvc       Remove all DVC traces (pointer files, .dvc/)
-  flux pull             Download the latest (git pull + dvc pull)
-  flux dry-run          Preview routing (staged files, or all tracked if none staged)
-  flux cap [N|--reset]  Show, reset or set per-project size cap to [N] (MB)
+  flux                         Sync both ways (pull then push)
+  flux add                     Opt current project into sync
+  flux list                    List flux projects; shows pins when inside a project
+  flux clone <git-url>         Clone a flux-managed repo and wire up DVC + credentials
+  flux remove [git|dvc]        Remove all flux traces, or only git config, or only DVC
+  flux pull                    Download the latest (git pull + dvc pull)
+  flux dry-run                 Preview routing (staged files, or all tracked if none staged)
+  flux cap [N|--reset]         Show, reset or set per-project size cap to [N] (MB)
+  flux pin [dvc|git|reset]     Pin current directory to dvc or git; reset removes pin
+  flux pin reset --all         Clear all directory pins
 
 Maintenance:
   flux config           Configure flux (set up or manage global settings)
@@ -1380,11 +1393,17 @@ _flux_remove_git() {
   while IFS= read -r line; do [[ -n "$line" ]] && keys+=("$line"); done \
     < <(_flux_registry_read git_config)
   if (( ${#keys[@]} == 0 )); then
-    keys=(flux.r2-folder flux.dvc-remote-bucket dvc-router.size-cap-mb dvc-router.verbose)
+    keys=(flux.r2-folder flux.dvc-remote-bucket dvc-router.size-cap-mb dvc-router.verbose \
+          dvc-router.force-dvc dvc-router.force-git)
   fi
   local removed=0
   for key in "${keys[@]}"; do
-    if git config --unset "$key" 2>/dev/null; then
+    if [[ "$key" == dvc-router.force-dvc || "$key" == dvc-router.force-git ]]; then
+      if git config --unset-all "$key" 2>/dev/null; then
+        _flux_registry_delete git_config "$key"
+        (( removed++ )) || true
+      fi
+    elif git config --unset "$key" 2>/dev/null; then
       _flux_registry_delete git_config "$key"
       (( removed++ )) || true
     fi
@@ -1995,6 +2014,10 @@ _flux_dry_run() {
   SIZE_CAP_MB=$(git config --get dvc-router.size-cap-mb 2>/dev/null || echo "5")
   SIZE_CAP_BYTES=$(( SIZE_CAP_MB * 1024 * 1024 ))
 
+  local -a FORCE_DVC_DIRS FORCE_GIT_DIRS
+  mapfile -t FORCE_DVC_DIRS < <(git config --get-all dvc-router.force-dvc 2>/dev/null || true)
+  mapfile -t FORCE_GIT_DIRS < <(git config --get-all dvc-router.force-git 2>/dev/null || true)
+
   local staged_files scan_mode
   staged_files=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)
 
@@ -2014,8 +2037,8 @@ _flux_dry_run() {
     return 0
   fi
 
-  local git_files=() git_bytes=0
-  local dvc_files=() dvc_bytes=0 dvc_migrating=()
+  local git_files=() git_bytes=0 git_notes=()
+  local dvc_files=() dvc_bytes=0 dvc_migrating=() dvc_notes=()
   local skip_files=()
 
   while IFS= read -r file; do
@@ -2031,20 +2054,37 @@ _flux_dry_run() {
     local file_size
     file_size=$(wc -c < "$file" | tr -d ' ')
 
-    if [[ "$is_binary" == "true" ]] || (( file_size > SIZE_CAP_BYTES )); then
+    if _flux_in_dir_override "$file" "${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}"; then
       dvc_files+=("$file")
+      dvc_notes+=("[pinned]")
+      dvc_bytes=$(( dvc_bytes + file_size ))
+      if git ls-files --error-unmatch "$file" &>/dev/null 2>&1; then
+        dvc_migrating+=("$file")
+      fi
+    elif _flux_in_dir_override "$file" "${FORCE_GIT_DIRS[@]+"${FORCE_GIT_DIRS[@]}"}"; then
+      git_files+=("$file")
+      git_notes+=("[pinned]")
+      git_bytes=$(( git_bytes + file_size ))
+    elif [[ "$is_binary" == "true" ]] || (( file_size > SIZE_CAP_BYTES )); then
+      dvc_files+=("$file")
+      dvc_notes+=("")
       dvc_bytes=$(( dvc_bytes + file_size ))
       if git ls-files --error-unmatch "$file" &>/dev/null 2>&1; then
         dvc_migrating+=("$file")
       fi
     else
       git_files+=("$file")
+      git_notes+=("")
       git_bytes=$(( git_bytes + file_size ))
     fi
   done <<< "$staged_files"
 
+  local _pin_count=$(( ${#FORCE_DVC_DIRS[@]} + ${#FORCE_GIT_DIRS[@]} ))
+  local _pin_note=""
+  (( _pin_count > 0 )) && _pin_note=", ${_pin_count} pin(s) active"
+
   echo ""
-  echo "  flux dry-run — routing preview (${scan_mode}, cap: ${SIZE_CAP_MB} MB)"
+  echo "  flux dry-run — routing preview (${scan_mode}, cap: ${SIZE_CAP_MB} MB${_pin_note})"
   echo ""
 
   printf "  → Git     %d file(s)    %s\n" "${#git_files[@]}" "$(_flux_format_size "$git_bytes")"
@@ -2067,22 +2107,29 @@ _flux_dry_run() {
     if (( ${#git_files[@]} > 0 )); then
       echo ""
       printf "  Git files:\n"
+      local _i=0
       for f in "${git_files[@]}"; do
         local sz; sz=$(wc -c < "$f" | tr -d ' ')
-        printf "    ·  %-42s %s\n" "$f" "$(_flux_format_size "$sz")"
+        local _fn="${git_notes[_i]:-}"
+        local _fn_str; _fn_str="${_fn:+   ${_fn}}"
+        printf "    ·  %-42s %s%s\n" "$f" "$(_flux_format_size "$sz")" "$_fn_str"
+        (( _i++ )) || true
       done
     fi
 
     if (( ${#dvc_files[@]} > 0 )); then
       echo ""
       printf "  DVC files:\n"
+      local _j=0
       for f in "${dvc_files[@]}"; do
         local sz; sz=$(wc -c < "$f" | tr -d ' ')
-        local note=""
+        local note="${dvc_notes[_j]:-}"
         for m in "${dvc_migrating[@]+"${dvc_migrating[@]}"}"; do
-          [[ "$m" == "$f" ]] && note="   [migrating from Git]" && break
+          [[ "$m" == "$f" ]] && { [[ -n "$note" ]] && note+=" "; note+="[migrating from Git]"; } && break
         done
-        printf "    ✦  %-42s %s%s\n" "$f" "$(_flux_format_size "$sz")" "$note"
+        local _note_str; _note_str="${note:+   ${note}}"
+        printf "    ✦  %-42s %s%s\n" "$f" "$(_flux_format_size "$sz")" "$_note_str"
+        (( _j++ )) || true
       done
     fi
 
@@ -2147,6 +2194,109 @@ _flux_cap() {
   else
     ok "Takes effect on the next commit."
   fi
+}
+
+# ---------------------------------------------------------------------------
+# pin — show or set directory routing pins
+# ---------------------------------------------------------------------------
+
+# Safely removes one specific value from a multi-value git config key.
+_flux_pin_config_remove() {
+  local key="$1" target="$2"
+  local -a current=()
+  mapfile -t current < <(git config --get-all "$key" 2>/dev/null || true)
+  (( ${#current[@]} == 0 )) && return 0
+  git config --unset-all "$key" 2>/dev/null || true
+  local v
+  for v in "${current[@]}"; do
+    [[ "$v" == "$target" ]] && continue
+    git config --add "$key" "$v"
+  done
+}
+
+_flux_pin() {
+  local subcmd="${1:-}"
+
+  # ── no args: show usage + current pins ────────────────────────────────────
+  if [[ -z "$subcmd" ]]; then
+    echo ""
+    echo "  flux pin — directory routing pins"
+    echo ""
+    echo "  Usage:"
+    echo "    flux pin dvc          Pin current directory to DVC"
+    echo "    flux pin git          Pin current directory to Git"
+    echo "    flux pin reset        Remove pin for current directory"
+    echo "    flux pin reset --all  Clear all directory pins"
+    echo ""
+    echo "  (Pins are shown in 'flux list' when inside a project)"
+    if git rev-parse --git-dir &>/dev/null 2>&1; then
+      local -a dvc_dirs git_dirs
+      mapfile -t dvc_dirs < <(git config --get-all dvc-router.force-dvc 2>/dev/null || true)
+      mapfile -t git_dirs < <(git config --get-all dvc-router.force-git 2>/dev/null || true)
+      if (( ${#dvc_dirs[@]} > 0 || ${#git_dirs[@]} > 0 )); then
+        echo ""
+        printf "  Pinned:\n"
+        for d in "${dvc_dirs[@]}"; do printf "    ✦  %-24s → DVC\n" "$d"; done
+        for d in "${git_dirs[@]}"; do printf "    ·  %-24s → Git\n" "$d"; done
+      fi
+    fi
+    echo ""
+    return 0
+  fi
+
+  git rev-parse --git-dir &>/dev/null \
+    || fail "Not inside a Git repository."
+
+  # ── reset --all ────────────────────────────────────────────────────────────
+  if [[ "$subcmd" == "reset" && "${2:-}" == "--all" ]]; then
+    git config --unset-all dvc-router.force-dvc 2>/dev/null || true
+    git config --unset-all dvc-router.force-git 2>/dev/null || true
+    ok "All directory pins cleared."
+    return 0
+  fi
+
+  # ── reset (current dir) ───────────────────────────────────────────────────
+  if [[ "$subcmd" == "reset" ]]; then
+    local rel_path
+    rel_path=$(git rev-parse --show-prefix 2>/dev/null)
+    rel_path="${rel_path%/}"
+    [[ -z "$rel_path" ]] && rel_path="."
+    _flux_pin_config_remove dvc-router.force-dvc "$rel_path"
+    _flux_pin_config_remove dvc-router.force-git "$rel_path"
+    ok "Pin removed for: ${rel_path}"
+    return 0
+  fi
+
+  # ── dvc / git ─────────────────────────────────────────────────────────────
+  if [[ "$subcmd" != "dvc" && "$subcmd" != "git" ]]; then
+    fail "Usage: flux pin [list|dvc|git|reset [--all]]"
+  fi
+
+  local rel_path
+  rel_path=$(git rev-parse --show-prefix 2>/dev/null)
+  rel_path="${rel_path%/}"
+  [[ -z "$rel_path" ]] && rel_path="."
+
+  if [[ "$subcmd" == "dvc" ]]; then
+    _flux_pin_config_remove dvc-router.force-git "$rel_path"
+    local -a existing=()
+    mapfile -t existing < <(git config --get-all dvc-router.force-dvc 2>/dev/null || true)
+    local already=false
+    for e in "${existing[@]}"; do [[ "$e" == "$rel_path" ]] && already=true && break; done
+    [[ "$already" == "false" ]] && git config --add dvc-router.force-dvc "$rel_path"
+    _flux_registry_write git_config dvc-router.force-dvc
+    ok "Pinned to DVC: ${rel_path}"
+  else
+    _flux_pin_config_remove dvc-router.force-dvc "$rel_path"
+    local -a existing=()
+    mapfile -t existing < <(git config --get-all dvc-router.force-git 2>/dev/null || true)
+    local already=false
+    for e in "${existing[@]}"; do [[ "$e" == "$rel_path" ]] && already=true && break; done
+    [[ "$already" == "false" ]] && git config --add dvc-router.force-git "$rel_path"
+    _flux_registry_write git_config dvc-router.force-git
+    ok "Pinned to Git: ${rel_path}"
+  fi
+  ok "Takes effect on the next commit."
 }
 
 # ---------------------------------------------------------------------------
@@ -2286,7 +2436,7 @@ _flux_list() {
   local base_dir; base_dir="$(pwd)"
   local found=0
 
-  local -a _paths _dvc_remotes _git_remotes _caps
+  local -a _paths _dvc_remotes _git_remotes _caps _repo_dirs
 
   while IFS= read -r git_dir; do
     local repo_dir; repo_dir="$(cd "$(dirname "$git_dir")" 2>/dev/null && pwd)" || continue
@@ -2317,6 +2467,7 @@ _flux_list() {
     _dvc_remotes+=("$dvc_remote")
     _git_remotes+=("$git_remote")
     _caps+=("$cap")
+    _repo_dirs+=("$repo_dir")
     (( found++ )) || true
   done < <(find . -type d -name ".git" -prune -print 2>/dev/null | sort)
 
@@ -2343,6 +2494,36 @@ _flux_list() {
   if (( found == 0 )); then
     echo ""
     echo "  No flux-managed projects found under $(pwd)"
+    return 0
+  fi
+
+  # Show pinned directories when the user is inside a single project.
+  # For multiple projects: only show pins if CWD is exactly the root of one
+  # of them (the ". (current)" case), which covers the nested-sub-project
+  # scenario without cluttering pure workspace views.
+  local pins_repo_dir=""
+  if (( found == 1 )); then
+    pins_repo_dir="${_repo_dirs[0]}"
+  else
+    local i
+    for i in "${!_repo_dirs[@]}"; do
+      if [[ "${_repo_dirs[$i]}" == "$base_dir" ]]; then
+        pins_repo_dir="${_repo_dirs[$i]}"
+        break
+      fi
+    done
+  fi
+
+  if [[ -n "$pins_repo_dir" ]]; then
+    local -a dvc_pins git_pins
+    mapfile -t dvc_pins < <(git -C "$pins_repo_dir" config --get-all dvc-router.force-dvc 2>/dev/null || true)
+    mapfile -t git_pins < <(git -C "$pins_repo_dir" config --get-all dvc-router.force-git 2>/dev/null || true)
+    if (( ${#dvc_pins[@]} > 0 || ${#git_pins[@]} > 0 )); then
+      echo ""
+      printf "  Pinned:\n"
+      for d in "${dvc_pins[@]}"; do printf "    ✦  %-24s → DVC\n" "$d"; done
+      for d in "${git_pins[@]}"; do printf "    ·  %-24s → Git\n" "$d"; done
+    fi
   fi
 }
 
@@ -2509,6 +2690,7 @@ flux() {
     pull)              _flux_pull "$@" ;;
     dry-run)           _flux_dry_run ;;
     cap)               _flux_cap "$@" ;;
+    pin)               _flux_pin "$@" ;;
     config)            _flux_config ;;
     doctor)            _flux_doctor ;;
     version)           echo "flux ${VERSION}" ;;
