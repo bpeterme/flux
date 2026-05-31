@@ -23,7 +23,7 @@ git add .  &&  git commit -m "..."
                     │ (no pin)
         ┌───────────┴───────────┐
         │                       │
-   binary file?         text but > 5 MB?
+   binary file?         text but > size cap?    ← flux cap (default 5 MB)
    (any size)                   │
         │                       │
         └──────────┬────────────┘
