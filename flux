@@ -11,7 +11,7 @@ VERSION="dev"
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
 ok()   { echo -e "${GREEN}✔${NC} $*"; }
 warn() { echo -e "${YELLOW}⚠${NC}  $*"; }
-fail() { echo -e "${RED}✘${NC} $*"; exit 1; }
+fail() { _flux_spin_stop 2>/dev/null; echo -e "${RED}✘${NC} $*"; exit 1; }
 
 _FLUX_SPINNER_PID=""
 _flux_spin_start() {
@@ -115,6 +115,19 @@ _flux_format_size() {
   elif (( bytes >= 1024 ));      then printf '%d KB' $(( bytes / 1024 ))
   else                                printf '%d B'  "$bytes"
   fi
+}
+
+# Returns 0 if FILE starts with any of the directory paths passed as arguments.
+# "." matches all files; paths are normalised by stripping trailing slashes.
+_flux_in_dir_override() {
+  local file="$1"; shift
+  local dir
+  for dir in "$@"; do
+    [[ "$dir" == "." ]] && return 0
+    local prefix="${dir%/}/"
+    [[ "$file" == "$prefix"* || "$file" == "${dir%/}" ]] && return 0
+  done
+  return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -362,16 +375,16 @@ _flux_help() {
 flux - Git + DVC auto-router for Cloudflare R2
 
 Usage:
-  flux                  Sync both ways (pull then push)
-  flux add              Opt current project into sync
-  flux list             List all flux-managed projects under current directory
-  flux clone <git-url>  Clone a flux-managed repo and wire up DVC + credentials
-  flux remove           Full detach (git + DVC)
-  flux remove git       Remove hook and git config only
-  flux remove dvc       Remove all DVC traces (pointer files, .dvc/)
-  flux pull             Download the latest (git pull + dvc pull)
-  flux dry-run          Preview routing (staged files, or all tracked if none staged)
-  flux cap [N|--reset]  Show, reset or set per-project size cap to [N] (MB)
+  flux                         Sync both ways (pull then push)
+  flux add                     Opt current project into sync
+  flux list                    List flux projects; shows pins when inside a project
+  flux clone <git-url>         Clone a flux-managed repo and wire up DVC + credentials
+  flux remove [git|dvc]        Remove all flux traces, or only git config, or only DVC
+  flux pull                    Download the latest (git pull + dvc pull)
+  flux dry-run                 Preview routing (staged files, or all tracked if none staged)
+  flux cap [N|--reset]         Show, reset or set per-project size cap to [N] (MB)
+  flux pin [dvc|git|reset]     Pin current directory to dvc or git; reset removes pin
+  flux pin reset --all         Clear all directory pins
 
 Maintenance:
   flux config           Configure flux (set up or manage global settings)
@@ -1380,11 +1393,17 @@ _flux_remove_git() {
   while IFS= read -r line; do [[ -n "$line" ]] && keys+=("$line"); done \
     < <(_flux_registry_read git_config)
   if (( ${#keys[@]} == 0 )); then
-    keys=(flux.r2-folder flux.dvc-remote-bucket dvc-router.size-cap-mb dvc-router.verbose)
+    keys=(flux.r2-folder flux.dvc-remote-bucket dvc-router.size-cap-mb dvc-router.verbose \
+          dvc-router.force-dvc dvc-router.force-git)
   fi
   local removed=0
   for key in "${keys[@]}"; do
-    if git config --unset "$key" 2>/dev/null; then
+    if [[ "$key" == dvc-router.force-dvc || "$key" == dvc-router.force-git ]]; then
+      if git config --unset-all "$key" 2>/dev/null; then
+        _flux_registry_delete git_config "$key"
+        (( removed++ )) || true
+      fi
+    elif git config --unset "$key" 2>/dev/null; then
       _flux_registry_delete git_config "$key"
       (( removed++ )) || true
     fi
@@ -1682,19 +1701,71 @@ _flux_pull() {
 }
 
 # ---------------------------------------------------------------------------
+# _flux_repair_dvcignore — remove DVC-tracked file patterns from .dvcignore
+#
+# The pre-commit hook keeps .dvcignore in sync, but on a fresh project or when
+# no commit is made, stale patterns can linger. DVC refuses to push files that
+# appear in .dvcignore, so this runs defensively before every dvc push.
+# ---------------------------------------------------------------------------
+_flux_repair_dvcignore() {
+  local -a _patterns=()
+  while IFS= read -r _ptr; do
+    [[ -z "$_ptr" || ! -f "$_ptr" ]] && continue
+    local _rel _dir _base
+    _rel=$(grep '^\s*path:' "$_ptr" 2>/dev/null \
+      | head -1 | sed 's/.*path:[[:space:]]*//' | tr -d '"' | tr -d "'" || true)
+    [[ -z "$_rel" ]] && continue
+    _dir=$(dirname "$_ptr")
+    _base=$(basename "$_rel")
+    if [[ "$_dir" == "." ]]; then
+      _patterns+=("$_rel" "/$_rel")
+    else
+      _patterns+=("$_dir/$_rel" "/$_base" "$_base")
+    fi
+  done < <(git -c core.quotepath=false ls-files 2>/dev/null | grep -E '\.dvc$' || true)
+
+  (( ${#_patterns[@]} == 0 )) && return 0
+
+  local _fixed=false
+  while IFS= read -r _dvcignore; do
+    [[ -z "$_dvcignore" || ! -f "$_dvcignore" ]] && continue
+    local _before _after
+    _before=$(cat "$_dvcignore")
+    for _pat in "${_patterns[@]}"; do
+      local _tmp; _tmp=$(mktemp)
+      grep -vxF "$_pat" "$_dvcignore" > "$_tmp" || true
+      mv "$_tmp" "$_dvcignore"
+    done
+    _after=$(cat "$_dvcignore")
+    if [[ "$_before" != "$_after" ]]; then
+      git add "$_dvcignore"
+      _fixed=true
+    fi
+  done < <(find . -name ".dvcignore" \
+    -not -path "./.git/*" -not -path "./.dvc/*" 2>/dev/null)
+
+  if [[ "$_fixed" == "true" ]]; then
+    if ! git diff --cached --quiet 2>/dev/null; then
+      git commit --quiet -m "fix: remove DVC-tracked file patterns from .dvcignore"
+      warn ".dvcignore had stale entries — fixed automatically."
+    fi
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # sync — pull then push (git + dvc)
 # ---------------------------------------------------------------------------
 
 _flux_sync() {
   git rev-parse --git-dir &>/dev/null \
     || fail "Not inside a Git repository."
+  clear 2>/dev/null || true
+  _flux_spin_start "flux syncing..."
   _flux_require_dvc_repo
   _flux_require_git_remote
   _flux_is_configured \
     || fail "Not configured. Run 'flux config' to set up."
   local DVC; _flux_require_dvc
-  clear 2>/dev/null || true
-  _flux_spin_start "flux syncing..."
 
   _flux_hook_update
   _flux_subrepo_sync
@@ -1726,6 +1797,10 @@ _flux_sync() {
     _flux_spin_stop; ok "Pulled DVC data from R2."
   elif grep -qiE 'AccessDenied|Access Denied' "$_dvc_err" 2>/dev/null; then
     _flux_spin_stop; warn "DVC pull failed — access denied. Check R2 API token permissions (Admin Read & Write required)."
+  elif grep -qiE 'Checkout failed|missing-files|do not exist neither' "$_dvc_err" 2>/dev/null; then
+    _flux_spin_stop; warn "DVC pull failed — some files missing from remote. Run 'dvc pull' for details."
+  elif grep -q . "$_dvc_err" 2>/dev/null; then
+    _flux_spin_stop; warn "DVC pull failed — run 'dvc pull' to see the full error."
   else
     _flux_spin_stop; warn "DVC pull skipped — R2 may be empty (first push)."
   fi
@@ -1737,6 +1812,8 @@ _flux_sync() {
   else
     _flux_spin_stop; warn "Git push failed — check remote."
   fi
+
+  _flux_repair_dvcignore
 
   _flux_spin_start "pushing DVC data..."
   _dvc_err=$(mktemp)
@@ -1806,139 +1883,133 @@ _flux_size_unit() {
   fi
 }
 
-_flux_dry_run_histogram() {
-  local cap_bytes=$1
+# Generic histogram renderer called multiple times by _flux_dry_run.
+# $1 = section title   $2 = cap_bytes (0 = no separator line)
+# Reads _H_GIT[] and _H_DVC[] globals (byte sizes for ░ and █ bars).
+_flux_render_histogram() {
+  local section_title="$1" cap_bytes="${2:-0}"
   local BAR_WIDTH=20
 
-  local all_tracked
-  all_tracked=$(
-    { git ls-files 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | sort -u
-  )
-  [[ -z "$all_tracked" ]] && return 0
+  local total=$(( ${#_H_GIT[@]} + ${#_H_DVC[@]} ))
+  [[ $total -eq 0 ]] && return 0
 
-  # Fixed log-scale boundaries, with cap inserted as a dynamic boundary
   local fixed_thresholds=(1024 10240 102400 1048576 10485760 104857600 1073741824)
   local boundaries=(0) cap_added=false t last_idx
 
-  for t in "${fixed_thresholds[@]}"; do
-    if [[ "$cap_added" == "false" ]] && (( cap_bytes <= t )); then
-      last_idx=$(( ${#boundaries[@]} - 1 ))
-      if (( cap_bytes > boundaries[last_idx] )); then
-        boundaries+=("$cap_bytes")
+  if (( cap_bytes > 0 )); then
+    for t in "${fixed_thresholds[@]}"; do
+      if [[ "$cap_added" == "false" ]] && (( cap_bytes <= t )); then
+        last_idx=$(( ${#boundaries[@]} - 1 ))
+        (( cap_bytes > boundaries[last_idx] )) && boundaries+=("$cap_bytes")
+        cap_added=true
       fi
-      cap_added=true
+      last_idx=$(( ${#boundaries[@]} - 1 ))
+      (( t != boundaries[last_idx] )) && boundaries+=("$t")
+    done
+    if [[ "$cap_added" == "false" ]]; then
+      last_idx=$(( ${#boundaries[@]} - 1 ))
+      (( cap_bytes > boundaries[last_idx] )) && boundaries+=("$cap_bytes")
     fi
-    last_idx=$(( ${#boundaries[@]} - 1 ))
-    if (( t != boundaries[last_idx] )); then
-      boundaries+=("$t")
-    fi
-  done
-
-  if [[ "$cap_added" == "false" ]]; then
-    last_idx=$(( ${#boundaries[@]} - 1 ))
-    if (( cap_bytes > boundaries[last_idx] )); then
-      boundaries+=("$cap_bytes")
-    fi
+  else
+    for t in "${fixed_thresholds[@]}"; do
+      last_idx=$(( ${#boundaries[@]} - 1 ))
+      (( t != boundaries[last_idx] )) && boundaries+=("$t")
+    done
   fi
-  boundaries+=(0)  # 0 = infinity sentinel
+  boundaries+=(0)
 
   local nbrackets=$(( ${#boundaries[@]} - 1 ))
+  local i counts=() sizes=() git_in=() dvc_in=()
+  for (( i=0; i<nbrackets; i++ )); do counts+=( 0 ); sizes+=( 0 ); git_in+=( 0 ); dvc_in+=( 0 ); done
 
-  local i
-  local counts=()
-  local sizes=()
-  for (( i=0; i<nbrackets; i++ )); do
-    counts+=( 0 )
-    sizes+=( 0 )
-  done
-
-  # Count all tracked files per bracket and accumulate sizes
-  local file sz lo hi
-  while IFS= read -r file; do
-    [[ ! -f "$file" ]] && continue
-    sz=$(wc -c < "$file" | tr -d ' ')
+  local sz lo hi
+  for sz in "${_H_GIT[@]+"${_H_GIT[@]}"}"; do
     for (( i=0; i<nbrackets; i++ )); do
-      lo="${boundaries[$i]}"
-      hi="${boundaries[$((i+1))]}"
+      lo="${boundaries[$i]}"; hi="${boundaries[$((i+1))]}"
       if (( sz >= lo )) && (( hi == 0 || sz < hi )); then
-        counts[$i]=$(( counts[$i] + 1 ))
-        sizes[$i]=$(( sizes[$i] + sz ))
-        break
+        counts[$i]=$(( counts[$i] + 1 )); sizes[$i]=$(( sizes[$i] + sz ))
+        git_in[$i]=$(( git_in[$i] + 1 )); break
       fi
     done
-  done <<< "$all_tracked"
+  done
+  for sz in "${_H_DVC[@]+"${_H_DVC[@]}"}"; do
+    for (( i=0; i<nbrackets; i++ )); do
+      lo="${boundaries[$i]}"; hi="${boundaries[$((i+1))]}"
+      if (( sz >= lo )) && (( hi == 0 || sz < hi )); then
+        counts[$i]=$(( counts[$i] + 1 )); sizes[$i]=$(( sizes[$i] + sz ))
+        dvc_in[$i]=$(( dvc_in[$i] + 1 )); break
+      fi
+    done
+  done
 
-  # Only suppress when no files at all
   local non_empty=0
   for (( i=0; i<nbrackets; i++ )); do
     if (( counts[$i] > 0 )); then non_empty=$(( non_empty + 1 )); fi
   done
   if (( non_empty == 0 )); then return 0; fi
 
-  # Find separator position (bracket whose upper bound == cap_bytes)
   local sep_after=-1
-  for (( i=0; i<nbrackets; i++ )); do
-    if (( boundaries[$((i+1))] == cap_bytes )); then sep_after=$i; break; fi
-  done
-
-  # Trim DVC side: show at least the first DVC bucket; stop at last non-empty one
-  local dvc_first dvc_last display_last
-  if (( sep_after >= 0 )); then
-    dvc_first=$(( sep_after + 1 ))
-    dvc_last=$dvc_first
-    for (( i=dvc_first; i<nbrackets; i++ )); do
-      if (( counts[$i] > 0 )); then dvc_last=$i; fi
+  if (( cap_bytes > 0 )); then
+    for (( i=0; i<nbrackets; i++ )); do
+      (( boundaries[$((i+1))] == cap_bytes )) && { sep_after=$i; break; }
     done
+  fi
+
+  # Display range: with cap → full git zone + trimmed dvc zone; without → trim both ends
+  local display_first=0 display_last
+  if (( sep_after >= 0 )); then
+    display_first=0
+    local dvc_first=$(( sep_after + 1 )) dvc_last=$(( sep_after + 1 ))
+    for (( i=dvc_first; i<nbrackets; i++ )); do (( counts[$i] > 0 )) && dvc_last=$i; done
     display_last=$dvc_last
   else
     display_last=$(( nbrackets - 1 ))
+    for (( i=0; i<nbrackets; i++ )); do
+      if (( counts[$i] > 0 )); then display_first=$i; break; fi
+    done
+    for (( i=nbrackets-1; i>=0; i-- )); do
+      if (( counts[$i] > 0 )); then display_last=$i; break; fi
+    done
   fi
 
-  # Max count across displayed range (for bar scaling)
   local max_count=0
-  for (( i=0; i<=display_last; i++ )); do
-    if (( counts[$i] > max_count )); then max_count=${counts[$i]}; fi
+  for (( i=display_first; i<=display_last; i++ )); do
+    (( counts[$i] > max_count )) && max_count=${counts[$i]}
   done
+  (( max_count == 0 )) && return 0
+  (( ${_FLUX_BAR_MAX:-0} > max_count )) && max_count=${_FLUX_BAR_MAX:-0}
+  _FLUX_BAR_MAX=$max_count
 
-  # Width of the count column (right-aligned)
   local count_digits=${#max_count}
-
-  # Two-column label alignment:
-  #   left col  (max_lo_width)  : lo value, right-aligned; empty for "< hi" and "> lo"
-  #   separator (3 chars)       : " - " / " < " / " > "
-  #   right col (max_right_width): hi value for ranges; lo value for "> lo"; hi for "< hi"
   local max_lo_width=0 max_right_width=0 lw rw lo_str hi_str
-  for (( i=0; i<=display_last; i++ )); do
-    lo="${boundaries[$i]}"
-    hi="${boundaries[$((i+1))]}"
+  for (( i=display_first; i<=display_last; i++ )); do
+    lo="${boundaries[$i]}"; hi="${boundaries[$((i+1))]}"
     if (( lo != 0 && hi != 0 )); then
       lo_str=$(_flux_size_unit "$lo"); hi_str=$(_flux_size_unit "$hi")
       lw=${#lo_str}; rw=${#hi_str}
-      if (( lw > max_lo_width ));    then max_lo_width=$lw;    fi
-      if (( rw > max_right_width )); then max_right_width=$rw; fi
+      (( lw > max_lo_width ))    && max_lo_width=$lw
+      (( rw > max_right_width )) && max_right_width=$rw
     elif (( lo == 0 )); then
       hi_str=$(_flux_size_unit "$hi"); rw=${#hi_str}
-      if (( rw > max_right_width )); then max_right_width=$rw; fi
+      (( rw > max_right_width )) && max_right_width=$rw
     else
       lo_str=$(_flux_size_unit "$lo"); lw=${#lo_str}
-      if (( lw > max_right_width )); then max_right_width=$lw; fi
+      (( lw > max_right_width )) && max_right_width=$lw
     fi
   done
 
   local label_width=$(( max_lo_width + 3 + max_right_width ))
   local sep_width=$(( label_width + 2 + BAR_WIDTH ))
+  _FLUX_HIST_LABEL_WIDTH=$label_width
 
   echo ""
-  echo "  Size distribution  (all tracked files)"
+  echo "  $section_title"
   echo ""
 
-  local bar bar_len bar_pad j count size_str
-  for (( i=0; i<=display_last; i++ )); do
-    lo="${boundaries[$i]}"
-    hi="${boundaries[$((i+1))]}"
-    count="${counts[$i]}"
+  local bar bar_len bar_pad j count size_str git_chars dvc_chars
+  for (( i=display_first; i<=display_last; i++ )); do
+    lo="${boundaries[$i]}"; hi="${boundaries[$((i+1))]}"; count="${counts[$i]}"
 
-    # Label: right-aligned lo, fixed-width separator, left-aligned right value
     if (( lo == 0 )); then
       printf "    %*s < %-*s" "$max_lo_width" "" "$max_right_width" "$(_flux_size_unit "$hi")"
     elif (( hi == 0 )); then
@@ -1947,26 +2018,18 @@ _flux_dry_run_histogram() {
       printf "    %*s - %-*s" "$max_lo_width" "$(_flux_size_unit "$lo")" "$max_right_width" "$(_flux_size_unit "$hi")"
     fi
 
-    # Bar: build blocks then pad explicitly in display columns (block chars are
-    # multi-byte, so %-*s byte-based padding would misalign counts for partial bars).
-    # Shading: ░ for Git-routed buckets, █ for DVC-routed buckets.
     bar=""; bar_len=0
-    if (( count > 0 && max_count > 0 )); then
+    if (( count > 0 )); then
       bar_len=$(( count * BAR_WIDTH / max_count ))
-      if (( bar_len < 1 )); then bar_len=1; fi
-      local bar_char
-      if (( sep_after >= 0 && i <= sep_after )); then bar_char="░"; else bar_char="█"; fi
-      for (( j=0; j<bar_len; j++ )); do bar="${bar}${bar_char}"; done
+      (( bar_len < 1 )) && bar_len=1
+      git_chars=$(( git_in[$i] * bar_len / count ))
+      dvc_chars=$(( bar_len - git_chars ))
+      for (( j=0; j<git_chars; j++ )); do bar="${bar}░"; done
+      for (( j=0; j<dvc_chars; j++ )); do bar="${bar}█"; done
     fi
     bar_pad=""; for (( j=bar_len; j<BAR_WIDTH; j++ )); do bar_pad="${bar_pad} "; done
 
-    # Size annotation shown only when bucket is non-empty
-    if (( count > 0 )); then
-      size_str="  ($(_flux_size_unit "${sizes[$i]}"))"
-    else
-      size_str=""
-    fi
-
+    (( count > 0 )) && size_str="  ($(_flux_size_unit "${sizes[$i]}"))" || size_str=""
     printf "  %s%s  %*d%s\n" "$bar" "$bar_pad" "$count_digits" "$count" "$size_str"
 
     if (( i == sep_after )); then
@@ -1975,6 +2038,26 @@ _flux_dry_run_histogram() {
       printf "    %s  cap: %s\n" "$sep_line" "$(_flux_size_unit "$cap_bytes")"
     fi
   done
+
+  echo ""
+}
+
+# Summary row rendered below the text histogram — one bar line per category.
+# $1=label  $2=bar-char  $3=count  $4=total-bytes  $5=count-field-width
+# Uses _FLUX_BAR_MAX (shared scale) and _FLUX_HIST_LABEL_WIDTH (label padding).
+# Skipped silently when count==0.
+_flux_render_summary_row() {
+  local label="$1" char="$2" count="$3" total_bytes="$4" count_w="${5:-1}"
+  (( count == 0 )) && return 0
+  local BAR_WIDTH=20
+  local bar_len=$(( count * BAR_WIDTH / _FLUX_BAR_MAX ))
+  (( bar_len < 1 )) && bar_len=1
+  local bar="" bar_pad="" j
+  for (( j=0; j<bar_len; j++ )); do bar="${bar}${char}"; done
+  for (( j=bar_len; j<BAR_WIDTH; j++ )); do bar_pad="${bar_pad} "; done
+  printf "    %-*s  %s%s  %*d  (%s)\n" \
+    "${_FLUX_HIST_LABEL_WIDTH:-10}" "$label" "$bar" "$bar_pad" \
+    "$count_w" "$count" "$(_flux_size_unit "$total_bytes")"
 }
 
 # ---------------------------------------------------------------------------
@@ -1990,6 +2073,10 @@ _flux_dry_run() {
   local SIZE_CAP_MB SIZE_CAP_BYTES
   SIZE_CAP_MB=$(git config --get dvc-router.size-cap-mb 2>/dev/null || echo "5")
   SIZE_CAP_BYTES=$(( SIZE_CAP_MB * 1024 * 1024 ))
+
+  local -a FORCE_DVC_DIRS FORCE_GIT_DIRS
+  mapfile -t FORCE_DVC_DIRS < <(git config --get-all dvc-router.force-dvc 2>/dev/null || true)
+  mapfile -t FORCE_GIT_DIRS < <(git config --get-all dvc-router.force-git 2>/dev/null || true)
 
   local staged_files scan_mode
   staged_files=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)
@@ -2010,8 +2097,8 @@ _flux_dry_run() {
     return 0
   fi
 
-  local git_files=() git_bytes=0
-  local dvc_files=() dvc_bytes=0 dvc_migrating=()
+  local git_files=() git_bytes=0 git_notes=() git_file_sizes=()
+  local dvc_files=() dvc_bytes=0 dvc_migrating=() dvc_notes=() dvc_file_sizes=() dvc_file_is_binary=()
   local skip_files=()
 
   while IFS= read -r file; do
@@ -2027,29 +2114,157 @@ _flux_dry_run() {
     local file_size
     file_size=$(wc -c < "$file" | tr -d ' ')
 
-    if [[ "$is_binary" == "true" ]] || (( file_size > SIZE_CAP_BYTES )); then
+    if _flux_in_dir_override "$file" "${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}"; then
       dvc_files+=("$file")
+      dvc_notes+=("[pinned]")
+      dvc_file_sizes+=("$file_size")
+      dvc_file_is_binary+=(0)
+      dvc_bytes=$(( dvc_bytes + file_size ))
+      if git ls-files --error-unmatch "$file" &>/dev/null 2>&1; then
+        dvc_migrating+=("$file")
+      fi
+    elif _flux_in_dir_override "$file" "${FORCE_GIT_DIRS[@]+"${FORCE_GIT_DIRS[@]}"}"; then
+      git_files+=("$file")
+      git_notes+=("[pinned]")
+      git_file_sizes+=("$file_size")
+      git_bytes=$(( git_bytes + file_size ))
+    elif [[ "$is_binary" == "true" ]] || (( file_size > SIZE_CAP_BYTES )); then
+      dvc_files+=("$file")
+      dvc_notes+=("")
+      dvc_file_sizes+=("$file_size")
+      dvc_file_is_binary+=("$( [[ "$is_binary" == "true" ]] && echo 1 || echo 0 )")
       dvc_bytes=$(( dvc_bytes + file_size ))
       if git ls-files --error-unmatch "$file" &>/dev/null 2>&1; then
         dvc_migrating+=("$file")
       fi
     else
       git_files+=("$file")
+      git_notes+=("")
+      git_file_sizes+=("$file_size")
       git_bytes=$(( git_bytes + file_size ))
     fi
   done <<< "$staged_files"
 
+  # .dvc pointer files that landed in dvc_files (because they're in a pinned dir) were sized
+  # via wc -c, giving the tiny pointer-file size instead of the actual data size.  Fix that now.
+  local _pdi=0 _pdf _pds _pline _old_ptr_sz
+  for _pdf in "${dvc_files[@]+"${dvc_files[@]}"}"; do
+    if [[ "$_pdf" == *.dvc ]]; then
+      _pds=0
+      while IFS= read -r _pline; do
+        [[ "$_pline" =~ ^[[:space:]]*size:[[:space:]]*([0-9]+) ]] && \
+          _pds=$(( _pds + BASH_REMATCH[1] ))
+      done < "$_pdf"
+      if (( _pds > 0 )); then
+        _old_ptr_sz="${dvc_file_sizes[$_pdi]:-0}"
+        dvc_bytes=$(( dvc_bytes - _old_ptr_sz + _pds ))
+        dvc_file_sizes[$_pdi]=$_pds
+      fi
+    fi
+    (( _pdi++ )) || true
+  done
+
+  local dvc_managed_paths=() dvc_managed_sizes=() dvc_managed_total=0
+  local _pm _pp _ps _pd _line
+  for _pm in "${git_files[@]}"; do
+    [[ "$_pm" != *.dvc ]] && continue
+    _pp=""; _ps=0
+    while IFS= read -r _line; do
+      if [[ -z "$_pp" ]] && [[ "$_line" =~ ^[[:space:]]*path:[[:space:]]+(.+)$ ]]; then
+        _pp="${BASH_REMATCH[1]#\"}" ; _pp="${_pp%\"}"
+        _pp="${_pp#\'}"             ; _pp="${_pp%\'}"
+      elif [[ "$_line" =~ ^[[:space:]]*size:[[:space:]]*([0-9]+) ]]; then
+        _ps=$(( _ps + BASH_REMATCH[1] ))
+      fi
+    done < "$_pm"
+    [[ -z "$_pp" ]] && continue
+    _pd=$(dirname "$_pm")
+    [[ "$_pd" != "." ]] && _pp="${_pd}/${_pp}"
+    dvc_managed_paths+=("$_pp")
+    dvc_managed_sizes+=("$_ps")
+    dvc_managed_total=$(( dvc_managed_total + _ps ))
+  done
+
+  local _pin_count=$(( ${#FORCE_DVC_DIRS[@]} + ${#FORCE_GIT_DIRS[@]} ))
+  local _pin_note=""
+  (( _pin_count > 0 )) && _pin_note=", ${_pin_count} pin(s) active"
+
   echo ""
-  echo "  flux dry-run — routing preview (${scan_mode}, cap: ${SIZE_CAP_MB} MB)"
+  echo "  flux dry-run — routing preview (${scan_mode}, cap: ${SIZE_CAP_MB} MB${_pin_note})"
   echo ""
 
+  local skip_bytes=0 skip_file_sizes=()
+  local _sf _ssz
+  for _sf in "${skip_files[@]}"; do
+    if [[ -f "$_sf" ]]; then
+      _ssz=$(wc -c < "$_sf" | tr -d ' ')
+      skip_bytes=$(( skip_bytes + _ssz ))
+      skip_file_sizes+=("$_ssz")
+    fi
+  done
+
+  local _dvc_total_n=$(( ${#dvc_files[@]} + ${#skip_files[@]} + ${#dvc_managed_paths[@]} ))
+  local _dvc_total_b=$(( dvc_bytes + skip_bytes + dvc_managed_total ))
   printf "  → Git     %d file(s)    %s\n" "${#git_files[@]}" "$(_flux_format_size "$git_bytes")"
-  local migrating_note=""
-  (( ${#dvc_migrating[@]} > 0 )) && migrating_note="    (${#dvc_migrating[@]} migrating from Git)"
-  printf "  → DVC     %d file(s)    %s%s\n" "${#dvc_files[@]}" "$(_flux_format_size "$dvc_bytes")" "$migrating_note"
-  printf "  ↷ Skip    %d file(s)    already in DVC\n" "${#skip_files[@]}"
+  printf "  → DVC     %d file(s)    %s\n" "$_dvc_total_n" "$(_flux_format_size "$_dvc_total_b")"
 
-  _flux_dry_run_histogram "$SIZE_CAP_BYTES"
+  # Split routed files into three histogram categories:
+  #   text  — text files; threshold line separates git (below) from dvc (above)
+  #   binary — binary files; always DVC regardless of size, no threshold line
+  #   pinned — explicitly pinned files; no threshold line
+  local _H_TEXT_GIT=() _H_TEXT_DVC=() _H_BIN=() _H_PIN_GIT=() _H_PIN_DVC=()
+
+  local _hi=0
+  for _hsz in "${git_file_sizes[@]+"${git_file_sizes[@]}"}"; do
+    if [[ "${git_notes[$_hi]:-}" == "[pinned]" ]]; then _H_PIN_GIT+=("$_hsz")
+    else                                                  _H_TEXT_GIT+=("$_hsz"); fi
+    (( _hi++ )) || true
+  done
+
+  local _hj=0
+  for _hsz in "${dvc_file_sizes[@]+"${dvc_file_sizes[@]}"}"; do
+    if   [[ "${dvc_notes[$_hj]:-}" == "[pinned]" ]];    then _H_PIN_DVC+=("$_hsz")
+    elif [[ "${dvc_file_is_binary[$_hj]:-0}" == "1" ]]; then _H_BIN+=("$_hsz")
+    else                                                      _H_TEXT_DVC+=("$_hsz"); fi
+    (( _hj++ )) || true
+  done
+
+  # Already-DVC-managed files (skip_files + dvc_managed_paths) → binary category
+  _H_BIN+=("${skip_file_sizes[@]+"${skip_file_sizes[@]}"}")
+  local _dm=0
+  for _dmp in "${dvc_managed_paths[@]}"; do
+    local _dmsz="${dvc_managed_sizes[$_dm]:-0}"
+    (( _dmsz > 0 )) && _H_BIN+=("$_dmsz")
+    (( _dm++ )) || true
+  done
+
+  local _pin_git_n=${#_H_PIN_GIT[@]} _pin_dvc_n=${#_H_PIN_DVC[@]} _bin_n=${#_H_BIN[@]}
+  local _pin_git_bytes=0 _pin_dvc_bytes=0 _bin_bytes=0 _sz
+  for _sz in "${_H_PIN_GIT[@]+"${_H_PIN_GIT[@]}"}"; do _pin_git_bytes=$(( _pin_git_bytes + _sz )); done
+  for _sz in "${_H_PIN_DVC[@]+"${_H_PIN_DVC[@]}"}"; do _pin_dvc_bytes=$(( _pin_dvc_bytes + _sz )); done
+  for _sz in "${_H_BIN[@]+"${_H_BIN[@]}"}"; do          _bin_bytes=$(( _bin_bytes + _sz )); done
+
+  # Shared bar scale: seed with max summary count; text histogram raises it if needed
+  local _FLUX_BAR_MAX _FLUX_HIST_LABEL_WIDTH=10
+  _FLUX_BAR_MAX=$(( _pin_git_n > _pin_dvc_n ? _pin_git_n : _pin_dvc_n ))
+  (( _bin_n > _FLUX_BAR_MAX )) && _FLUX_BAR_MAX=$_bin_n
+
+  local _sum_max_n=$(( _pin_git_n > _pin_dvc_n ? _pin_git_n : _pin_dvc_n ))
+  (( _bin_n > _sum_max_n )) && _sum_max_n=$_bin_n
+  local _sum_count_w=${#_sum_max_n}; (( _sum_count_w < 1 )) && _sum_count_w=1
+
+  _H_GIT=("${_H_TEXT_GIT[@]}"); _H_DVC=("${_H_TEXT_DVC[@]}")
+  _flux_render_histogram "Text files" "$SIZE_CAP_BYTES"
+  echo ""
+  _flux_render_summary_row "Pinned Git" "░" "$_pin_git_n" "$_pin_git_bytes" "$_sum_count_w"
+  _flux_render_summary_row "Pinned DVC" "█" "$_pin_dvc_n" "$_pin_dvc_bytes" "$_sum_count_w"
+  _flux_render_summary_row "Binary"     "█" "$_bin_n"     "$_bin_bytes"     "$_sum_count_w"
+
+  local _leg_git=$(( ${#_H_TEXT_GIT[@]} + _pin_git_n ))
+  local _leg_dvc=$(( ${#_H_TEXT_DVC[@]} + _pin_dvc_n + _bin_n ))
+  echo ""
+  (( _leg_git > 0 )) && printf "  ░ → Git\n"
+  (( _leg_dvc > 0 )) && printf "  █ → DVC\n"
 
   local show_details=false
   if [[ -t 0 && -t 1 ]]; then
@@ -2063,30 +2278,42 @@ _flux_dry_run() {
     if (( ${#git_files[@]} > 0 )); then
       echo ""
       printf "  Git files:\n"
+      local _i=0
       for f in "${git_files[@]}"; do
         local sz; sz=$(wc -c < "$f" | tr -d ' ')
-        printf "    ·  %-42s %s\n" "$f" "$(_flux_format_size "$sz")"
+        local _fn="${git_notes[_i]:-}"
+        local _fn_str; _fn_str="${_fn:+   ${_fn}}"
+        printf "    ·  %-42s %s%s\n" "$f" "$(_flux_format_size "$sz")" "$_fn_str"
+        (( _i++ )) || true
       done
     fi
 
-    if (( ${#dvc_files[@]} > 0 )); then
+    if (( _dvc_total_n > 0 )); then
       echo ""
       printf "  DVC files:\n"
+      local _j=0
       for f in "${dvc_files[@]}"; do
         local sz; sz=$(wc -c < "$f" | tr -d ' ')
-        local note=""
-        for m in "${dvc_migrating[@]+"${dvc_migrating[@]}"}"; do
-          [[ "$m" == "$f" ]] && note="   [migrating from Git]" && break
-        done
-        printf "    ✦  %-42s %s%s\n" "$f" "$(_flux_format_size "$sz")" "$note"
+        local note="${dvc_notes[_j]:-}"
+        local _note_str; _note_str="${note:+   ${note}}"
+        printf "    ✦  %-42s %s%s\n" "$f" "$(_flux_format_size "$sz")" "$_note_str"
+        (( _j++ )) || true
       done
-    fi
-
-    if (( ${#skip_files[@]} > 0 )); then
-      echo ""
-      printf "  Skipped (already in DVC):\n"
       for f in "${skip_files[@]}"; do
-        printf "    ·  %s\n" "$f"
+        local sz; sz=$(wc -c < "$f" | tr -d ' ')
+        printf "    ✦  %-42s %s\n" "$f" "$(_flux_format_size "$sz")"
+      done
+      local _dm=0
+      for _dmp in "${dvc_managed_paths[@]}"; do
+        local _dmsz="${dvc_managed_sizes[$_dm]:-0}"
+        local _dmsz_str
+        if (( _dmsz > 0 )); then
+          _dmsz_str=$(_flux_format_size "$_dmsz")
+        else
+          _dmsz_str="(size unknown)"
+        fi
+        printf "    ✦  %-42s %s\n" "$_dmp" "$_dmsz_str"
+        (( _dm++ )) || true
       done
     fi
   fi
@@ -2143,6 +2370,109 @@ _flux_cap() {
   else
     ok "Takes effect on the next commit."
   fi
+}
+
+# ---------------------------------------------------------------------------
+# pin — show or set directory routing pins
+# ---------------------------------------------------------------------------
+
+# Safely removes one specific value from a multi-value git config key.
+_flux_pin_config_remove() {
+  local key="$1" target="$2"
+  local -a current=()
+  mapfile -t current < <(git config --get-all "$key" 2>/dev/null || true)
+  (( ${#current[@]} == 0 )) && return 0
+  git config --unset-all "$key" 2>/dev/null || true
+  local v
+  for v in "${current[@]}"; do
+    [[ "$v" == "$target" ]] && continue
+    git config --add "$key" "$v"
+  done
+}
+
+_flux_pin() {
+  local subcmd="${1:-}"
+
+  # ── no args: show usage + current pins ────────────────────────────────────
+  if [[ -z "$subcmd" ]]; then
+    echo ""
+    echo "  flux pin — directory routing pins"
+    echo ""
+    echo "  Usage:"
+    echo "    flux pin dvc          Pin current directory to DVC"
+    echo "    flux pin git          Pin current directory to Git"
+    echo "    flux pin reset        Remove pin for current directory"
+    echo "    flux pin reset --all  Clear all directory pins"
+    echo ""
+    echo "  (Pins are shown in 'flux list' when inside a project)"
+    if git rev-parse --git-dir &>/dev/null 2>&1; then
+      local -a dvc_dirs git_dirs
+      mapfile -t dvc_dirs < <(git config --get-all dvc-router.force-dvc 2>/dev/null || true)
+      mapfile -t git_dirs < <(git config --get-all dvc-router.force-git 2>/dev/null || true)
+      if (( ${#dvc_dirs[@]} > 0 || ${#git_dirs[@]} > 0 )); then
+        echo ""
+        printf "  Pinned:\n"
+        for d in "${dvc_dirs[@]}"; do printf "    ✦  %-24s → DVC\n" "$d"; done
+        for d in "${git_dirs[@]}"; do printf "    ·  %-24s → Git\n" "$d"; done
+      fi
+    fi
+    echo ""
+    return 0
+  fi
+
+  git rev-parse --git-dir &>/dev/null \
+    || fail "Not inside a Git repository."
+
+  # ── reset --all ────────────────────────────────────────────────────────────
+  if [[ "$subcmd" == "reset" && "${2:-}" == "--all" ]]; then
+    git config --unset-all dvc-router.force-dvc 2>/dev/null || true
+    git config --unset-all dvc-router.force-git 2>/dev/null || true
+    ok "All directory pins cleared."
+    return 0
+  fi
+
+  # ── reset (current dir) ───────────────────────────────────────────────────
+  if [[ "$subcmd" == "reset" ]]; then
+    local rel_path
+    rel_path=$(git rev-parse --show-prefix 2>/dev/null)
+    rel_path="${rel_path%/}"
+    [[ -z "$rel_path" ]] && rel_path="."
+    _flux_pin_config_remove dvc-router.force-dvc "$rel_path"
+    _flux_pin_config_remove dvc-router.force-git "$rel_path"
+    ok "Pin removed for: ${rel_path}"
+    return 0
+  fi
+
+  # ── dvc / git ─────────────────────────────────────────────────────────────
+  if [[ "$subcmd" != "dvc" && "$subcmd" != "git" ]]; then
+    fail "Usage: flux pin [list|dvc|git|reset [--all]]"
+  fi
+
+  local rel_path
+  rel_path=$(git rev-parse --show-prefix 2>/dev/null)
+  rel_path="${rel_path%/}"
+  [[ -z "$rel_path" ]] && rel_path="."
+
+  if [[ "$subcmd" == "dvc" ]]; then
+    _flux_pin_config_remove dvc-router.force-git "$rel_path"
+    local -a existing=()
+    mapfile -t existing < <(git config --get-all dvc-router.force-dvc 2>/dev/null || true)
+    local already=false
+    for e in "${existing[@]}"; do [[ "$e" == "$rel_path" ]] && already=true && break; done
+    [[ "$already" == "false" ]] && git config --add dvc-router.force-dvc "$rel_path"
+    _flux_registry_write git_config dvc-router.force-dvc
+    ok "Pinned to DVC: ${rel_path}"
+  else
+    _flux_pin_config_remove dvc-router.force-dvc "$rel_path"
+    local -a existing=()
+    mapfile -t existing < <(git config --get-all dvc-router.force-git 2>/dev/null || true)
+    local already=false
+    for e in "${existing[@]}"; do [[ "$e" == "$rel_path" ]] && already=true && break; done
+    [[ "$already" == "false" ]] && git config --add dvc-router.force-git "$rel_path"
+    _flux_registry_write git_config dvc-router.force-git
+    ok "Pinned to Git: ${rel_path}"
+  fi
+  ok "Takes effect on the next commit."
 }
 
 # ---------------------------------------------------------------------------
@@ -2282,7 +2612,7 @@ _flux_list() {
   local base_dir; base_dir="$(pwd)"
   local found=0
 
-  local -a _paths _dvc_remotes _git_remotes _caps
+  local -a _paths _dvc_remotes _git_remotes _caps _repo_dirs
 
   while IFS= read -r git_dir; do
     local repo_dir; repo_dir="$(cd "$(dirname "$git_dir")" 2>/dev/null && pwd)" || continue
@@ -2313,6 +2643,7 @@ _flux_list() {
     _dvc_remotes+=("$dvc_remote")
     _git_remotes+=("$git_remote")
     _caps+=("$cap")
+    _repo_dirs+=("$repo_dir")
     (( found++ )) || true
   done < <(find . -type d -name ".git" -prune -print 2>/dev/null | sort)
 
@@ -2339,6 +2670,36 @@ _flux_list() {
   if (( found == 0 )); then
     echo ""
     echo "  No flux-managed projects found under $(pwd)"
+    return 0
+  fi
+
+  # Show pinned directories when the user is inside a single project.
+  # For multiple projects: only show pins if CWD is exactly the root of one
+  # of them (the ". (current)" case), which covers the nested-sub-project
+  # scenario without cluttering pure workspace views.
+  local pins_repo_dir=""
+  if (( found == 1 )); then
+    pins_repo_dir="${_repo_dirs[0]}"
+  else
+    local i
+    for i in "${!_repo_dirs[@]}"; do
+      if [[ "${_repo_dirs[$i]}" == "$base_dir" ]]; then
+        pins_repo_dir="${_repo_dirs[$i]}"
+        break
+      fi
+    done
+  fi
+
+  if [[ -n "$pins_repo_dir" ]]; then
+    local -a dvc_pins git_pins
+    mapfile -t dvc_pins < <(git -C "$pins_repo_dir" config --get-all dvc-router.force-dvc 2>/dev/null || true)
+    mapfile -t git_pins < <(git -C "$pins_repo_dir" config --get-all dvc-router.force-git 2>/dev/null || true)
+    if (( ${#dvc_pins[@]} > 0 || ${#git_pins[@]} > 0 )); then
+      echo ""
+      printf "  Pinned:\n"
+      for d in "${dvc_pins[@]}"; do printf "    ✦  %-24s → DVC\n" "$d"; done
+      for d in "${git_pins[@]}"; do printf "    ·  %-24s → Git\n" "$d"; done
+    fi
   fi
 }
 
@@ -2505,6 +2866,7 @@ flux() {
     pull)              _flux_pull "$@" ;;
     dry-run)           _flux_dry_run ;;
     cap)               _flux_cap "$@" ;;
+    pin)               _flux_pin "$@" ;;
     config)            _flux_config ;;
     doctor)            _flux_doctor ;;
     version)           echo "flux ${VERSION}" ;;

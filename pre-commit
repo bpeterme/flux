@@ -60,6 +60,10 @@ SIZE_CAP_MB=$(git config --get dvc-router.size-cap-mb 2>/dev/null || echo "5")
 SIZE_CAP_BYTES=$(( SIZE_CAP_MB * 1024 * 1024 ))
 VERBOSE=$(git config --get dvc-router.verbose 2>/dev/null || echo "false")
 
+# Directory pins — multi-value git config; empty array when key is absent
+mapfile -t FORCE_DVC_DIRS < <(git config --get-all dvc-router.force-dvc 2>/dev/null || true)
+mapfile -t FORCE_GIT_DIRS < <(git config --get-all dvc-router.force-git 2>/dev/null || true)
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -75,6 +79,19 @@ info() {
 
 warn() {
   echo "[dvc-router] WARNING: $*" >&2
+}
+
+# Returns 0 if FILE's path starts with any directory in the named array.
+# Handles both "data" and "data/" stored forms. "." matches all files.
+_in_dir_override() {
+  local file="$1"; local -n _dirs=$2
+  local dir
+  for dir in "${_dirs[@]+"${_dirs[@]}"}"; do
+    [[ "$dir" == "." ]] && return 0
+    local prefix="${dir%/}/"
+    [[ "$file" == "$prefix"* || "$file" == "${dir%/}" ]] && return 0
+  done
+  return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -110,10 +127,12 @@ sync_dvcignore() {
     else
       _dvc_patterns+=("$_dir/$_rel" "/$_base" "$_base")
     fi
-  done < <(git ls-files '*.dvc' 2>/dev/null)
+  done < <(git -c core.quotepath=false ls-files 2>/dev/null | grep -E '\.dvc$' || true)
 
   # Only process tracked/staged .gitignore files — git ls-files skips gitignored
   # sub-repos and excluded directories, which find would otherwise traverse.
+  # Exclude .dvc/.gitignore: that is DVC's internal bookkeeping file and must
+  # not generate a sibling .dvcignore inside the .dvc/ directory.
   while IFS= read -r gitignore_path; do
     local dir dvcignore_path
     dir=$(dirname "$gitignore_path")
@@ -131,7 +150,7 @@ sync_dvcignore() {
 
     git add "$dvcignore_path"
     log "Synced: $dvcignore_path ← $gitignore_path"
-  done < <(git ls-files | grep '\.gitignore$')
+  done < <(git -c core.quotepath=false ls-files | grep '\.gitignore$' | grep -v '^\.dvc/')
 }
 
 # ---------------------------------------------------------------------------
@@ -177,8 +196,10 @@ cleanup_orphaned_dvc_pointers() {
 
     log "Orphaned .dvc pointer: $dvc_file (target missing: $target_abs)"
 
-    # Stage the .dvc pointer for deletion
-    git rm --cached "$dvc_file" &>/dev/null || true
+    # Remove the .dvc pointer from git index and from disk.
+    # --cached-only would leave the file on disk where DVC reads it and then
+    # fails to pull the missing data on every subsequent sync.
+    git rm "$dvc_file" &>/dev/null || true
 
     # Remove the DVC-added /<basename> entry from the sibling .gitignore
     # (backward-compat) and the full-path entry from the root .gitignore
@@ -362,6 +383,7 @@ fi
 dvc_routed=()
 git_kept=()
 git_migrated=0
+pin_overridden=0
 
 # ---------------------------------------------------------------------------
 # Process each staged file
@@ -403,9 +425,17 @@ while IFS= read -r file; do
   file_size=$(wc -c < "$file" | tr -d ' ')
 
   # ------------------------------------------------------------------
-  # Routing decision
+  # Routing decision — directory pins take priority over size/binary
   # ------------------------------------------------------------------
-  if [[ "$is_binary" == "true" ]]; then
+  if _in_dir_override "$file" FORCE_DVC_DIRS; then
+    log "Pinned → DVC: $file"
+    route="dvc"
+    pin_overridden=$(( pin_overridden + 1 ))
+  elif _in_dir_override "$file" FORCE_GIT_DIRS; then
+    log "Pinned → Git: $file"
+    route="git"
+    pin_overridden=$(( pin_overridden + 1 ))
+  elif [[ "$is_binary" == "true" ]]; then
     log "Binary file detected → DVC: $file"
     route="dvc"
   elif (( file_size > SIZE_CAP_BYTES )); then
@@ -501,6 +531,9 @@ if (( _dvc_n > 0 || _git_n > 0 )); then
   _summary="[dvc-router] Routed: ${_dvc_n} → R2  |  ${_git_n} → Git"
   if (( git_migrated > 0 )); then
     _summary+="  (${git_migrated} moved out of Git history — run 'dvc push' then optionally 'git filter-repo' to scrub)"
+  fi
+  if (( pin_overridden > 0 )); then
+    _summary+="  (${pin_overridden} pinned)"
   fi
   echo "$_summary"
 fi

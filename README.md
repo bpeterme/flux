@@ -14,9 +14,16 @@ git add .  &&  git commit -m "..."
                     ▼
             pre-commit hook
                     │
+            directory pin?          ← flux pin dvc / flux pin git
+         ┌──────────┴──────────┐
+         │                     │
+    pin → DVC             pin → Git
+         │                     │
+         └──────────┬──────────┘
+                    │ (no pin)
         ┌───────────┴───────────┐
         │                       │
-   binary file?         text but > 5 MB?
+   binary file?         text but > size cap?    ← flux cap (default 5 MB)
    (any size)                   │
         │                       │
         └──────────┬────────────┘
@@ -34,6 +41,7 @@ contains null bytes it's binary. This catches `.mp4`, `.psd`, `.db`, `.zip`,
 ## Key features
 
 - **Zero routing decisions** — binary files and large text files go to R2 automatically
+- **Directory pinning** — force entire directory trees to Git or DVC, overriding automatic routing
 - **Any Git remote** — works with GitHub, GitLab, Forgejo, or any self-hosted remote
 - **Credentials in Keychain** — nothing secret ever touches a file on disk (macOS only)
 - **`.dvcignore` stays in sync** — regenerated from `.gitignore` on every commit; never edit it manually
@@ -153,6 +161,44 @@ The global default is set during `flux config`. The per-project cap overrides it
 git config dvc-router.verbose true   # enable verbose hook output for debugging
 ```
 
+### Pinning directories
+
+Sometimes automatic routing isn't what you want for a particular directory — for
+example, forcing a `data/` tree to always land in DVC regardless of file size, or
+keeping a `config/` tree in Git even if a file grows large.
+
+Run `flux pin` from inside the directory you want to pin:
+
+```bash
+cd data/
+flux pin dvc          # force everything in data/ (and subdirectories) to DVC
+
+cd ../config/
+flux pin git          # force everything in config/ to Git
+
+flux pin reset        # remove the pin for the current directory
+flux pin reset --all  # clear all pins in this project
+
+flux pin              # show usage and current pins for this repo
+```
+
+Pins are stored in the repo's local `.git/config` (never committed) and take
+effect on the next `git commit`. Run `flux list` from inside the project to see
+active pins alongside the project summary:
+
+```
+PATH          DVC REMOTE          GIT REMOTE          CAP
+-----------   ------------------  ------------------  ---
+. (current)   my-bucket/project   git@github.com:x/y  5 MB
+
+  Pinned:
+    ✦  data                     → DVC
+    ·  config                   → Git
+```
+
+`flux dry-run` also shows which files are routed by a pin (`[pinned]` annotation
+in the file-details view).
+
 ### Previewing routing
 
 ```bash
@@ -176,15 +222,15 @@ for those steps.
 | Command | Description |
 |---|---|
 | `flux add` | Initialise flux in the current project |
-| `flux list` | List all flux-managed projects under the current directory |
+| `flux list` | List flux-managed projects; shows pins when inside a single project |
 | `flux clone <git-url>` | Clone a flux-managed repo and wire up DVC + credentials |
-| `flux remove` | Full detach — remove hook, git config, and all DVC traces |
-| `flux remove git` | Remove hook and git config only |
-| `flux remove dvc` | Remove all DVC traces (pointer files, .dvc/) |
+| `flux remove [git\|dvc]` | Remove all flux traces, or only git config, or only DVC |
 | `flux pull` | Download the latest (`git pull` + `dvc pull`) |
 | `flux` | Sync both ways (pull then push) |
 | `flux dry-run` | Preview routing without making changes |
 | `flux cap [N\|--reset]` | Show, set, or reset per-project size cap |
+| `flux pin [dvc\|git\|reset]` | Pin current directory to DVC or Git; `reset` removes pin |
+| `flux pin reset --all` | Clear all directory pins |
 | `flux config` | Configure or update global settings |
 | `flux doctor` | Run environment diagnostics |
 | `flux version` | Show version |

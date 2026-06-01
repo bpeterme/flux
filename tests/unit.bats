@@ -459,6 +459,69 @@ EOF
   ! grep -qF "img.png" .dvcignore
 }
 
+@test "DVC-tracked file with spaces and special chars is excluded from .dvcignore" {
+  # Regression test: filenames with spaces, parentheses, commas, and pipes
+  # caused sync_dvcignore to leave stale patterns in .dvcignore, making
+  # dvc push fail with "path is ignored by .dvcignore".
+  mkdir -p "Knowledge/prior documents/Blackrock"
+  make_binary_file "Knowledge/prior documents/Blackrock/Solutions Engineering (Aladdin), Vice President | BlackRock | LinkedIn.pdf"
+  git add "Knowledge/prior documents/Blackrock/Solutions Engineering (Aladdin), Vice President | BlackRock | LinkedIn.pdf"
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+
+  # hook wrote full path to root .gitignore — verify the premise
+  grep -qxF "Knowledge/prior documents/Blackrock/Solutions Engineering (Aladdin), Vice President | BlackRock | LinkedIn.pdf" .gitignore
+
+  # .dvcignore must NOT contain the full path pattern
+  [ -f ".dvcignore" ]
+  ! grep -qxF "Knowledge/prior documents/Blackrock/Solutions Engineering (Aladdin), Vice President | BlackRock | LinkedIn.pdf" .dvcignore
+}
+
+@test "sync_dvcignore does not create .dvcignore inside .dvc/" {
+  # dvc init creates .dvc/.gitignore for DVC's internal bookkeeping.  That
+  # file must NOT be processed by sync_dvcignore — doing so would produce a
+  # spurious .dvc/.dvcignore that confuses DVC.
+  mkdir -p .dvc
+  printf '/tmp\n/cache\n' > .dvc/.gitignore
+  git add .dvc/.gitignore
+  git commit -m "init dvc" --no-verify -q
+
+  echo "trigger" > t.txt
+  git add t.txt
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+
+  [ ! -f ".dvc/.dvcignore" ]
+}
+
+@test "DVC-tracked file previously committed to git is excluded from .dvcignore after migration" {
+  # Regression for the migration path: a file that was previously committed to
+  # git and is now being moved to DVC must not leave its path in .dvcignore.
+  # This is the scenario where flux sync runs on a project for the first time
+  # and "moves files out of git history" into DVC (git ls-files --error-unmatch
+  # succeeds, so git_migrated is incremented).
+  mkdir -p subdir
+  make_binary_file subdir/photo.jpg
+  git add subdir/photo.jpg
+  git commit -m "add photo" --no-verify -q
+
+  # Modify with different binary content so git diff --cached sees the change
+  # and the file appears in staged_files with diff-filter=ACM.
+  printf '\x00\x01\x02\x04\xff\xfd' > subdir/photo.jpg
+  git add subdir/photo.jpg
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+
+  [ -f "subdir/photo.jpg.dvc" ]
+  grep -qxF "subdir/photo.jpg" .gitignore
+
+  [ -f ".dvcignore" ]
+  ! grep -qF "photo.jpg" .dvcignore
+}
+
 @test "gitignored file is not routed to DVC and is unstaged" {
   # A gitignored file must never be routed to DVC.  This edge case occurs when
   # a previously-tracked file is now ignored (e.g. .gitignore updated in the
@@ -480,4 +543,110 @@ EOF
   # File must have been unstaged by the hook
   run git diff --cached --name-only
   [[ "$output" != *".DS_Store"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Directory pins
+# ---------------------------------------------------------------------------
+
+@test "small text file in force-dvc dir is routed to DVC" {
+  mkdir -p data
+  echo "tiny content" > data/small.txt
+  git config --add dvc-router.force-dvc "data"
+  git add data/small.txt
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+  [ -f "data/small.txt.dvc" ]
+  assert_dvc_called "add data/small.txt"
+  run git ls-files data/small.txt
+  [ -z "$output" ]
+}
+
+@test "binary file in force-git dir is routed to Git" {
+  mkdir -p assets
+  make_binary_file assets/icon.bin
+  git config --add dvc-router.force-git "assets"
+  git add assets/icon.bin
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+  [ ! -f "assets/icon.bin.dvc" ]
+  assert_dvc_not_called "add assets/icon.bin"
+  run git diff --cached --name-only
+  [[ "$output" == *"assets/icon.bin"* ]]
+}
+
+@test "large text file in force-git dir is routed to Git" {
+  mkdir -p docs
+  make_large_text_file docs/report.txt
+  git config --add dvc-router.force-git "docs"
+  git add docs/report.txt
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+  [ ! -f "docs/report.txt.dvc" ]
+  assert_dvc_not_called "add docs/report.txt"
+  run git diff --cached --name-only
+  [[ "$output" == *"docs/report.txt"* ]]
+}
+
+@test "file in subdirectory of force-dvc dir is also pinned to DVC" {
+  mkdir -p data/subdir
+  echo "nested content" > data/subdir/nested.txt
+  git config --add dvc-router.force-dvc "data"
+  git add data/subdir/nested.txt
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+  [ -f "data/subdir/nested.txt.dvc" ]
+  assert_dvc_called "add data/subdir/nested.txt"
+}
+
+@test "trailing slash in stored pin path still matches" {
+  mkdir -p media
+  make_binary_file media/clip.bin
+  git config --add dvc-router.force-git "media/"
+  git add media/clip.bin
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+  [ ! -f "media/clip.bin.dvc" ]
+  assert_dvc_not_called "add media/clip.bin"
+}
+
+@test "root pin (.) routes all files to DVC" {
+  echo "any content" > rootfile.txt
+  git config --add dvc-router.force-dvc "."
+  git add rootfile.txt
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+  [ -f "rootfile.txt.dvc" ]
+  assert_dvc_called "add rootfile.txt"
+}
+
+@test "normal routing is unaffected when no pins are set" {
+  echo "plain text" > plain.txt
+  git add plain.txt
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+  [ ! -f "plain.txt.dvc" ]
+  assert_dvc_not_called "add plain.txt"
+  run git diff --cached --name-only
+  [[ "$output" == *"plain.txt"* ]]
+}
+
+@test "force-dvc takes priority over force-git when both match" {
+  mkdir -p overlap
+  echo "text" > overlap/file.txt
+  git config --add dvc-router.force-dvc "overlap"
+  git config --add dvc-router.force-git "overlap"
+  git add overlap/file.txt
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+  [ -f "overlap/file.txt.dvc" ]
+  assert_dvc_called "add overlap/file.txt"
 }

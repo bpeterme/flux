@@ -430,7 +430,7 @@ teardown() { teardown_flux_test; }
   [[ "$output" == *"→ DVC"* ]]
 }
 
-@test "flux dry-run shows already-DVC-tracked file as skipped" {
+@test "flux dry-run includes already-DVC-tracked file in DVC total" {
   printf '\x00\x01\x02' > asset.bin
   cat > asset.bin.dvc << 'EOF'
 outs:
@@ -445,10 +445,12 @@ EOF
 
   run bash "$REPO_ROOT/flux" dry-run
   [ "$status" -eq 0 ]
-  [[ "$output" == *"already in DVC"* ]]
+  [[ "$output" == *"→ Git"* ]]
+  [[ "$output" == *"→ DVC"* ]]
+  [[ "$output" != *"already in DVC"* ]]
 }
 
-@test "flux dry-run flags Git-tracked file that now exceeds cap as migrating" {
+@test "flux dry-run routes Git-tracked file exceeding cap to DVC" {
   echo "small" > growing.txt
   git add growing.txt
   git commit -m "small file" --no-verify -q
@@ -458,7 +460,8 @@ EOF
 
   run bash "$REPO_ROOT/flux" dry-run
   [ "$status" -eq 0 ]
-  [[ "$output" == *"migrating from Git"* ]]
+  [[ "$output" == *"→ DVC"* ]]
+  [[ "$output" != *"migrating from Git"* ]]
 }
 
 @test "flux dry-run includes untracked files when nothing is staged" {
@@ -490,6 +493,62 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"→ DVC"* ]]
   [[ "$output" == *"cap: 1 MB"* ]]
+}
+
+@test "flux dry-run includes DVC-managed paths from pointer files in DVC total" {
+  mkdir -p dataset
+  echo "row" > dataset/sample.csv
+  cat > dataset.dvc << 'EOF'
+outs:
+- md5: abc123.dir
+  size: 94371840
+  nfiles: 1
+  path: dataset
+EOF
+  echo "/dataset" >> .gitignore
+  git add dataset.dvc .gitignore
+  git commit -m "dvc-tracked dataset" --no-verify -q
+
+  run bash "$REPO_ROOT/flux" dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"→ DVC"* ]]
+  [[ "$output" != *"already in DVC"* ]]
+}
+
+@test "flux dry-run includes DVC-managed path in DVC total when size absent from pointer" {
+  cat > model.dvc << 'EOF'
+outs:
+- md5: deadbeef
+  path: model.pkl
+EOF
+  git add model.dvc
+  git commit -m "dvc pointer no size" --no-verify -q
+
+  run bash "$REPO_ROOT/flux" dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"→ DVC"* ]]
+  [[ "$output" != *"already in DVC"* ]]
+}
+
+@test "flux dry-run uses actual data size for .dvc pointer file in force-dvc pin" {
+  mkdir -p artifacts
+  cat > artifacts/dataset.dvc << 'EOF'
+outs:
+- md5: abc123.dir
+  size: 94371840
+  nfiles: 10
+  path: dataset
+EOF
+  echo "/dataset" >> .gitignore
+  git add artifacts/dataset.dvc .gitignore
+  git commit -m "pointer in pinned dir" --no-verify -q
+  git config dvc-router.force-dvc "artifacts"
+
+  run bash "$REPO_ROOT/flux" dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"→ DVC"* ]]
+  # Total should reflect 94371840 bytes (90 MB), not the tiny pointer-file size
+  [[ "$output" == *"90 MB"* ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -757,6 +816,36 @@ EOF
   [[ "$output" == *"no-remote-data"* ]]
 }
 
+@test "flux list shows pinned directories for a single flux project" {
+  bash "$REPO_ROOT/flux" add
+  mkdir -p data
+  git config --add dvc-router.force-dvc "data"
+  git config --add dvc-router.force-git "config"
+  run bash "$REPO_ROOT/flux" list
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Pinned"* ]]
+  [[ "$output" == *"data"* ]]
+  [[ "$output" == *"DVC"* ]]
+  [[ "$output" == *"config"* ]]
+  [[ "$output" == *"Git"* ]]
+}
+
+@test "flux list omits pin section when no pins are set" {
+  bash "$REPO_ROOT/flux" add
+  run bash "$REPO_ROOT/flux" list
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Pinned"* ]]
+}
+
+@test "flux list does not show pins in multi-project workspace" {
+  make_flux_repo "$TEST_REPO/proj-a" "data-a" "bucket"
+  make_flux_repo "$TEST_REPO/proj-b" "data-b" "bucket"
+  git -C "$TEST_REPO/proj-a" config --add dvc-router.force-dvc "data"
+  run bash "$REPO_ROOT/flux" list
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Pinned"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # flux clone
 # ---------------------------------------------------------------------------
@@ -893,4 +982,131 @@ EOF
   [ -f "assets/.gitignore" ]
   grep -qxF '*.tmp' assets/.gitignore
   grep -qxF '*.log' assets/.gitignore
+}
+
+# ---------------------------------------------------------------------------
+# flux pin
+# ---------------------------------------------------------------------------
+
+@test "flux pin with no args shows usage" {
+  run bash "$REPO_ROOT/flux" pin
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"flux pin"* ]]
+  [[ "$output" == *"Usage"* ]]
+}
+
+@test "flux pin with no args shows current pins when set" {
+  git config --add dvc-router.force-dvc "data"
+  run bash "$REPO_ROOT/flux" pin
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Pinned"* ]]
+  [[ "$output" == *"data"* ]]
+  [[ "$output" == *"DVC"* ]]
+}
+
+@test "flux pin with no args works outside a git repo (shows usage only)" {
+  local no_git
+  no_git=$(mktemp -d)
+  run bash -c "cd '$no_git' && HOME='$MOCK_HOME' XDG_CONFIG_HOME='$MOCK_HOME/.config' MOCK_KEYCHAIN_DIR='$MOCK_KEYCHAIN_DIR' PATH='$PATH' bash '$REPO_ROOT/flux' pin"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Usage"* ]]
+  rm -rf "$no_git"
+}
+
+@test "flux pin dvc from subdirectory stores relative path in force-dvc" {
+  mkdir -p data
+  run bash -c "cd '$TEST_REPO/data' && HOME='$MOCK_HOME' XDG_CONFIG_HOME='$MOCK_HOME/.config' MOCK_KEYCHAIN_DIR='$MOCK_KEYCHAIN_DIR' PATH='$PATH' bash '$REPO_ROOT/flux' pin dvc"
+  [ "$status" -eq 0 ]
+  [ "$(git config --get dvc-router.force-dvc)" = "data" ]
+}
+
+@test "flux pin git from subdirectory stores relative path in force-git" {
+  mkdir -p docs
+  run bash -c "cd '$TEST_REPO/docs' && HOME='$MOCK_HOME' XDG_CONFIG_HOME='$MOCK_HOME/.config' MOCK_KEYCHAIN_DIR='$MOCK_KEYCHAIN_DIR' PATH='$PATH' bash '$REPO_ROOT/flux' pin git"
+  [ "$status" -eq 0 ]
+  [ "$(git config --get dvc-router.force-git)" = "docs" ]
+}
+
+@test "flux pin dvc removes path from force-git (mutual exclusion)" {
+  mkdir -p data
+  git config --add dvc-router.force-git "data"
+  run bash -c "cd '$TEST_REPO/data' && HOME='$MOCK_HOME' XDG_CONFIG_HOME='$MOCK_HOME/.config' MOCK_KEYCHAIN_DIR='$MOCK_KEYCHAIN_DIR' PATH='$PATH' bash '$REPO_ROOT/flux' pin dvc"
+  [ "$status" -eq 0 ]
+  [ "$(git config --get dvc-router.force-dvc)" = "data" ]
+  run git config --get dvc-router.force-git
+  [ "$status" -ne 0 ]
+}
+
+@test "flux pin git removes path from force-dvc (mutual exclusion)" {
+  mkdir -p docs
+  git config --add dvc-router.force-dvc "docs"
+  run bash -c "cd '$TEST_REPO/docs' && HOME='$MOCK_HOME' XDG_CONFIG_HOME='$MOCK_HOME/.config' MOCK_KEYCHAIN_DIR='$MOCK_KEYCHAIN_DIR' PATH='$PATH' bash '$REPO_ROOT/flux' pin git"
+  [ "$status" -eq 0 ]
+  [ "$(git config --get dvc-router.force-git)" = "docs" ]
+  run git config --get dvc-router.force-dvc
+  [ "$status" -ne 0 ]
+}
+
+@test "flux pin reset removes pin from current directory" {
+  mkdir -p data
+  git config --add dvc-router.force-dvc "data"
+  run bash -c "cd '$TEST_REPO/data' && HOME='$MOCK_HOME' XDG_CONFIG_HOME='$MOCK_HOME/.config' MOCK_KEYCHAIN_DIR='$MOCK_KEYCHAIN_DIR' PATH='$PATH' bash '$REPO_ROOT/flux' pin reset"
+  [ "$status" -eq 0 ]
+  run git config --get dvc-router.force-dvc
+  [ "$status" -ne 0 ]
+}
+
+@test "flux pin reset --all clears all pins" {
+  git config --add dvc-router.force-dvc "data"
+  git config --add dvc-router.force-git "docs"
+  run bash "$REPO_ROOT/flux" pin reset --all
+  [ "$status" -eq 0 ]
+  run git config --get-all dvc-router.force-dvc; [ "$status" -ne 0 ]
+  run git config --get-all dvc-router.force-git; [ "$status" -ne 0 ]
+}
+
+@test "flux pin with no args displays both force-dvc and force-git entries" {
+  git config --add dvc-router.force-dvc "data"
+  git config --add dvc-router.force-git "docs"
+  run bash "$REPO_ROOT/flux" pin
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Pinned"* ]]
+  [[ "$output" == *"data"* ]]
+  [[ "$output" == *"DVC"* ]]
+  [[ "$output" == *"docs"* ]]
+  [[ "$output" == *"Git"* ]]
+}
+
+@test "flux pin dvc from git root stores dot" {
+  run bash "$REPO_ROOT/flux" pin dvc
+  [ "$status" -eq 0 ]
+  [ "$(git config --get dvc-router.force-dvc)" = "." ]
+}
+
+@test "flux pin is idempotent — repeated calls do not add duplicate entries" {
+  mkdir -p data
+  bash -c "cd '$TEST_REPO/data' && HOME='$MOCK_HOME' XDG_CONFIG_HOME='$MOCK_HOME/.config' MOCK_KEYCHAIN_DIR='$MOCK_KEYCHAIN_DIR' PATH='$PATH' bash '$REPO_ROOT/flux' pin dvc"
+  bash -c "cd '$TEST_REPO/data' && HOME='$MOCK_HOME' XDG_CONFIG_HOME='$MOCK_HOME/.config' MOCK_KEYCHAIN_DIR='$MOCK_KEYCHAIN_DIR' PATH='$PATH' bash '$REPO_ROOT/flux' pin dvc"
+  local count
+  count=$(git config --get-all dvc-router.force-dvc | wc -l | tr -d ' ')
+  [ "$count" -eq 1 ]
+}
+
+@test "flux pin fails outside a git repo" {
+  local no_git
+  no_git=$(mktemp -d)
+  run bash -c "cd '$no_git' && HOME='$MOCK_HOME' XDG_CONFIG_HOME='$MOCK_HOME/.config' MOCK_KEYCHAIN_DIR='$MOCK_KEYCHAIN_DIR' PATH='$PATH' bash '$REPO_ROOT/flux' pin dvc"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Git repository"* ]]
+  rm -rf "$no_git"
+}
+
+@test "flux dry-run header shows pin count when pins are active" {
+  mkdir -p data
+  git config --add dvc-router.force-dvc "data"
+  echo "tiny" > data/file.txt
+  git add data/file.txt
+  run bash "$REPO_ROOT/flux" dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"pin(s) active"* ]]
 }
