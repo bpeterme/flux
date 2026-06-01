@@ -224,10 +224,9 @@ make_flux_repo() {
   git -C "$dir" config user.name  "Test"
   git -C "$dir" config flux.r2-folder          "$r2_folder"
   git -C "$dir" config flux.dvc-remote-bucket  "$bucket"
-  git -C "$dir" config dvc-router.size-cap-mb  "$cap"
   mkdir -p "$dir/.dvc"
-  printf '[core]\n    remote = r2remote\n[remote "r2remote"]\n    url = s3://%s/%s\n' \
-    "$bucket" "$r2_folder" > "$dir/.dvc/config"
+  printf '[core]\n    remote = r2remote\n[remote "r2remote"]\n    url = s3://%s/%s\n[flux]\n    size-cap-mb = %s\n' \
+    "$bucket" "$r2_folder" "$cap" > "$dir/.dvc/config"
 }
 
 # ---------------------------------------------------------------------------
