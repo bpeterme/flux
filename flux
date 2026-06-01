@@ -246,6 +246,8 @@ _flux_write_config() {
   # $5: primary DVC remote bucket name
   # $6: FLUX_AWS_CONFIG_FILE value (empty = leave commented out)
   local dvc_str="$1" cap="$2" verbose="$3" git_str="$4" primary_dvc="${5:-}" aws_cfg="${6:-}"
+  # Normalize aws_cfg to $HOME-relative so flux.env stays machine-independent
+  [[ -n "$aws_cfg" ]] && aws_cfg="\$HOME${aws_cfg#"$HOME"}"
   mkdir -p "$(dirname "$FLUX_CONFIG")"
   local tmp; tmp=$(mktemp)
   {
@@ -272,12 +274,12 @@ _flux_write_config() {
     echo ""
     echo "# ── DVC credential process ────────────────────────────────────────────────────"
     echo "# AWS config file that holds the [profile flux-dvc] credential_process entry."
-    echo "# Leave commented to use the default ~/.aws/config; uncomment and set a custom"
+    echo "# Leave commented to use the default \$HOME/.aws/config; uncomment and set a custom"
     echo "# path to keep flux credentials isolated from your personal AWS setup."
     if [[ -n "$aws_cfg" ]]; then
       echo "FLUX_AWS_CONFIG_FILE=${aws_cfg}"
     else
-      echo "# FLUX_AWS_CONFIG_FILE=~/.config/flux/aws.conf"
+      echo "# FLUX_AWS_CONFIG_FILE=\$HOME/.config/flux/aws.conf"
     fi
     echo ""
     echo "# ── git accounts ──────────────────────────────────────────────────────────────"
