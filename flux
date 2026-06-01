@@ -1710,17 +1710,15 @@ _flux_pull() {
 _flux_repair_dvcignore() {
   local -a _patterns=()
   while IFS= read -r _ptr; do
-    [[ -z "$_ptr" || ! -f "$_ptr" ]] && continue
-    local _rel _dir _base
-    _rel=$(grep '^\s*path:' "$_ptr" 2>/dev/null \
-      | head -1 | sed 's/.*path:[[:space:]]*//' | tr -d '"' | tr -d "'" || true)
-    [[ -z "$_rel" ]] && continue
-    _dir=$(dirname "$_ptr")
-    _base=$(basename "$_rel")
+    [[ -z "$_ptr" ]] && continue
+    local _tracked _dir _base
+    _tracked="${_ptr%.dvc}"
+    _dir=$(dirname "$_tracked")
+    _base=$(basename "$_tracked")
     if [[ "$_dir" == "." ]]; then
-      _patterns+=("$_rel" "/$_rel")
+      _patterns+=("$_tracked" "/$_tracked")
     else
-      _patterns+=("$_dir/$_rel" "/$_base" "$_base")
+      _patterns+=("$_tracked" "/$_base" "$_base")
     fi
   done < <(git -c core.quotepath=false ls-files 2>/dev/null | grep -E '\.dvc$' || true)
 
