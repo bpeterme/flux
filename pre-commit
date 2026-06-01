@@ -115,17 +115,17 @@ sync_dvcignore() {
   #   "basename"   — bare name (fallback)
   local -a _dvc_patterns=()
   while IFS= read -r _ptr; do
-    local _rel _dir _base
-    _rel=$(grep '^\s*path:' "$_ptr" 2>/dev/null \
-      | head -1 | sed 's/.*path:[[:space:]]*//' | tr -d '"' | tr -d "'" \
-      || true)
-    [[ -z "$_rel" ]] && continue
-    _dir=$(dirname "$_ptr")
-    _base=$(basename "$_rel")
+    # Derive the tracked-file path directly from the .dvc filename — DVC always
+    # names the pointer file <datafile>.dvc, so ${_ptr%.dvc} is the data file.
+    # This avoids YAML path: parsing which can mis-encode non-ASCII characters.
+    local _tracked _dir _base
+    _tracked="${_ptr%.dvc}"
+    _dir=$(dirname "$_tracked")
+    _base=$(basename "$_tracked")
     if [[ "$_dir" == "." ]]; then
-      _dvc_patterns+=("$_rel" "/$_rel")
+      _dvc_patterns+=("$_tracked" "/$_tracked")
     else
-      _dvc_patterns+=("$_dir/$_rel" "/$_base" "$_base")
+      _dvc_patterns+=("$_tracked" "/$_base" "$_base")
     fi
   done < <(git -c core.quotepath=false ls-files 2>/dev/null | grep -E '\.dvc$' || true)
 
@@ -176,20 +176,10 @@ cleanup_orphaned_dvc_pointers() {
   while IFS= read -r dvc_file; do
     [[ -z "$dvc_file" ]] && continue
 
-    # Parse the target path from the .dvc YAML (path: field, first occurrence)
-    local target_rel
-    target_rel=$(grep '^\s*path:' "$dvc_file" 2>/dev/null \
-      | head -1 \
-      | sed 's/.*path:[[:space:]]*//' \
-      | tr -d '"' \
-      | tr -d "'" \
-      || true)
-    [[ -z "$target_rel" ]] && continue
-
-    # Target path is relative to the directory containing the .dvc file
+    # Derive the tracked-file path directly from the .dvc filename.
     local dvc_dir target_abs
+    target_abs="${dvc_file%.dvc}"
     dvc_dir=$(dirname "$dvc_file")
-    target_abs="${dvc_dir}/${target_rel}"
 
     # If the target still exists, the pointer is healthy — nothing to do
     [[ -e "$target_abs" ]] && continue
@@ -204,7 +194,7 @@ cleanup_orphaned_dvc_pointers() {
     # Remove the DVC-added /<basename> entry from the sibling .gitignore
     # (backward-compat) and the full-path entry from the root .gitignore
     # (current consolidated style). Delete the sibling if it becomes empty.
-    local target_name; target_name=$(basename "$target_rel")
+    local target_name; target_name=$(basename "$target_abs")
     local gitignore_path="${dvc_dir}/.gitignore"
     if [[ -f "$gitignore_path" ]]; then
       local _tmp; _tmp=$(mktemp)
@@ -217,17 +207,16 @@ cleanup_orphaned_dvc_pointers() {
       fi
     fi
     if [[ "$dvc_dir" != "." ]]; then
-      local root_path; root_path="${dvc_dir}/${target_rel}"
-      if [[ -f ".gitignore" ]] && grep -qxF "$root_path" .gitignore 2>/dev/null; then
+      if [[ -f ".gitignore" ]] && grep -qxF "$target_abs" .gitignore 2>/dev/null; then
         local _tmp; _tmp=$(mktemp)
-        grep -vxF "$root_path" .gitignore > "$_tmp" || true
+        grep -vxF "$target_abs" .gitignore > "$_tmp" || true
         mv "$_tmp" .gitignore
         git add .gitignore
       fi
     fi
 
     cleaned+=("$dvc_file")
-  done < <(git ls-files '*.dvc' 2>/dev/null)
+  done < <(git -c core.quotepath=false ls-files 2>/dev/null | grep -E '\.dvc$' || true)
 
   if (( ${#cleaned[@]} > 0 )); then
     info "Cleaned up orphaned DVC pointers (${#cleaned[@]}):"
@@ -260,19 +249,10 @@ migrate_dvc_to_git() {
   while IFS= read -r dvc_file; do
     [[ -z "$dvc_file" ]] && continue
 
-    # Parse the target path from the .dvc YAML (path: field, first occurrence)
-    local target_rel
-    target_rel=$(grep '^\s*path:' "$dvc_file" 2>/dev/null \
-      | head -1 \
-      | sed 's/.*path:[[:space:]]*//' \
-      | tr -d '"' \
-      | tr -d "'" \
-      || true)
-    [[ -z "$target_rel" ]] && continue
-
+    # Derive the tracked-file path directly from the .dvc filename.
     local dvc_dir target_abs
+    target_abs="${dvc_file%.dvc}"
     dvc_dir=$(dirname "$dvc_file")
-    target_abs="${dvc_dir}/${target_rel}"
 
     # Skip missing targets — handled by cleanup_orphaned_dvc_pointers
     [[ ! -f "$target_abs" ]] && continue
@@ -316,7 +296,7 @@ migrate_dvc_to_git() {
     git add "$target_abs"
 
     migrated+=("$target_abs")
-  done < <(git ls-files '*.dvc' 2>/dev/null)
+  done < <(git -c core.quotepath=false ls-files 2>/dev/null | grep -E '\.dvc$' || true)
 
   if (( ${#migrated[@]} > 0 )); then
     info "Migrated DVC → Git (${#migrated[@]} file(s)):"
@@ -357,7 +337,7 @@ log "Using DVC at: $DVC"
 # deletions, migrated data files) which must not be re-processed by the
 # routing loop below.
 # ---------------------------------------------------------------------------
-staged_files=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)
+staged_files=$(git -c core.quotepath=false diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)
 
 # ---------------------------------------------------------------------------
 # Cleanup orphaned .dvc pointers (deleted / renamed DVC-tracked files)

@@ -522,6 +522,31 @@ EOF
   ! grep -qF "photo.jpg" .dvcignore
 }
 
+@test "DVC-tracked file with non-ASCII bytes in name is excluded from .dvcignore" {
+  # Regression: filenames containing non-ASCII bytes (e.g. a Unicode hyphen
+  # U+2010, UTF-8 E2 80 90) were being left in .dvcignore because
+  # git diff --name-only (without core.quotepath=false) quoted them with
+  # octal escapes, causing $file to mismatch on disk and the file to be
+  # skipped by the routing loop.  The staged_files capture must use
+  # core.quotepath=false so the raw UTF-8 bytes flow through correctly.
+  mkdir -p "data/reports"
+  # Create a filename with the UTF-8 encoding of U+2010 HYPHEN (‐) inline.
+  local fname; fname=$'data/reports/summary\xe2\x80\x90final.pdf'
+  make_binary_file "$fname"
+  git add "$fname"
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+
+  # Pointer and .gitignore entry must exist
+  [ -f "${fname}.dvc" ]
+  grep -qxF "$fname" .gitignore
+
+  # .dvcignore must NOT contain the path
+  [ -f ".dvcignore" ]
+  ! grep -qF "summary" .dvcignore
+}
+
 @test "gitignored file is not routed to DVC and is unstaged" {
   # A gitignored file must never be routed to DVC.  This edge case occurs when
   # a previously-tracked file is now ignored (e.g. .gitignore updated in the
