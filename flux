@@ -1722,7 +1722,7 @@ _flux_repair_dvcignore() {
     else
       _patterns+=("$_dir/$_rel" "/$_base" "$_base")
     fi
-  done < <(git ls-files '*.dvc' 2>/dev/null || true)
+  done < <(git -c core.quotepath=false ls-files 2>/dev/null | grep -E '\.dvc$' || true)
 
   (( ${#_patterns[@]} == 0 )) && return 0
 

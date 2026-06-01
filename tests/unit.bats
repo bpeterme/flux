@@ -478,6 +478,50 @@ EOF
   ! grep -qxF "Knowledge/prior documents/Blackrock/Solutions Engineering (Aladdin), Vice President | BlackRock | LinkedIn.pdf" .dvcignore
 }
 
+@test "sync_dvcignore does not create .dvcignore inside .dvc/" {
+  # dvc init creates .dvc/.gitignore for DVC's internal bookkeeping.  That
+  # file must NOT be processed by sync_dvcignore — doing so would produce a
+  # spurious .dvc/.dvcignore that confuses DVC.
+  mkdir -p .dvc
+  printf '/tmp\n/cache\n' > .dvc/.gitignore
+  git add .dvc/.gitignore
+  git commit -m "init dvc" --no-verify -q
+
+  echo "trigger" > t.txt
+  git add t.txt
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+
+  [ ! -f ".dvc/.dvcignore" ]
+}
+
+@test "DVC-tracked file previously committed to git is excluded from .dvcignore after migration" {
+  # Regression for the migration path: a file that was previously committed to
+  # git and is now being moved to DVC must not leave its path in .dvcignore.
+  # This is the scenario where flux sync runs on a project for the first time
+  # and "moves files out of git history" into DVC (git ls-files --error-unmatch
+  # succeeds, so git_migrated is incremented).
+  mkdir -p subdir
+  make_binary_file subdir/photo.jpg
+  git add subdir/photo.jpg
+  git commit -m "add photo" --no-verify -q
+
+  # Modify with different binary content so git diff --cached sees the change
+  # and the file appears in staged_files with diff-filter=ACM.
+  printf '\x00\x01\x02\x04\xff\xfd' > subdir/photo.jpg
+  git add subdir/photo.jpg
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+
+  [ -f "subdir/photo.jpg.dvc" ]
+  grep -qxF "subdir/photo.jpg" .gitignore
+
+  [ -f ".dvcignore" ]
+  ! grep -qF "photo.jpg" .dvcignore
+}
+
 @test "gitignored file is not routed to DVC and is unstaged" {
   # A gitignored file must never be routed to DVC.  This edge case occurs when
   # a previously-tracked file is now ignored (e.g. .gitignore updated in the

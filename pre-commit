@@ -127,10 +127,12 @@ sync_dvcignore() {
     else
       _dvc_patterns+=("$_dir/$_rel" "/$_base" "$_base")
     fi
-  done < <(git ls-files '*.dvc' 2>/dev/null)
+  done < <(git -c core.quotepath=false ls-files 2>/dev/null | grep -E '\.dvc$' || true)
 
   # Only process tracked/staged .gitignore files — git ls-files skips gitignored
   # sub-repos and excluded directories, which find would otherwise traverse.
+  # Exclude .dvc/.gitignore: that is DVC's internal bookkeeping file and must
+  # not generate a sibling .dvcignore inside the .dvc/ directory.
   while IFS= read -r gitignore_path; do
     local dir dvcignore_path
     dir=$(dirname "$gitignore_path")
@@ -148,7 +150,7 @@ sync_dvcignore() {
 
     git add "$dvcignore_path"
     log "Synced: $dvcignore_path ← $gitignore_path"
-  done < <(git ls-files | grep '\.gitignore$')
+  done < <(git -c core.quotepath=false ls-files | grep '\.gitignore$' | grep -v '^\.dvc/')
 }
 
 # ---------------------------------------------------------------------------
