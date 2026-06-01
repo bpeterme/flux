@@ -459,6 +459,25 @@ EOF
   ! grep -qF "img.png" .dvcignore
 }
 
+@test "DVC-tracked file with spaces and special chars is excluded from .dvcignore" {
+  # Regression test: filenames with spaces, parentheses, commas, and pipes
+  # caused sync_dvcignore to leave stale patterns in .dvcignore, making
+  # dvc push fail with "path is ignored by .dvcignore".
+  mkdir -p "Knowledge/prior documents/Blackrock"
+  make_binary_file "Knowledge/prior documents/Blackrock/Solutions Engineering (Aladdin), Vice President | BlackRock | LinkedIn.pdf"
+  git add "Knowledge/prior documents/Blackrock/Solutions Engineering (Aladdin), Vice President | BlackRock | LinkedIn.pdf"
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+
+  # hook wrote full path to root .gitignore — verify the premise
+  grep -qxF "Knowledge/prior documents/Blackrock/Solutions Engineering (Aladdin), Vice President | BlackRock | LinkedIn.pdf" .gitignore
+
+  # .dvcignore must NOT contain the full path pattern
+  [ -f ".dvcignore" ]
+  ! grep -qxF "Knowledge/prior documents/Blackrock/Solutions Engineering (Aladdin), Vice President | BlackRock | LinkedIn.pdf" .dvcignore
+}
+
 @test "gitignored file is not routed to DVC and is unstaged" {
   # A gitignored file must never be routed to DVC.  This edge case occurs when
   # a previously-tracked file is now ignored (e.g. .gitignore updated in the

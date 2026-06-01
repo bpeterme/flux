@@ -11,7 +11,7 @@ VERSION="dev"
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
 ok()   { echo -e "${GREEN}✔${NC} $*"; }
 warn() { echo -e "${YELLOW}⚠${NC}  $*"; }
-fail() { echo -e "${RED}✘${NC} $*"; exit 1; }
+fail() { _flux_spin_stop 2>/dev/null; echo -e "${RED}✘${NC} $*"; exit 1; }
 
 _FLUX_SPINNER_PID=""
 _flux_spin_start() {
@@ -1701,19 +1701,71 @@ _flux_pull() {
 }
 
 # ---------------------------------------------------------------------------
+# _flux_repair_dvcignore — remove DVC-tracked file patterns from .dvcignore
+#
+# The pre-commit hook keeps .dvcignore in sync, but on a fresh project or when
+# no commit is made, stale patterns can linger. DVC refuses to push files that
+# appear in .dvcignore, so this runs defensively before every dvc push.
+# ---------------------------------------------------------------------------
+_flux_repair_dvcignore() {
+  local -a _patterns=()
+  while IFS= read -r _ptr; do
+    [[ -z "$_ptr" || ! -f "$_ptr" ]] && continue
+    local _rel _dir _base
+    _rel=$(grep '^\s*path:' "$_ptr" 2>/dev/null \
+      | head -1 | sed 's/.*path:[[:space:]]*//' | tr -d '"' | tr -d "'" || true)
+    [[ -z "$_rel" ]] && continue
+    _dir=$(dirname "$_ptr")
+    _base=$(basename "$_rel")
+    if [[ "$_dir" == "." ]]; then
+      _patterns+=("$_rel" "/$_rel")
+    else
+      _patterns+=("$_dir/$_rel" "/$_base" "$_base")
+    fi
+  done < <(git ls-files '*.dvc' 2>/dev/null || true)
+
+  (( ${#_patterns[@]} == 0 )) && return 0
+
+  local _fixed=false
+  while IFS= read -r _dvcignore; do
+    [[ -z "$_dvcignore" || ! -f "$_dvcignore" ]] && continue
+    local _before _after
+    _before=$(cat "$_dvcignore")
+    for _pat in "${_patterns[@]}"; do
+      local _tmp; _tmp=$(mktemp)
+      grep -vxF "$_pat" "$_dvcignore" > "$_tmp" || true
+      mv "$_tmp" "$_dvcignore"
+    done
+    _after=$(cat "$_dvcignore")
+    if [[ "$_before" != "$_after" ]]; then
+      git add "$_dvcignore"
+      _fixed=true
+    fi
+  done < <(find . -name ".dvcignore" \
+    -not -path "./.git/*" -not -path "./.dvc/*" 2>/dev/null)
+
+  if [[ "$_fixed" == "true" ]]; then
+    if ! git diff --cached --quiet 2>/dev/null; then
+      git commit --quiet -m "fix: remove DVC-tracked file patterns from .dvcignore"
+      warn ".dvcignore had stale entries — fixed automatically."
+    fi
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # sync — pull then push (git + dvc)
 # ---------------------------------------------------------------------------
 
 _flux_sync() {
   git rev-parse --git-dir &>/dev/null \
     || fail "Not inside a Git repository."
+  clear 2>/dev/null || true
+  _flux_spin_start "flux syncing..."
   _flux_require_dvc_repo
   _flux_require_git_remote
   _flux_is_configured \
     || fail "Not configured. Run 'flux config' to set up."
   local DVC; _flux_require_dvc
-  clear 2>/dev/null || true
-  _flux_spin_start "flux syncing..."
 
   _flux_hook_update
   _flux_subrepo_sync
@@ -1760,6 +1812,8 @@ _flux_sync() {
   else
     _flux_spin_stop; warn "Git push failed — check remote."
   fi
+
+  _flux_repair_dvcignore
 
   _flux_spin_start "pushing DVC data..."
   _dvc_err=$(mktemp)
