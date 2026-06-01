@@ -246,6 +246,8 @@ _flux_write_config() {
   # $5: primary DVC remote bucket name
   # $6: FLUX_AWS_CONFIG_FILE value (empty = leave commented out)
   local dvc_str="$1" cap="$2" verbose="$3" git_str="$4" primary_dvc="${5:-}" aws_cfg="${6:-}"
+  # Normalize aws_cfg to $HOME-relative so flux.env stays machine-independent
+  [[ -n "$aws_cfg" ]] && aws_cfg="\$HOME${aws_cfg#"$HOME"}"
   mkdir -p "$(dirname "$FLUX_CONFIG")"
   local tmp; tmp=$(mktemp)
   {
@@ -272,12 +274,12 @@ _flux_write_config() {
     echo ""
     echo "# ── DVC credential process ────────────────────────────────────────────────────"
     echo "# AWS config file that holds the [profile flux-dvc] credential_process entry."
-    echo "# Leave commented to use the default ~/.aws/config; uncomment and set a custom"
+    echo "# Leave commented to use the default \$HOME/.aws/config; uncomment and set a custom"
     echo "# path to keep flux credentials isolated from your personal AWS setup."
     if [[ -n "$aws_cfg" ]]; then
       echo "FLUX_AWS_CONFIG_FILE=${aws_cfg}"
     else
-      echo "# FLUX_AWS_CONFIG_FILE=~/.config/flux/aws.conf"
+      echo "# FLUX_AWS_CONFIG_FILE=\$HOME/.config/flux/aws.conf"
     fi
     echo ""
     echo "# ── git accounts ──────────────────────────────────────────────────────────────"
@@ -2072,9 +2074,11 @@ _flux_dry_run() {
   SIZE_CAP_MB=$(git config --get dvc-router.size-cap-mb 2>/dev/null || echo "5")
   SIZE_CAP_BYTES=$(( SIZE_CAP_MB * 1024 * 1024 ))
 
-  local -a FORCE_DVC_DIRS FORCE_GIT_DIRS
-  mapfile -t FORCE_DVC_DIRS < <(git config --get-all dvc-router.force-dvc 2>/dev/null || true)
-  mapfile -t FORCE_GIT_DIRS < <(git config --get-all dvc-router.force-git 2>/dev/null || true)
+  local -a FORCE_DVC_DIRS=() FORCE_GIT_DIRS=()
+  while IFS= read -r line; do [[ -n "$line" ]] && FORCE_DVC_DIRS+=("$line"); done \
+    < <(git config --get-all dvc-router.force-dvc 2>/dev/null || true)
+  while IFS= read -r line; do [[ -n "$line" ]] && FORCE_GIT_DIRS+=("$line"); done \
+    < <(git config --get-all dvc-router.force-git 2>/dev/null || true)
 
   local staged_files scan_mode
   staged_files=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)
@@ -2378,7 +2382,8 @@ _flux_cap() {
 _flux_pin_config_remove() {
   local key="$1" target="$2"
   local -a current=()
-  mapfile -t current < <(git config --get-all "$key" 2>/dev/null || true)
+  while IFS= read -r line; do [[ -n "$line" ]] && current+=("$line"); done \
+    < <(git config --get-all "$key" 2>/dev/null || true)
   (( ${#current[@]} == 0 )) && return 0
   git config --unset-all "$key" 2>/dev/null || true
   local v
@@ -2404,9 +2409,11 @@ _flux_pin() {
     echo ""
     echo "  (Pins are shown in 'flux list' when inside a project)"
     if git rev-parse --git-dir &>/dev/null 2>&1; then
-      local -a dvc_dirs git_dirs
-      mapfile -t dvc_dirs < <(git config --get-all dvc-router.force-dvc 2>/dev/null || true)
-      mapfile -t git_dirs < <(git config --get-all dvc-router.force-git 2>/dev/null || true)
+      local -a dvc_dirs=() git_dirs=()
+      while IFS= read -r line; do [[ -n "$line" ]] && dvc_dirs+=("$line"); done \
+        < <(git config --get-all dvc-router.force-dvc 2>/dev/null || true)
+      while IFS= read -r line; do [[ -n "$line" ]] && git_dirs+=("$line"); done \
+        < <(git config --get-all dvc-router.force-git 2>/dev/null || true)
       if (( ${#dvc_dirs[@]} > 0 || ${#git_dirs[@]} > 0 )); then
         echo ""
         printf "  Pinned:\n"
@@ -2454,7 +2461,8 @@ _flux_pin() {
   if [[ "$subcmd" == "dvc" ]]; then
     _flux_pin_config_remove dvc-router.force-git "$rel_path"
     local -a existing=()
-    mapfile -t existing < <(git config --get-all dvc-router.force-dvc 2>/dev/null || true)
+    while IFS= read -r line; do [[ -n "$line" ]] && existing+=("$line"); done \
+      < <(git config --get-all dvc-router.force-dvc 2>/dev/null || true)
     local already=false
     for e in "${existing[@]}"; do [[ "$e" == "$rel_path" ]] && already=true && break; done
     [[ "$already" == "false" ]] && git config --add dvc-router.force-dvc "$rel_path"
@@ -2463,7 +2471,8 @@ _flux_pin() {
   else
     _flux_pin_config_remove dvc-router.force-dvc "$rel_path"
     local -a existing=()
-    mapfile -t existing < <(git config --get-all dvc-router.force-git 2>/dev/null || true)
+    while IFS= read -r line; do [[ -n "$line" ]] && existing+=("$line"); done \
+      < <(git config --get-all dvc-router.force-git 2>/dev/null || true)
     local already=false
     for e in "${existing[@]}"; do [[ "$e" == "$rel_path" ]] && already=true && break; done
     [[ "$already" == "false" ]] && git config --add dvc-router.force-git "$rel_path"
@@ -2689,9 +2698,11 @@ _flux_list() {
   fi
 
   if [[ -n "$pins_repo_dir" ]]; then
-    local -a dvc_pins git_pins
-    mapfile -t dvc_pins < <(git -C "$pins_repo_dir" config --get-all dvc-router.force-dvc 2>/dev/null || true)
-    mapfile -t git_pins < <(git -C "$pins_repo_dir" config --get-all dvc-router.force-git 2>/dev/null || true)
+    local -a dvc_pins=() git_pins=()
+    while IFS= read -r line; do [[ -n "$line" ]] && dvc_pins+=("$line"); done \
+      < <(git -C "$pins_repo_dir" config --get-all dvc-router.force-dvc 2>/dev/null || true)
+    while IFS= read -r line; do [[ -n "$line" ]] && git_pins+=("$line"); done \
+      < <(git -C "$pins_repo_dir" config --get-all dvc-router.force-git 2>/dev/null || true)
     if (( ${#dvc_pins[@]} > 0 || ${#git_pins[@]} > 0 )); then
       echo ""
       printf "  Pinned:\n"
