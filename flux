@@ -109,6 +109,14 @@ _flux_registry_delete() {
   mv "$tmp" "$reg"
 }
 
+# Read per-project size cap: .dvc/config (shared via git) → git config (legacy) → ""
+_flux_cap_read() {
+  local v
+  v=$(git config --file .dvc/config --get flux.size-cap-mb 2>/dev/null || true)
+  [[ -n "$v" ]] && { echo "$v"; return; }
+  git config --get dvc-router.size-cap-mb 2>/dev/null || true
+}
+
 _flux_format_size() {
   local bytes=$1
   if   (( bytes >= 1024*1024 )); then printf '%d MB' $(( bytes / 1024 / 1024 ))
@@ -1208,13 +1216,15 @@ _flux_add() {
   ok "DVC remote ${remote_verb}: s3://${chosen_bucket}/${FLUX_R2_FOLDER}"
 
   local existing_project_cap
-  existing_project_cap=$(git config --get dvc-router.size-cap-mb 2>/dev/null || true)
+  existing_project_cap=$(_flux_cap_read)
   if [[ -z "$existing_project_cap" ]]; then
-    git config dvc-router.size-cap-mb "$cap"
-    _flux_registry_write git_config dvc-router.size-cap-mb
+    git config --file .dvc/config flux.size-cap-mb "$cap"
   else
     cap="$existing_project_cap"
+    git config --file .dvc/config flux.size-cap-mb "$cap"
   fi
+  # Migrate legacy location if present
+  git config --unset dvc-router.size-cap-mb 2>/dev/null || true
   git config dvc-router.verbose      "$verbose"
   git config flux.r2-folder          "$FLUX_R2_FOLDER"
   git config flux.dvc-remote-bucket  "$chosen_bucket"
@@ -1389,6 +1399,12 @@ _flux_remove_git() {
     fi
   else
     warn "No pre-commit hook found."
+  fi
+
+  # Remove per-project cap from .dvc/config (shared location)
+  if [[ -f ".dvc/config" ]]; then
+    git config --file .dvc/config --unset flux.size-cap-mb 2>/dev/null || true
+    git add .dvc/config 2>/dev/null || true
   fi
 
   local -a keys=()
@@ -2071,7 +2087,8 @@ _flux_dry_run() {
   clear 2>/dev/null || true
 
   local SIZE_CAP_MB SIZE_CAP_BYTES
-  SIZE_CAP_MB=$(git config --get dvc-router.size-cap-mb 2>/dev/null || echo "5")
+  SIZE_CAP_MB=$(_flux_cap_read)
+  SIZE_CAP_MB="${SIZE_CAP_MB:-${FLUX_SIZE_CAP_MB:-5}}"
   SIZE_CAP_BYTES=$(( SIZE_CAP_MB * 1024 * 1024 ))
 
   local -a FORCE_DVC_DIRS=() FORCE_GIT_DIRS=()
@@ -2336,7 +2353,7 @@ _flux_cap() {
 
   local global_cap="${FLUX_SIZE_CAP_MB:-5}"
   local project_cap
-  project_cap=$(git config --get dvc-router.size-cap-mb 2>/dev/null || true)
+  project_cap=$(_flux_cap_read)
 
   local arg="${1:-}"
 
@@ -2356,7 +2373,9 @@ _flux_cap() {
   fi
 
   if [[ "$arg" == "--reset" ]]; then
-    git config --unset dvc-router.size-cap-mb 2>/dev/null || true
+    git config --file .dvc/config --unset flux.size-cap-mb 2>/dev/null || true
+    git config --unset dvc-router.size-cap-mb 2>/dev/null || true  # clean legacy location
+    [[ -f ".dvc/config" ]] && git add .dvc/config 2>/dev/null || true
     ok "Per-project cap removed — global default (${global_cap} MB) is now active."
     return 0
   fi
@@ -2365,12 +2384,13 @@ _flux_cap() {
     fail "Invalid value '${arg}' — provide a positive integer (MB), e.g.: flux cap 20"
   fi
 
-  git config dvc-router.size-cap-mb "$arg"
-  ok "Per-project cap set to ${arg} MB."
-  if [[ ! -d ".dvc" ]]; then
-    ok "Will take effect when 'flux add' initialises this project."
+  if [[ -d ".dvc" ]]; then
+    git config --file .dvc/config flux.size-cap-mb "$arg"
+    git add .dvc/config 2>/dev/null || true
+    ok "Per-project cap set to ${arg} MB (stored in .dvc/config — commit to share across machines)."
   else
-    ok "Takes effect on the next commit."
+    git config dvc-router.size-cap-mb "$arg"
+    ok "Per-project cap set to ${arg} MB (will move to .dvc/config when 'flux add' initialises this project)."
   fi
 }
 
@@ -2637,7 +2657,8 @@ _flux_list() {
     fi
     [[ -n "$bucket" ]] && dvc_remote="${bucket}/${dvc_folder}" || dvc_remote="-"
 
-    cap="$(git -C "$repo_dir" config --get dvc-router.size-cap-mb 2>/dev/null || echo "5")"
+    cap="$(git config --file "$repo_dir/.dvc/config" --get flux.size-cap-mb 2>/dev/null || \
+           git -C "$repo_dir" config --get dvc-router.size-cap-mb 2>/dev/null || echo "5")"
     git_remote="$(git -C "$repo_dir" remote get-url origin 2>/dev/null || echo "-")"
 
     if [[ "$repo_dir" == "$base_dir" ]]; then
@@ -2794,22 +2815,21 @@ _flux_clone() {
   (cd "$target_dir" && _flux_apply_dvc_profile "$DVC")
 
   # Step 6: write git config and registry
-  local cap verbose
+  local verbose
   if [[ -f "$FLUX_CONFIG" ]]; then
     # shellcheck source=/dev/null
     source "$FLUX_CONFIG" 2>/dev/null || true
   fi
-  cap="${FLUX_SIZE_CAP_MB:-5}"
   verbose="${FLUX_VERBOSE:-false}"
 
-  git -C "$target_dir" config dvc-router.size-cap-mb "$cap"
+  # Cap lives in committed .dvc/config (flux.size-cap-mb); clean legacy location if present.
+  git -C "$target_dir" config --unset dvc-router.size-cap-mb 2>/dev/null || true
   git -C "$target_dir" config dvc-router.verbose      "$verbose"
   git -C "$target_dir" config flux.r2-folder          "$r2_folder"
   git -C "$target_dir" config flux.dvc-remote-bucket  "$bucket"
 
   {
     echo "dvc_remote:r2remote"
-    echo "git_config:dvc-router.size-cap-mb"
     echo "git_config:dvc-router.verbose"
     echo "git_config:flux.r2-folder"
     echo "git_config:flux.dvc-remote-bucket"

@@ -572,10 +572,21 @@ EOF
   [[ "$output" == *"← active"* ]]
 }
 
-@test "flux cap N sets the per-project cap in git config" {
+@test "flux cap N writes to git config when .dvc not yet initialised" {
   run bash "$REPO_ROOT/flux" cap 20
   [ "$status" -eq 0 ]
   [ "$(git config --get dvc-router.size-cap-mb)" = "20" ]
+}
+
+@test "flux cap N writes to .dvc/config when .dvc exists" {
+  mkdir -p .dvc
+  printf '[core]\n    remote = r2remote\n' > .dvc/config
+  run bash "$REPO_ROOT/flux" cap 20
+  [ "$status" -eq 0 ]
+  [ "$(git config --file .dvc/config --get flux.size-cap-mb)" = "20" ]
+  # legacy git config key must NOT be set
+  run git config --get dvc-router.size-cap-mb
+  [ "$status" -ne 0 ]
 }
 
 @test "flux cap --reset removes the per-project override" {
@@ -613,7 +624,11 @@ EOF
   run bash "$REPO_ROOT/flux" add
   [ "$status" -eq 0 ]
 
-  [ "$(git config --get dvc-router.size-cap-mb)" = "20" ]
+  # Cap moves from git config to .dvc/config during flux add
+  [ "$(git config --file .dvc/config --get flux.size-cap-mb)" = "20" ]
+  # Legacy git config key must have been cleaned up
+  run git config --get dvc-router.size-cap-mb
+  [ "$status" -ne 0 ]
 }
 
 # ---------------------------------------------------------------------------
