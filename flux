@@ -1253,7 +1253,7 @@ _flux_add() {
   _flux_registry_write git_config flux.dvc-remote-bucket
 
   touch .gitignore
-  for entry in ".dvc/config.local" ".dvc/tmp/" ".dvc/cache/"; do
+  for entry in ".dvc/config.local" ".dvc/tmp/" ".dvc/cache/" ".DS_Store"; do
     if ! grep -qF "$entry" .gitignore; then
       echo "$entry" >> .gitignore
     fi
@@ -1829,7 +1829,7 @@ _flux_sync() {
   local _dvc_out
   _flux_spin_start "pulling DVC data..."
   _dvc_out=$(mktemp)
-  if "$DVC" pull --quiet &>"$_dvc_out"; then
+  if "$DVC" pull --force --quiet &>"$_dvc_out"; then
     _flux_spin_stop; ok "Pulled DVC data from R2."
   elif grep -qiE 'AccessDenied|Access Denied' "$_dvc_out" 2>/dev/null; then
     _flux_spin_stop; warn "DVC pull failed — access denied. Check R2 API token permissions (Admin Read & Write required)."
