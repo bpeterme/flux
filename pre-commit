@@ -83,12 +83,12 @@ warn() {
   echo "[dvc-router] WARNING: $*" >&2
 }
 
-# Returns 0 if FILE's path starts with any directory in the named array.
+# Returns 0 if FILE's path starts with any of the given directory entries.
 # Handles both "data" and "data/" stored forms. "." matches all files.
 _in_dir_override() {
-  local file="$1"; local -n _dirs=$2
+  local file="$1"; shift
   local dir
-  for dir in "${_dirs[@]+"${_dirs[@]}"}"; do
+  for dir in "$@"; do
     [[ "$dir" == "." ]] && return 0
     local prefix="${dir%/}/"
     [[ "$file" == "$prefix"* || "$file" == "${dir%/}" ]] && return 0
@@ -277,8 +277,8 @@ migrate_dvc_to_git() {
     info "Migrating DVC → Git (now $(( file_size / 1024 )) KB, below ${SIZE_CAP_MB} MB cap): $target_abs"
 
     # dvc remove deletes the .dvc pointer and removes the entry from .gitignore
-    # --keep-outs ensures the actual file is NOT deleted from disk
-    "$DVC" remove "$dvc_file" --keep-outs --quiet 2>/dev/null || {
+    # default dvc remove keeps outputs on disk; --outs would delete them
+    "$DVC" remove "$dvc_file" --quiet &>/dev/null || {
       warn "  dvc remove failed for $dvc_file — skipping migration"
       continue
     }
@@ -409,11 +409,11 @@ while IFS= read -r file; do
   # ------------------------------------------------------------------
   # Routing decision — directory pins take priority over size/binary
   # ------------------------------------------------------------------
-  if _in_dir_override "$file" FORCE_DVC_DIRS; then
+  if _in_dir_override "$file" "${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}"; then
     log "Pinned → DVC: $file"
     route="dvc"
     pin_overridden=$(( pin_overridden + 1 ))
-  elif _in_dir_override "$file" FORCE_GIT_DIRS; then
+  elif _in_dir_override "$file" "${FORCE_GIT_DIRS[@]+"${FORCE_GIT_DIRS[@]}"}"; then
     log "Pinned → Git: $file"
     route="git"
     pin_overridden=$(( pin_overridden + 1 ))
