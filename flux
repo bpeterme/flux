@@ -116,7 +116,7 @@ _flux_registry_delete() {
 _flux_dvc_config_read() {
   local key="$1" file="${2:-.dvc/flux}"  # key = "flux.size-cap-mb"
   local section="${key%%.*}" option="${key#*.}"
-  [[ -f "$file" ]] || return 0
+  [[ -f "$file" ]] || return 1
   local in_sec=false
   while IFS= read -r _line; do
     if [[ "$_line" =~ ^\["$section"\] ]]; then
@@ -128,6 +128,7 @@ _flux_dvc_config_read() {
       return 0
     fi
   done < "$file"
+  return 1
 }
 
 _flux_dvc_config_write() {

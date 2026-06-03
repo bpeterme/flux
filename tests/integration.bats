@@ -804,6 +804,14 @@ EOF
   [[ "$output" == *"20 MB"* ]]
 }
 
+@test "flux list defaults to 5 MB cap when no .dvc/flux file exists" {
+  make_flux_repo "$TEST_REPO/nocap" "nocap-data" "bucket"
+  rm "$TEST_REPO/nocap/.dvc/flux"
+  run bash "$REPO_ROOT/flux" list
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"5 MB"* ]]
+}
+
 @test "flux list falls back to .dvc/config when flux.dvc-remote-bucket is missing" {
   make_flux_repo "$TEST_REPO/legacy" "legacy-data" "legacy-bucket"
   git -C "$TEST_REPO/legacy" config --unset flux.dvc-remote-bucket
