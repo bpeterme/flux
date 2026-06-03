@@ -1403,7 +1403,6 @@ _flux_add() {
 
 _flux_remove_git() {
   git rev-parse --git-dir &>/dev/null || fail "Not inside a Git repository."
-  clear 2>/dev/null || true
 
   local HOOKS_DIR
   HOOKS_DIR="$(git rev-parse --git-dir)/hooks"
@@ -1585,15 +1584,10 @@ _flux_remove_dvc() {
     ok "Removed ${#dvcignores[@]} .dvcignore file(s)."
   fi
 
-  # Remove .dvc/ directory only if flux created it
-  if [[ "$(_flux_registry_read dvc_initialized)" == "true" ]]; then
-    git rm -r --cached -q .dvc/ 2>/dev/null || true
-    rm -rf .dvc/
-    _flux_registry_delete dvc_initialized true
-    ok ".dvc/ directory removed."
-  else
-    warn ".dvc/ was not created by flux — leaving directory in place."
-  fi
+  git rm -r --cached -q .dvc/ 2>/dev/null || true
+  rm -rf .dvc/
+  _flux_registry_delete dvc_initialized true
+  ok ".dvc/ directory removed."
 
   # Clean flux-written .gitignore entries
   if [[ -f ".gitignore" ]]; then

@@ -113,14 +113,12 @@ teardown() { teardown_flux_test; }
   ! grep -q "dvc_initialized" .git/flux-registry
 }
 
-@test "flux remove dvc does not remove pre-existing .dvc directory" {
-  # Create .dvc before flux add so flux does not own it.
-  mkdir -p .dvc && printf '' > .dvc/config
+@test "flux remove dvc does not remove .dvc directory that has non-flux remotes" {
+  # Simulate a DVC setup with a non-flux remote — flux should refuse to remove.
   bash "$REPO_ROOT/flux" add
-  # flux-registry must not have dvc_initialized (asserted above),
-  # so flux remove dvc should leave .dvc/ intact.
+  printf '\n[remote "other"]\n    url = s3://some-other-bucket/path\n' >> .dvc/config
   run bash "$REPO_ROOT/flux" remove dvc
-  [ "$status" -eq 0 ]
+  [ "$status" -ne 0 ]
   [ -d ".dvc" ]
 }
 
