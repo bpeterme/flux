@@ -109,12 +109,12 @@ _flux_registry_delete() {
   mv "$tmp" "$reg"
 }
 
-# Read/write the [flux] section in .dvc/config without using git-config.
-# DVC 3.x writes ['remote "name"'] subsections that git-config cannot parse,
-# so any git-config --file .dvc/config call fails on those repos.
+# Read/write flux config from .dvc/flux — a separate committed file that DVC
+# never reads.  Storing in .dvc/config caused DVC to reject the commit with
+# "extra keys not allowed" because DVC validates its own config schema.
 
 _flux_dvc_config_read() {
-  local key="$1" file="${2:-.dvc/config}"  # key = "flux.size-cap-mb"
+  local key="$1" file="${2:-.dvc/flux}"  # key = "flux.size-cap-mb"
   local section="${key%%.*}" option="${key#*.}"
   [[ -f "$file" ]] || return 0
   local in_sec=false
@@ -131,9 +131,9 @@ _flux_dvc_config_read() {
 }
 
 _flux_dvc_config_write() {
-  local key="$1" value="$2" file="${3:-.dvc/config}"
+  local key="$1" value="$2" file="${3:-.dvc/flux}"
   local section="${key%%.*}" option="${key#*.}"
-  [[ -f "$file" ]] || return 1
+  [[ -f "$file" ]] || touch "$file"
   local tmp; tmp=$(mktemp)
   local in_sec=false replaced=false
   while IFS= read -r _line || [[ -n "$_line" ]]; do
@@ -157,7 +157,7 @@ _flux_dvc_config_write() {
 }
 
 _flux_dvc_config_unset() {
-  local key="$1" file="${2:-.dvc/config}"
+  local key="$1" file="${2:-.dvc/flux}"
   local section="${key%%.*}" option="${key#*.}"
   [[ -f "$file" ]] || return 0
   local tmp; tmp=$(mktemp)
@@ -176,10 +176,13 @@ _flux_dvc_config_unset() {
   mv "$tmp" "$file"
 }
 
-# Read per-project size cap: .dvc/config (shared via git) → git config (legacy) → ""
+# Read per-project size cap: .dvc/flux → .dvc/config (legacy) → git config (legacy) → ""
 _flux_cap_read() {
   local v
   v=$(_flux_dvc_config_read flux.size-cap-mb 2>/dev/null || true)
+  [[ -n "$v" ]] && { echo "$v"; return; }
+  # Legacy: flux used to store cap in .dvc/config (rejected by DVC 3.x schema)
+  v=$(_flux_dvc_config_read flux.size-cap-mb .dvc/config 2>/dev/null || true)
   [[ -n "$v" ]] && { echo "$v"; return; }
   git config --get dvc-router.size-cap-mb 2>/dev/null || true
 }
@@ -1310,7 +1313,8 @@ _flux_add() {
     cap="$existing_project_cap"
     _flux_dvc_config_write flux.size-cap-mb "$cap"
   fi
-  # Migrate legacy location if present
+  git add .dvc/flux 2>/dev/null || true
+  # Migrate legacy locations if present
   git config --unset dvc-router.size-cap-mb 2>/dev/null || true
   git config dvc-router.verbose      "$verbose"
   git config flux.r2-folder          "$FLUX_R2_FOLDER"
@@ -1487,11 +1491,9 @@ _flux_remove_git() {
     warn "No pre-commit hook found."
   fi
 
-  # Remove per-project cap from .dvc/config (shared location)
-  if [[ -f ".dvc/config" ]]; then
-    _flux_dvc_config_unset flux.size-cap-mb 2>/dev/null || true
-    git add .dvc/config 2>/dev/null || true
-  fi
+  # Remove per-project cap from .dvc/flux
+  rm -f .dvc/flux
+  git rm --cached .dvc/flux 2>/dev/null || true
 
   local -a keys=()
   while IFS= read -r line; do [[ -n "$line" ]] && keys+=("$line"); done \
@@ -2459,9 +2461,9 @@ _flux_cap() {
   fi
 
   if [[ "$arg" == "--reset" ]]; then
-    _flux_dvc_config_unset flux.size-cap-mb 2>/dev/null || true
+    rm -f .dvc/flux
+    git rm --cached .dvc/flux 2>/dev/null || true
     git config --unset dvc-router.size-cap-mb 2>/dev/null || true  # clean legacy location
-    [[ -f ".dvc/config" ]] && git add .dvc/config 2>/dev/null || true
     ok "Per-project cap removed — global default (${global_cap} MB) is now active."
     return 0
   fi
@@ -2472,8 +2474,8 @@ _flux_cap() {
 
   if [[ -d ".dvc" ]]; then
     _flux_dvc_config_write flux.size-cap-mb "$arg"
-    git add .dvc/config 2>/dev/null || true
-    ok "Per-project cap set to ${arg} MB (stored in .dvc/config — commit to share across machines)."
+    git add .dvc/flux 2>/dev/null || true
+    ok "Per-project cap set to ${arg} MB (stored in .dvc/flux — commit to share across machines)."
   else
     git config dvc-router.size-cap-mb "$arg"
     ok "Per-project cap set to ${arg} MB (will move to .dvc/config when 'flux add' initialises this project)."
@@ -2743,7 +2745,8 @@ _flux_list() {
     fi
     [[ -n "$bucket" ]] && dvc_remote="${bucket}/${dvc_folder}" || dvc_remote="-"
 
-    cap="$(_flux_dvc_config_read flux.size-cap-mb "$repo_dir/.dvc/config" 2>/dev/null || \
+    cap="$(_flux_dvc_config_read flux.size-cap-mb "$repo_dir/.dvc/flux" 2>/dev/null || \
+           _flux_dvc_config_read flux.size-cap-mb "$repo_dir/.dvc/config" 2>/dev/null || \
            git -C "$repo_dir" config --get dvc-router.size-cap-mb 2>/dev/null || echo "5")"
     git_remote="$(git -C "$repo_dir" remote get-url origin 2>/dev/null || echo "-")"
 

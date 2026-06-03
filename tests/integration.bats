@@ -575,12 +575,12 @@ EOF
   [ "$(git config --get dvc-router.size-cap-mb)" = "20" ]
 }
 
-@test "flux cap N writes to .dvc/config when .dvc exists" {
+@test "flux cap N writes to .dvc/flux when .dvc exists" {
   mkdir -p .dvc
   printf '[core]\n    remote = r2remote\n' > .dvc/config
   run bash "$REPO_ROOT/flux" cap 20
   [ "$status" -eq 0 ]
-  [ "$(git config --file .dvc/config --get flux.size-cap-mb)" = "20" ]
+  grep -q "size-cap-mb = 20" .dvc/flux
   # legacy git config key must NOT be set
   run git config --get dvc-router.size-cap-mb
   [ "$status" -ne 0 ]
@@ -621,8 +621,8 @@ EOF
   run bash "$REPO_ROOT/flux" add
   [ "$status" -eq 0 ]
 
-  # Cap moves from git config to .dvc/config during flux add
-  [ "$(git config --file .dvc/config --get flux.size-cap-mb)" = "20" ]
+  # Cap moves from git config to .dvc/flux during flux add
+  grep -q "size-cap-mb = 20" .dvc/flux
   # Legacy git config key must have been cleaned up
   run git config --get dvc-router.size-cap-mb
   [ "$status" -ne 0 ]
