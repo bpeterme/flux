@@ -2302,10 +2302,8 @@ _flux_dry_run() {
   local _leg_git=$(( ${#_H_TEXT_GIT[@]} + _pin_git_n ))
   local _leg_dvc=$(( ${#_H_TEXT_DVC[@]} + _pin_dvc_n + _bin_n ))
   echo ""
-  (( _leg_git > 0 ) || ( _leg_dvc > 0 )) && {
-    (( _leg_git > 0 )) && printf "  ░ → Git\n"
-    (( _leg_dvc > 0 )) && printf "  █ → DVC\n"
-  }
+  (( _leg_git > 0 )) && printf "  ░ → Git\n"
+  (( _leg_dvc > 0 )) && printf "  █ → DVC\n"
 
   if (( ${#FORCE_DVC_DIRS[@]} > 0 || ${#FORCE_GIT_DIRS[@]} > 0 )); then
     echo ""
