@@ -1099,6 +1099,26 @@ _flux_add() {
     [[ -n "$_bucket"    ]] && echo "  DVC bucket:  ${_bucket}"
     echo "  Git remote:  ${_remote}"
     echo ""
+
+    # Always refresh the pre-commit hook so 'flux add' picks up new hook
+    # versions without requiring 'flux remove' (which would wipe directory pins).
+    local _HOOKS_DIR _script_dir _HOOK_SOURCE
+    _HOOKS_DIR="$(git rev-parse --git-dir)/hooks"
+    _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    _HOOK_SOURCE="${_script_dir}/../share/flux/pre-commit"
+    [[ -f "$_HOOK_SOURCE" ]] || _HOOK_SOURCE="${_script_dir}/pre-commit"
+    if [[ -f "$_HOOK_SOURCE" ]]; then
+      if [[ -f "${_HOOKS_DIR}/pre-commit" ]] && grep -q 'dvc-router\|flux' "${_HOOKS_DIR}/pre-commit" 2>/dev/null; then
+        cp "$_HOOK_SOURCE" "${_HOOKS_DIR}/pre-commit"
+        chmod +x "${_HOOKS_DIR}/pre-commit"
+        ok "Pre-commit hook updated."
+      elif [[ ! -f "${_HOOKS_DIR}/pre-commit" ]]; then
+        cp "$_HOOK_SOURCE" "${_HOOKS_DIR}/pre-commit"
+        chmod +x "${_HOOKS_DIR}/pre-commit"
+        ok "Pre-commit hook installed."
+      fi
+    fi
+
     _flux_subrepo_sync
     if [[ "${FLUX_SUBREPO_CHANGED}" == "true" ]]; then
       git add -A 2>/dev/null || true
