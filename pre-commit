@@ -61,8 +61,10 @@ SIZE_CAP_BYTES=$(( SIZE_CAP_MB * 1024 * 1024 ))
 VERBOSE=$(git config --get dvc-router.verbose 2>/dev/null || echo "false")
 
 # Directory pins — multi-value git config; empty array when key is absent
-mapfile -t FORCE_DVC_DIRS < <(git config --get-all dvc-router.force-dvc 2>/dev/null || true)
-mapfile -t FORCE_GIT_DIRS < <(git config --get-all dvc-router.force-git 2>/dev/null || true)
+FORCE_DVC_DIRS=()
+while IFS= read -r _line; do FORCE_DVC_DIRS+=("$_line"); done < <(git config --get-all dvc-router.force-dvc 2>/dev/null || true)
+FORCE_GIT_DIRS=()
+while IFS= read -r _line; do FORCE_GIT_DIRS+=("$_line"); done < <(git config --get-all dvc-router.force-git 2>/dev/null || true)
 
 # ---------------------------------------------------------------------------
 # Helpers
