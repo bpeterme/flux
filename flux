@@ -109,10 +109,77 @@ _flux_registry_delete() {
   mv "$tmp" "$reg"
 }
 
+# Read/write the [flux] section in .dvc/config without using git-config.
+# DVC 3.x writes ['remote "name"'] subsections that git-config cannot parse,
+# so any git-config --file .dvc/config call fails on those repos.
+
+_flux_dvc_config_read() {
+  local key="$1" file="${2:-.dvc/config}"  # key = "flux.size-cap-mb"
+  local section="${key%%.*}" option="${key#*.}"
+  [[ -f "$file" ]] || return 0
+  local in_sec=false
+  while IFS= read -r _line; do
+    if [[ "$_line" =~ ^\["$section"\] ]]; then
+      in_sec=true
+    elif [[ "$_line" =~ ^\[ ]]; then
+      in_sec=false
+    elif [[ "$in_sec" == true && "$_line" =~ ^[[:space:]]*"$option"[[:space:]]*=[[:space:]]*(.*) ]]; then
+      echo "${BASH_REMATCH[1]}"
+      return 0
+    fi
+  done < "$file"
+}
+
+_flux_dvc_config_write() {
+  local key="$1" value="$2" file="${3:-.dvc/config}"
+  local section="${key%%.*}" option="${key#*.}"
+  [[ -f "$file" ]] || return 1
+  local tmp; tmp=$(mktemp)
+  local in_sec=false replaced=false
+  while IFS= read -r _line || [[ -n "$_line" ]]; do
+    if [[ "$_line" =~ ^\["$section"\] ]]; then
+      in_sec=true; replaced=false
+      printf '%s\n' "$_line" >> "$tmp"
+    elif [[ "$in_sec" == true && "$_line" =~ ^\[ ]]; then
+      [[ "$replaced" == false ]] && printf '    %s = %s\n' "$option" "$value" >> "$tmp" && replaced=true
+      in_sec=false
+      printf '%s\n' "$_line" >> "$tmp"
+    elif [[ "$in_sec" == true && "$_line" =~ ^[[:space:]]*"$option"[[:space:]]*= ]]; then
+      printf '    %s = %s\n' "$option" "$value" >> "$tmp"
+      replaced=true
+    else
+      printf '%s\n' "$_line" >> "$tmp"
+    fi
+  done < "$file"
+  [[ "$in_sec" == true && "$replaced" == false ]] && printf '    %s = %s\n' "$option" "$value" >> "$tmp"
+  [[ "$replaced" == false && "$in_sec" == false ]] && printf '\n[%s]\n    %s = %s\n' "$section" "$option" "$value" >> "$tmp"
+  mv "$tmp" "$file"
+}
+
+_flux_dvc_config_unset() {
+  local key="$1" file="${2:-.dvc/config}"
+  local section="${key%%.*}" option="${key#*.}"
+  [[ -f "$file" ]] || return 0
+  local tmp; tmp=$(mktemp)
+  local in_sec=false
+  while IFS= read -r _line || [[ -n "$_line" ]]; do
+    if [[ "$_line" =~ ^\["$section"\] ]]; then
+      in_sec=true; printf '%s\n' "$_line" >> "$tmp"
+    elif [[ "$_line" =~ ^\[ ]]; then
+      in_sec=false; printf '%s\n' "$_line" >> "$tmp"
+    elif [[ "$in_sec" == true && "$_line" =~ ^[[:space:]]*"$option"[[:space:]]*= ]]; then
+      true  # drop this line
+    else
+      printf '%s\n' "$_line" >> "$tmp"
+    fi
+  done < "$file"
+  mv "$tmp" "$file"
+}
+
 # Read per-project size cap: .dvc/config (shared via git) → git config (legacy) → ""
 _flux_cap_read() {
   local v
-  v=$(git config --file .dvc/config --get flux.size-cap-mb 2>/dev/null || true)
+  v=$(_flux_dvc_config_read flux.size-cap-mb 2>/dev/null || true)
   [[ -n "$v" ]] && { echo "$v"; return; }
   git config --get dvc-router.size-cap-mb 2>/dev/null || true
 }
@@ -1238,10 +1305,10 @@ _flux_add() {
   local existing_project_cap
   existing_project_cap=$(_flux_cap_read)
   if [[ -z "$existing_project_cap" ]]; then
-    git config --file .dvc/config flux.size-cap-mb "$cap"
+    _flux_dvc_config_write flux.size-cap-mb "$cap"
   else
     cap="$existing_project_cap"
-    git config --file .dvc/config flux.size-cap-mb "$cap"
+    _flux_dvc_config_write flux.size-cap-mb "$cap"
   fi
   # Migrate legacy location if present
   git config --unset dvc-router.size-cap-mb 2>/dev/null || true
@@ -1422,7 +1489,7 @@ _flux_remove_git() {
 
   # Remove per-project cap from .dvc/config (shared location)
   if [[ -f ".dvc/config" ]]; then
-    git config --file .dvc/config --unset flux.size-cap-mb 2>/dev/null || true
+    _flux_dvc_config_unset flux.size-cap-mb 2>/dev/null || true
     git add .dvc/config 2>/dev/null || true
   fi
 
@@ -2392,7 +2459,7 @@ _flux_cap() {
   fi
 
   if [[ "$arg" == "--reset" ]]; then
-    git config --file .dvc/config --unset flux.size-cap-mb 2>/dev/null || true
+    _flux_dvc_config_unset flux.size-cap-mb 2>/dev/null || true
     git config --unset dvc-router.size-cap-mb 2>/dev/null || true  # clean legacy location
     [[ -f ".dvc/config" ]] && git add .dvc/config 2>/dev/null || true
     ok "Per-project cap removed — global default (${global_cap} MB) is now active."
@@ -2404,7 +2471,7 @@ _flux_cap() {
   fi
 
   if [[ -d ".dvc" ]]; then
-    git config --file .dvc/config flux.size-cap-mb "$arg"
+    _flux_dvc_config_write flux.size-cap-mb "$arg"
     git add .dvc/config 2>/dev/null || true
     ok "Per-project cap set to ${arg} MB (stored in .dvc/config — commit to share across machines)."
   else
@@ -2676,7 +2743,7 @@ _flux_list() {
     fi
     [[ -n "$bucket" ]] && dvc_remote="${bucket}/${dvc_folder}" || dvc_remote="-"
 
-    cap="$(git config --file "$repo_dir/.dvc/config" --get flux.size-cap-mb 2>/dev/null || \
+    cap="$(_flux_dvc_config_read flux.size-cap-mb "$repo_dir/.dvc/config" 2>/dev/null || \
            git -C "$repo_dir" config --get dvc-router.size-cap-mb 2>/dev/null || echo "5")"
     git_remote="$(git -C "$repo_dir" remote get-url origin 2>/dev/null || echo "-")"
 
