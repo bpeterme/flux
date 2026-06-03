@@ -2302,8 +2302,21 @@ _flux_dry_run() {
   local _leg_git=$(( ${#_H_TEXT_GIT[@]} + _pin_git_n ))
   local _leg_dvc=$(( ${#_H_TEXT_DVC[@]} + _pin_dvc_n + _bin_n ))
   echo ""
-  (( _leg_git > 0 )) && printf "  ░ → Git\n"
-  (( _leg_dvc > 0 )) && printf "  █ → DVC\n"
+  (( _leg_git > 0 ) || ( _leg_dvc > 0 )) && {
+    (( _leg_git > 0 )) && printf "  ░ → Git\n"
+    (( _leg_dvc > 0 )) && printf "  █ → DVC\n"
+  }
+
+  if (( ${#FORCE_DVC_DIRS[@]} > 0 || ${#FORCE_GIT_DIRS[@]} > 0 )); then
+    echo ""
+    printf "  Pinned directories:\n"
+    for _pd in "${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}"; do
+      printf "    ✦  %-24s → DVC\n" "$_pd"
+    done
+    for _pd in "${FORCE_GIT_DIRS[@]+"${FORCE_GIT_DIRS[@]}"}"; do
+      printf "    ·  %-24s → Git\n" "$_pd"
+    done
+  fi
 
   local show_details=false
   if [[ -t 0 && -t 1 ]]; then
