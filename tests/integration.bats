@@ -1025,18 +1025,18 @@ EOF
   rm -rf "$no_git"
 }
 
-@test "flux pin dvc from subdirectory stores relative path in force-dvc" {
+@test "flux pin dvc from subdirectory stores relative path in .dvc/flux" {
   mkdir -p data
   run bash -c "cd '$TEST_REPO/data' && HOME='$MOCK_HOME' XDG_CONFIG_HOME='$MOCK_HOME/.config' MOCK_KEYCHAIN_DIR='$MOCK_KEYCHAIN_DIR' PATH='$PATH' bash '$REPO_ROOT/flux' pin dvc"
   [ "$status" -eq 0 ]
-  [ "$(git config --get dvc-router.force-dvc)" = "data" ]
+  grep -q 'pin-dvc = data' "$TEST_REPO/.dvc/flux"
 }
 
-@test "flux pin git from subdirectory stores relative path in force-git" {
+@test "flux pin git from subdirectory stores relative path in .dvc/flux" {
   mkdir -p docs
   run bash -c "cd '$TEST_REPO/docs' && HOME='$MOCK_HOME' XDG_CONFIG_HOME='$MOCK_HOME/.config' MOCK_KEYCHAIN_DIR='$MOCK_KEYCHAIN_DIR' PATH='$PATH' bash '$REPO_ROOT/flux' pin git"
   [ "$status" -eq 0 ]
-  [ "$(git config --get dvc-router.force-git)" = "docs" ]
+  grep -q 'pin-git = docs' "$TEST_REPO/.dvc/flux"
 }
 
 @test "flux pin dvc removes path from force-git (mutual exclusion)" {
@@ -1044,7 +1044,7 @@ EOF
   git config --add dvc-router.force-git "data"
   run bash -c "cd '$TEST_REPO/data' && HOME='$MOCK_HOME' XDG_CONFIG_HOME='$MOCK_HOME/.config' MOCK_KEYCHAIN_DIR='$MOCK_KEYCHAIN_DIR' PATH='$PATH' bash '$REPO_ROOT/flux' pin dvc"
   [ "$status" -eq 0 ]
-  [ "$(git config --get dvc-router.force-dvc)" = "data" ]
+  grep -q 'pin-dvc = data' "$TEST_REPO/.dvc/flux"
   run git config --get dvc-router.force-git
   [ "$status" -ne 0 ]
 }
@@ -1054,7 +1054,7 @@ EOF
   git config --add dvc-router.force-dvc "docs"
   run bash -c "cd '$TEST_REPO/docs' && HOME='$MOCK_HOME' XDG_CONFIG_HOME='$MOCK_HOME/.config' MOCK_KEYCHAIN_DIR='$MOCK_KEYCHAIN_DIR' PATH='$PATH' bash '$REPO_ROOT/flux' pin git"
   [ "$status" -eq 0 ]
-  [ "$(git config --get dvc-router.force-git)" = "docs" ]
+  grep -q 'pin-git = docs' "$TEST_REPO/.dvc/flux"
   run git config --get dvc-router.force-dvc
   [ "$status" -ne 0 ]
 }
@@ -1092,7 +1092,7 @@ EOF
 @test "flux pin dvc from git root stores dot" {
   run bash "$REPO_ROOT/flux" pin dvc
   [ "$status" -eq 0 ]
-  [ "$(git config --get dvc-router.force-dvc)" = "." ]
+  grep -q 'pin-dvc = \.' "$TEST_REPO/.dvc/flux"
 }
 
 @test "flux pin is idempotent — repeated calls do not add duplicate entries" {
@@ -1100,7 +1100,7 @@ EOF
   bash -c "cd '$TEST_REPO/data' && HOME='$MOCK_HOME' XDG_CONFIG_HOME='$MOCK_HOME/.config' MOCK_KEYCHAIN_DIR='$MOCK_KEYCHAIN_DIR' PATH='$PATH' bash '$REPO_ROOT/flux' pin dvc"
   bash -c "cd '$TEST_REPO/data' && HOME='$MOCK_HOME' XDG_CONFIG_HOME='$MOCK_HOME/.config' MOCK_KEYCHAIN_DIR='$MOCK_KEYCHAIN_DIR' PATH='$PATH' bash '$REPO_ROOT/flux' pin dvc"
   local count
-  count=$(git config --get-all dvc-router.force-dvc | wc -l | tr -d ' ')
+  count=$(grep -c 'pin-dvc = data' "$TEST_REPO/.dvc/flux" 2>/dev/null || echo 0)
   [ "$count" -eq 1 ]
 }
 

@@ -176,6 +176,77 @@ _flux_dvc_config_unset() {
   mv "$tmp" "$file"
 }
 
+# Read all values for a multi-value key (e.g. flux.pin-dvc may appear multiple times).
+_flux_dvc_config_read_all() {
+  local key="$1" file="${2:-.dvc/flux}"
+  local section="${key%%.*}" option="${key#*.}"
+  [[ -f "$file" ]] || return 0
+  local in_sec=false
+  while IFS= read -r _line; do
+    if [[ "$_line" =~ ^\["$section"\] ]]; then
+      in_sec=true
+    elif [[ "$_line" =~ ^\[ ]]; then
+      in_sec=false
+    elif [[ "$in_sec" == true && "$_line" =~ ^[[:space:]]*"$option"[[:space:]]*=[[:space:]]*(.*) ]]; then
+      echo "${BASH_REMATCH[1]}"
+    fi
+  done < "$file"
+}
+
+# Append one value for a key without touching existing values (multi-value support).
+_flux_dvc_config_add() {
+  local key="$1" value="$2" file="${3:-.dvc/flux}"
+  local section="${key%%.*}" option="${key#*.}"
+  mkdir -p "$(dirname "$file")"
+  [[ -f "$file" ]] || touch "$file"
+  local tmp; tmp=$(mktemp)
+  local in_sec=false appended=false
+  while IFS= read -r _line || [[ -n "$_line" ]]; do
+    if [[ "$_line" =~ ^\["$section"\] ]]; then
+      in_sec=true
+      printf '%s\n' "$_line" >> "$tmp"
+    elif [[ "$in_sec" == true && "$_line" =~ ^\[ ]]; then
+      printf '    %s = %s\n' "$option" "$value" >> "$tmp"
+      appended=true
+      in_sec=false
+      printf '%s\n' "$_line" >> "$tmp"
+    else
+      printf '%s\n' "$_line" >> "$tmp"
+    fi
+  done < "$file"
+  if [[ "$appended" == false ]]; then
+    if grep -q "^\[${section}\]" "$file" 2>/dev/null; then
+      printf '    %s = %s\n' "$option" "$value" >> "$tmp"
+    else
+      printf '\n[%s]\n    %s = %s\n' "$section" "$option" "$value" >> "$tmp"
+    fi
+  fi
+  mv "$tmp" "$file"
+}
+
+# Remove one specific value from a multi-value key, leaving other values intact.
+_flux_dvc_config_unset_value() {
+  local key="$1" value="$2" file="${3:-.dvc/flux}"
+  local section="${key%%.*}" option="${key#*.}"
+  [[ -f "$file" ]] || return 0
+  local tmp; tmp=$(mktemp)
+  local in_sec=false
+  while IFS= read -r _line || [[ -n "$_line" ]]; do
+    if [[ "$_line" =~ ^\["$section"\] ]]; then
+      in_sec=true
+      printf '%s\n' "$_line" >> "$tmp"
+    elif [[ "$_line" =~ ^\[ ]]; then
+      in_sec=false
+      printf '%s\n' "$_line" >> "$tmp"
+    elif [[ "$in_sec" == true && "$_line" =~ ^[[:space:]]*"$option"[[:space:]]*=[[:space:]]*(.*) ]]; then
+      [[ "${BASH_REMATCH[1]}" == "$value" ]] || printf '%s\n' "$_line" >> "$tmp"
+    else
+      printf '%s\n' "$_line" >> "$tmp"
+    fi
+  done < "$file"
+  mv "$tmp" "$file"
+}
+
 # Read per-project size cap: .dvc/flux → .dvc/config (legacy) → git config (legacy) → ""
 _flux_cap_read() {
   local v
@@ -1491,7 +1562,7 @@ _flux_remove_git() {
     warn "No pre-commit hook found."
   fi
 
-  # Remove per-project cap from .dvc/flux
+  # Remove per-project cap and pins from .dvc/flux
   rm -f .dvc/flux
   git rm --cached .dvc/flux 2>/dev/null || true
 
@@ -2177,9 +2248,9 @@ _flux_dry_run() {
 
   local -a FORCE_DVC_DIRS=() FORCE_GIT_DIRS=()
   while IFS= read -r line; do [[ -n "$line" ]] && FORCE_DVC_DIRS+=("$line"); done \
-    < <(git config --get-all dvc-router.force-dvc 2>/dev/null || true)
+    < <(_flux_pins_read flux.pin-dvc dvc-router.force-dvc)
   while IFS= read -r line; do [[ -n "$line" ]] && FORCE_GIT_DIRS+=("$line"); done \
-    < <(git config --get-all dvc-router.force-git 2>/dev/null || true)
+    < <(_flux_pins_read flux.pin-git dvc-router.force-git)
 
   local staged_files scan_mode="all files"
   staged_files=$(
@@ -2486,19 +2557,52 @@ _flux_cap() {
 # pin — show or set directory routing pins
 # ---------------------------------------------------------------------------
 
-# Safely removes one specific value from a multi-value git config key.
+# Read all pin paths from .dvc/flux; fall back to legacy git config when none found.
+# Usage: _flux_pins_read new_key legacy_key [dvc_flux_path [repo_dir]]
+_flux_pins_read() {
+  local new_key="$1" legacy_key="$2"
+  local dvc_flux="${3:-}" repo_dir="${4:-}"
+  if [[ -z "$dvc_flux" ]]; then
+    local git_root
+    git_root=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
+    dvc_flux="$git_root/.dvc/flux"
+  fi
+  local out
+  out=$(_flux_dvc_config_read_all "$new_key" "$dvc_flux" 2>/dev/null || true)
+  if [[ -n "$out" ]]; then
+    echo "$out"
+  elif [[ -n "$repo_dir" ]]; then
+    git -C "$repo_dir" config --get-all "$legacy_key" 2>/dev/null || true
+  else
+    git config --get-all "$legacy_key" 2>/dev/null || true
+  fi
+}
+
+# Remove one specific path value from a pin key in .dvc/flux; also cleans legacy location.
 _flux_pin_config_remove() {
   local key="$1" target="$2"
-  local -a current=()
-  while IFS= read -r line; do [[ -n "$line" ]] && current+=("$line"); done \
-    < <(git config --get-all "$key" 2>/dev/null || true)
-  (( ${#current[@]} == 0 )) && return 0
-  git config --unset-all "$key" 2>/dev/null || true
-  local v
-  for v in "${current[@]}"; do
-    [[ "$v" == "$target" ]] && continue
-    git config --add "$key" "$v"
-  done
+  local git_root dvc_flux
+  git_root=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
+  dvc_flux="$git_root/.dvc/flux"
+  _flux_dvc_config_unset_value "$key" "$target" "$dvc_flux"
+  git add "$dvc_flux" 2>/dev/null || true
+  # Clean legacy git config location for the same path.
+  local legacy_key
+  case "$key" in
+    flux.pin-dvc) legacy_key="dvc-router.force-dvc" ;;
+    flux.pin-git) legacy_key="dvc-router.force-git" ;;
+    *) return 0 ;;
+  esac
+  local -a legacy=()
+  while IFS= read -r line; do [[ -n "$line" ]] && legacy+=("$line"); done \
+    < <(git config --get-all "$legacy_key" 2>/dev/null || true)
+  if (( ${#legacy[@]} > 0 )); then
+    git config --unset-all "$legacy_key" 2>/dev/null || true
+    for v in "${legacy[@]}"; do
+      [[ "$v" == "$target" ]] && continue
+      git config --add "$legacy_key" "$v"
+    done
+  fi
 }
 
 _flux_pin() {
@@ -2519,9 +2623,9 @@ _flux_pin() {
     if git rev-parse --git-dir &>/dev/null 2>&1; then
       local -a dvc_dirs=() git_dirs=()
       while IFS= read -r line; do [[ -n "$line" ]] && dvc_dirs+=("$line"); done \
-        < <(git config --get-all dvc-router.force-dvc 2>/dev/null || true)
+        < <(_flux_pins_read flux.pin-dvc dvc-router.force-dvc)
       while IFS= read -r line; do [[ -n "$line" ]] && git_dirs+=("$line"); done \
-        < <(git config --get-all dvc-router.force-git 2>/dev/null || true)
+        < <(_flux_pins_read flux.pin-git dvc-router.force-git)
       if (( ${#dvc_dirs[@]} > 0 || ${#git_dirs[@]} > 0 )); then
         echo ""
         printf "  Pinned:\n"
@@ -2538,6 +2642,11 @@ _flux_pin() {
 
   # ── reset --all ────────────────────────────────────────────────────────────
   if [[ "$subcmd" == "reset" && "${2:-}" == "--all" ]]; then
+    local _dvc_flux
+    _dvc_flux="$(git rev-parse --show-toplevel)/.dvc/flux"
+    _flux_dvc_config_unset flux.pin-dvc "$_dvc_flux"
+    _flux_dvc_config_unset flux.pin-git "$_dvc_flux"
+    git add "$_dvc_flux" 2>/dev/null || true
     git config --unset-all dvc-router.force-dvc 2>/dev/null || true
     git config --unset-all dvc-router.force-git 2>/dev/null || true
     ok "All directory pins cleared."
@@ -2550,8 +2659,8 @@ _flux_pin() {
     rel_path=$(git rev-parse --show-prefix 2>/dev/null)
     rel_path="${rel_path%/}"
     [[ -z "$rel_path" ]] && rel_path="."
-    _flux_pin_config_remove dvc-router.force-dvc "$rel_path"
-    _flux_pin_config_remove dvc-router.force-git "$rel_path"
+    _flux_pin_config_remove flux.pin-dvc "$rel_path"
+    _flux_pin_config_remove flux.pin-git "$rel_path"
     ok "Pin removed for: ${rel_path}"
     return 0
   fi
@@ -2566,25 +2675,33 @@ _flux_pin() {
   rel_path="${rel_path%/}"
   [[ -z "$rel_path" ]] && rel_path="."
 
+  local git_root dvc_flux
+  git_root=$(git rev-parse --show-toplevel)
+  dvc_flux="$git_root/.dvc/flux"
+
   if [[ "$subcmd" == "dvc" ]]; then
-    _flux_pin_config_remove dvc-router.force-git "$rel_path"
+    _flux_pin_config_remove flux.pin-git "$rel_path"
     local -a existing=()
     while IFS= read -r line; do [[ -n "$line" ]] && existing+=("$line"); done \
-      < <(git config --get-all dvc-router.force-dvc 2>/dev/null || true)
+      < <(_flux_dvc_config_read_all flux.pin-dvc "$dvc_flux" 2>/dev/null || true)
     local already=false
     for e in "${existing[@]+"${existing[@]}"}"; do [[ "$e" == "$rel_path" ]] && already=true && break; done
-    [[ "$already" == "false" ]] && git config --add dvc-router.force-dvc "$rel_path"
-    _flux_registry_write git_config dvc-router.force-dvc
+    if [[ "$already" == "false" ]]; then
+      _flux_dvc_config_add flux.pin-dvc "$rel_path" "$dvc_flux"
+      git add "$dvc_flux" 2>/dev/null || true
+    fi
     ok "Pinned to DVC: ${rel_path}"
   else
-    _flux_pin_config_remove dvc-router.force-dvc "$rel_path"
+    _flux_pin_config_remove flux.pin-dvc "$rel_path"
     local -a existing=()
     while IFS= read -r line; do [[ -n "$line" ]] && existing+=("$line"); done \
-      < <(git config --get-all dvc-router.force-git 2>/dev/null || true)
+      < <(_flux_dvc_config_read_all flux.pin-git "$dvc_flux" 2>/dev/null || true)
     local already=false
     for e in "${existing[@]+"${existing[@]}"}"; do [[ "$e" == "$rel_path" ]] && already=true && break; done
-    [[ "$already" == "false" ]] && git config --add dvc-router.force-git "$rel_path"
-    _flux_registry_write git_config dvc-router.force-git
+    if [[ "$already" == "false" ]]; then
+      _flux_dvc_config_add flux.pin-git "$rel_path" "$dvc_flux"
+      git add "$dvc_flux" 2>/dev/null || true
+    fi
     ok "Pinned to Git: ${rel_path}"
   fi
   ok "Takes effect on the next commit."
@@ -2810,9 +2927,11 @@ _flux_list() {
   if [[ -n "$pins_repo_dir" ]]; then
     local -a dvc_pins=() git_pins=()
     while IFS= read -r line; do [[ -n "$line" ]] && dvc_pins+=("$line"); done \
-      < <(git -C "$pins_repo_dir" config --get-all dvc-router.force-dvc 2>/dev/null || true)
+      < <(_flux_pins_read flux.pin-dvc dvc-router.force-dvc \
+          "$pins_repo_dir/.dvc/flux" "$pins_repo_dir")
     while IFS= read -r line; do [[ -n "$line" ]] && git_pins+=("$line"); done \
-      < <(git -C "$pins_repo_dir" config --get-all dvc-router.force-git 2>/dev/null || true)
+      < <(_flux_pins_read flux.pin-git dvc-router.force-git \
+          "$pins_repo_dir/.dvc/flux" "$pins_repo_dir")
     if (( ${#dvc_pins[@]} > 0 || ${#git_pins[@]} > 0 )); then
       echo ""
       printf "  Pinned:\n"
