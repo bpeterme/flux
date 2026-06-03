@@ -927,9 +927,9 @@ _flux_scan_subrepos() {
 
   # Keep only paths not nested inside another found sub-repo
   local result=()
-  for path in "${all[@]}"; do
+  for path in "${all[@]+"${all[@]}"}"; do
     local nested=false
-    for other in "${all[@]}"; do
+    for other in "${all[@]+"${all[@]}"}"; do
       [[ "$path" == "$other" ]] && continue
       [[ "$path" == "$other/"* ]] && nested=true && break
     done
@@ -957,22 +957,22 @@ _flux_subrepo_sync() {
     < <(_flux_registry_read subrepo_exclusion)
 
   local appeared=()
-  for p in "${current[@]}"; do
+  for p in "${current[@]+"${current[@]}"}"; do
     local found=false
-    for q in "${previous[@]}"; do [[ "$p" == "$q" ]] && found=true && break; done
+    for q in "${previous[@]+"${previous[@]}"}"; do [[ "$p" == "$q" ]] && found=true && break; done
     [[ "$found" == "false" ]] && appeared+=("$p")
   done
 
   local disappeared=()
-  for p in "${previous[@]}"; do
+  for p in "${previous[@]+"${previous[@]}"}"; do
     local found=false
-    for q in "${current[@]}"; do [[ "$p" == "$q" ]] && found=true && break; done
+    for q in "${current[@]+"${current[@]}"}"; do [[ "$p" == "$q" ]] && found=true && break; done
     [[ "$found" == "false" ]] && disappeared+=("$p")
   done
 
   local gitignore="${root_dir}/.gitignore"
 
-  for path in "${appeared[@]}"; do
+  for path in "${appeared[@]+"${appeared[@]}"}"; do
     local tracked
     tracked=$(git ls-files -- "$path" 2>/dev/null || true)
     if [[ -n "$tracked" ]]; then
@@ -986,7 +986,7 @@ _flux_subrepo_sync() {
     FLUX_SUBREPO_CHANGED=true
   done
 
-  for path in "${disappeared[@]}"; do
+  for path in "${disappeared[@]+"${disappeared[@]}"}"; do
     if [[ -f "$gitignore" ]] && grep -qxF "${path}/" "$gitignore" 2>/dev/null; then
       local tmp; tmp=$(mktemp)
       grep -vxF "${path}/" "$gitignore" > "$tmp" || true
@@ -1448,7 +1448,7 @@ _flux_remove_git() {
   while IFS= read -r p; do [[ -n "$p" ]] && excl_paths+=("$p"); done \
     < <(_flux_registry_read subrepo_exclusion)
   local removed_excl=0
-  for path in "${excl_paths[@]}"; do
+  for path in "${excl_paths[@]+"${excl_paths[@]}"}"; do
     if [[ -f ".gitignore" ]] && grep -qxF "${path}/" .gitignore 2>/dev/null; then
       local tmp; tmp=$(mktemp)
       grep -vxF "${path}/" .gitignore > "$tmp" || true
@@ -2185,7 +2185,7 @@ _flux_dry_run() {
 
   local dvc_managed_paths=() dvc_managed_sizes=() dvc_managed_total=0
   local _pm _pp _ps _pd _line
-  for _pm in "${git_files[@]}"; do
+  for _pm in "${git_files[@]+"${git_files[@]}"}"; do
     [[ "$_pm" != *.dvc ]] && continue
     _pp=""; _ps=0
     while IFS= read -r _line; do
@@ -2214,7 +2214,7 @@ _flux_dry_run() {
 
   local skip_bytes=0 skip_file_sizes=()
   local _sf _ssz
-  for _sf in "${skip_files[@]}"; do
+  for _sf in "${skip_files[@]+"${skip_files[@]}"}"; do
     if [[ -f "$_sf" ]]; then
       _ssz=$(wc -c < "$_sf" | tr -d ' ')
       skip_bytes=$(( skip_bytes + _ssz ))
@@ -2251,7 +2251,7 @@ _flux_dry_run() {
   # Already-DVC-managed files (skip_files + dvc_managed_paths) → binary category
   _H_BIN+=("${skip_file_sizes[@]+"${skip_file_sizes[@]}"}")
   local _dm=0
-  for _dmp in "${dvc_managed_paths[@]}"; do
+  for _dmp in "${dvc_managed_paths[@]+"${dvc_managed_paths[@]}"}"; do
     local _dmsz="${dvc_managed_sizes[$_dm]:-0}"
     (( _dmsz > 0 )) && _H_BIN+=("$_dmsz")
     (( _dm++ )) || true
@@ -2311,19 +2311,19 @@ _flux_dry_run() {
       echo ""
       printf "  DVC files:\n"
       local _j=0
-      for f in "${dvc_files[@]}"; do
+      for f in "${dvc_files[@]+"${dvc_files[@]}"}"; do
         local sz; sz=$(wc -c < "$f" | tr -d ' ')
         local note="${dvc_notes[_j]:-}"
         local _note_str; _note_str="${note:+   ${note}}"
         printf "    ✦  %-42s %s%s\n" "$f" "$(_flux_format_size "$sz")" "$_note_str"
         (( _j++ )) || true
       done
-      for f in "${skip_files[@]}"; do
+      for f in "${skip_files[@]+"${skip_files[@]}"}"; do
         local sz; sz=$(wc -c < "$f" | tr -d ' ')
         printf "    ✦  %-42s %s\n" "$f" "$(_flux_format_size "$sz")"
       done
       local _dm=0
-      for _dmp in "${dvc_managed_paths[@]}"; do
+      for _dmp in "${dvc_managed_paths[@]+"${dvc_managed_paths[@]}"}"; do
         local _dmsz="${dvc_managed_sizes[$_dm]:-0}"
         local _dmsz_str
         if (( _dmsz > 0 )); then
@@ -2484,7 +2484,7 @@ _flux_pin() {
     while IFS= read -r line; do [[ -n "$line" ]] && existing+=("$line"); done \
       < <(git config --get-all dvc-router.force-dvc 2>/dev/null || true)
     local already=false
-    for e in "${existing[@]}"; do [[ "$e" == "$rel_path" ]] && already=true && break; done
+    for e in "${existing[@]+"${existing[@]}"}"; do [[ "$e" == "$rel_path" ]] && already=true && break; done
     [[ "$already" == "false" ]] && git config --add dvc-router.force-dvc "$rel_path"
     _flux_registry_write git_config dvc-router.force-dvc
     ok "Pinned to DVC: ${rel_path}"
@@ -2494,7 +2494,7 @@ _flux_pin() {
     while IFS= read -r line; do [[ -n "$line" ]] && existing+=("$line"); done \
       < <(git config --get-all dvc-router.force-git 2>/dev/null || true)
     local already=false
-    for e in "${existing[@]}"; do [[ "$e" == "$rel_path" ]] && already=true && break; done
+    for e in "${existing[@]+"${existing[@]}"}"; do [[ "$e" == "$rel_path" ]] && already=true && break; done
     [[ "$already" == "false" ]] && git config --add dvc-router.force-git "$rel_path"
     _flux_registry_write git_config dvc-router.force-git
     ok "Pinned to Git: ${rel_path}"
@@ -2727,8 +2727,8 @@ _flux_list() {
     if (( ${#dvc_pins[@]} > 0 || ${#git_pins[@]} > 0 )); then
       echo ""
       printf "  Pinned:\n"
-      for d in "${dvc_pins[@]}"; do printf "    ✦  %-24s → DVC\n" "$d"; done
-      for d in "${git_pins[@]}"; do printf "    ·  %-24s → Git\n" "$d"; done
+      for d in "${dvc_pins[@]+"${dvc_pins[@]}"}"; do printf "    ✦  %-24s → DVC\n" "$d"; done
+      for d in "${git_pins[@]+"${git_pins[@]}"}"; do printf "    ·  %-24s → Git\n" "$d"; done
     fi
   fi
 }
