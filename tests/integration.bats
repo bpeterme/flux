@@ -470,7 +470,6 @@ EOF
   run bash "$REPO_ROOT/flux" dry-run
   [ "$status" -eq 0 ]
   [[ "$output" == *"→ Git"* ]]
-  [[ "$output" == *"all files"* ]]
 }
 
 @test "flux dry-run includes large untracked file routed to DVC" {

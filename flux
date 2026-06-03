@@ -2117,17 +2117,10 @@ _flux_dry_run() {
   while IFS= read -r line; do [[ -n "$line" ]] && FORCE_GIT_DIRS+=("$line"); done \
     < <(git config --get-all dvc-router.force-git 2>/dev/null || true)
 
-  local staged_files scan_mode
-  staged_files=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)
-
-  if [[ -z "$staged_files" ]]; then
-    staged_files=$(
-      { git ls-files 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | sort -u
-    )
-    scan_mode="all files"
-  else
-    scan_mode="staged files"
-  fi
+  local staged_files scan_mode="all files"
+  staged_files=$(
+    { git ls-files 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | sort -u
+  )
 
   if [[ -z "$staged_files" ]]; then
     echo ""
@@ -2229,7 +2222,7 @@ _flux_dry_run() {
   (( _pin_count > 0 )) && _pin_note=", ${_pin_count} pin(s) active"
 
   echo ""
-  echo "  flux dry-run — routing preview (${scan_mode}, cap: ${SIZE_CAP_MB} MB${_pin_note})"
+  echo "  flux dry-run — routing preview (cap: ${SIZE_CAP_MB} MB${_pin_note})"
   echo ""
 
   local skip_bytes=0 skip_file_sizes=()
