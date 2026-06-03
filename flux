@@ -109,10 +109,80 @@ _flux_registry_delete() {
   mv "$tmp" "$reg"
 }
 
-# Read per-project size cap: .dvc/config (shared via git) → git config (legacy) → ""
+# Read/write flux config from .dvc/flux — a separate committed file that DVC
+# never reads.  Storing in .dvc/config caused DVC to reject the commit with
+# "extra keys not allowed" because DVC validates its own config schema.
+
+_flux_dvc_config_read() {
+  local key="$1" file="${2:-.dvc/flux}"  # key = "flux.size-cap-mb"
+  local section="${key%%.*}" option="${key#*.}"
+  [[ -f "$file" ]] || return 0
+  local in_sec=false
+  while IFS= read -r _line; do
+    if [[ "$_line" =~ ^\["$section"\] ]]; then
+      in_sec=true
+    elif [[ "$_line" =~ ^\[ ]]; then
+      in_sec=false
+    elif [[ "$in_sec" == true && "$_line" =~ ^[[:space:]]*"$option"[[:space:]]*=[[:space:]]*(.*) ]]; then
+      echo "${BASH_REMATCH[1]}"
+      return 0
+    fi
+  done < "$file"
+}
+
+_flux_dvc_config_write() {
+  local key="$1" value="$2" file="${3:-.dvc/flux}"
+  local section="${key%%.*}" option="${key#*.}"
+  [[ -f "$file" ]] || touch "$file"
+  local tmp; tmp=$(mktemp)
+  local in_sec=false replaced=false
+  while IFS= read -r _line || [[ -n "$_line" ]]; do
+    if [[ "$_line" =~ ^\["$section"\] ]]; then
+      in_sec=true; replaced=false
+      printf '%s\n' "$_line" >> "$tmp"
+    elif [[ "$in_sec" == true && "$_line" =~ ^\[ ]]; then
+      [[ "$replaced" == false ]] && printf '    %s = %s\n' "$option" "$value" >> "$tmp" && replaced=true
+      in_sec=false
+      printf '%s\n' "$_line" >> "$tmp"
+    elif [[ "$in_sec" == true && "$_line" =~ ^[[:space:]]*"$option"[[:space:]]*= ]]; then
+      printf '    %s = %s\n' "$option" "$value" >> "$tmp"
+      replaced=true
+    else
+      printf '%s\n' "$_line" >> "$tmp"
+    fi
+  done < "$file"
+  [[ "$in_sec" == true && "$replaced" == false ]] && printf '    %s = %s\n' "$option" "$value" >> "$tmp"
+  [[ "$replaced" == false && "$in_sec" == false ]] && printf '\n[%s]\n    %s = %s\n' "$section" "$option" "$value" >> "$tmp"
+  mv "$tmp" "$file"
+}
+
+_flux_dvc_config_unset() {
+  local key="$1" file="${2:-.dvc/flux}"
+  local section="${key%%.*}" option="${key#*.}"
+  [[ -f "$file" ]] || return 0
+  local tmp; tmp=$(mktemp)
+  local in_sec=false
+  while IFS= read -r _line || [[ -n "$_line" ]]; do
+    if [[ "$_line" =~ ^\["$section"\] ]]; then
+      in_sec=true; printf '%s\n' "$_line" >> "$tmp"
+    elif [[ "$_line" =~ ^\[ ]]; then
+      in_sec=false; printf '%s\n' "$_line" >> "$tmp"
+    elif [[ "$in_sec" == true && "$_line" =~ ^[[:space:]]*"$option"[[:space:]]*= ]]; then
+      true  # drop this line
+    else
+      printf '%s\n' "$_line" >> "$tmp"
+    fi
+  done < "$file"
+  mv "$tmp" "$file"
+}
+
+# Read per-project size cap: .dvc/flux → .dvc/config (legacy) → git config (legacy) → ""
 _flux_cap_read() {
   local v
-  v=$(git config --file .dvc/config --get flux.size-cap-mb 2>/dev/null || true)
+  v=$(_flux_dvc_config_read flux.size-cap-mb 2>/dev/null || true)
+  [[ -n "$v" ]] && { echo "$v"; return; }
+  # Legacy: flux used to store cap in .dvc/config (rejected by DVC 3.x schema)
+  v=$(_flux_dvc_config_read flux.size-cap-mb .dvc/config 2>/dev/null || true)
   [[ -n "$v" ]] && { echo "$v"; return; }
   git config --get dvc-router.size-cap-mb 2>/dev/null || true
 }
@@ -1099,6 +1169,26 @@ _flux_add() {
     [[ -n "$_bucket"    ]] && echo "  DVC bucket:  ${_bucket}"
     echo "  Git remote:  ${_remote}"
     echo ""
+
+    # Always refresh the pre-commit hook so 'flux add' picks up new hook
+    # versions without requiring 'flux remove' (which would wipe directory pins).
+    local _HOOKS_DIR _script_dir _HOOK_SOURCE
+    _HOOKS_DIR="$(git rev-parse --git-dir)/hooks"
+    _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    _HOOK_SOURCE="${_script_dir}/../share/flux/pre-commit"
+    [[ -f "$_HOOK_SOURCE" ]] || _HOOK_SOURCE="${_script_dir}/pre-commit"
+    if [[ -f "$_HOOK_SOURCE" ]]; then
+      if [[ -f "${_HOOKS_DIR}/pre-commit" ]] && grep -q 'dvc-router\|flux' "${_HOOKS_DIR}/pre-commit" 2>/dev/null; then
+        cp "$_HOOK_SOURCE" "${_HOOKS_DIR}/pre-commit"
+        chmod +x "${_HOOKS_DIR}/pre-commit"
+        ok "Pre-commit hook updated."
+      elif [[ ! -f "${_HOOKS_DIR}/pre-commit" ]]; then
+        cp "$_HOOK_SOURCE" "${_HOOKS_DIR}/pre-commit"
+        chmod +x "${_HOOKS_DIR}/pre-commit"
+        ok "Pre-commit hook installed."
+      fi
+    fi
+
     _flux_subrepo_sync
     if [[ "${FLUX_SUBREPO_CHANGED}" == "true" ]]; then
       git add -A 2>/dev/null || true
@@ -1218,12 +1308,13 @@ _flux_add() {
   local existing_project_cap
   existing_project_cap=$(_flux_cap_read)
   if [[ -z "$existing_project_cap" ]]; then
-    git config --file .dvc/config flux.size-cap-mb "$cap"
+    _flux_dvc_config_write flux.size-cap-mb "$cap"
   else
     cap="$existing_project_cap"
-    git config --file .dvc/config flux.size-cap-mb "$cap"
+    _flux_dvc_config_write flux.size-cap-mb "$cap"
   fi
-  # Migrate legacy location if present
+  git add .dvc/flux 2>/dev/null || true
+  # Migrate legacy locations if present
   git config --unset dvc-router.size-cap-mb 2>/dev/null || true
   git config dvc-router.verbose      "$verbose"
   git config flux.r2-folder          "$FLUX_R2_FOLDER"
@@ -1233,7 +1324,7 @@ _flux_add() {
   _flux_registry_write git_config flux.dvc-remote-bucket
 
   touch .gitignore
-  for entry in ".dvc/config.local" ".dvc/tmp/" ".dvc/cache/"; do
+  for entry in ".dvc/config.local" ".dvc/tmp/" ".dvc/cache/" ".DS_Store"; do
     if ! grep -qF "$entry" .gitignore; then
       echo "$entry" >> .gitignore
     fi
@@ -1383,7 +1474,6 @@ _flux_add() {
 
 _flux_remove_git() {
   git rev-parse --git-dir &>/dev/null || fail "Not inside a Git repository."
-  clear 2>/dev/null || true
 
   local HOOKS_DIR
   HOOKS_DIR="$(git rev-parse --git-dir)/hooks"
@@ -1401,11 +1491,9 @@ _flux_remove_git() {
     warn "No pre-commit hook found."
   fi
 
-  # Remove per-project cap from .dvc/config (shared location)
-  if [[ -f ".dvc/config" ]]; then
-    git config --file .dvc/config --unset flux.size-cap-mb 2>/dev/null || true
-    git add .dvc/config 2>/dev/null || true
-  fi
+  # Remove per-project cap from .dvc/flux
+  rm -f .dvc/flux
+  git rm --cached .dvc/flux 2>/dev/null || true
 
   local -a keys=()
   while IFS= read -r line; do [[ -n "$line" ]] && keys+=("$line"); done \
@@ -1565,15 +1653,10 @@ _flux_remove_dvc() {
     ok "Removed ${#dvcignores[@]} .dvcignore file(s)."
   fi
 
-  # Remove .dvc/ directory only if flux created it
-  if [[ "$(_flux_registry_read dvc_initialized)" == "true" ]]; then
-    git rm -r --cached -q .dvc/ 2>/dev/null || true
-    rm -rf .dvc/
-    _flux_registry_delete dvc_initialized true
-    ok ".dvc/ directory removed."
-  else
-    warn ".dvc/ was not created by flux — leaving directory in place."
-  fi
+  git rm -r --cached -q .dvc/ 2>/dev/null || true
+  rm -rf .dvc/
+  _flux_registry_delete dvc_initialized true
+  ok ".dvc/ directory removed."
 
   # Clean flux-written .gitignore entries
   if [[ -f ".gitignore" ]]; then
@@ -1806,21 +1889,22 @@ _flux_sync() {
   [[ -n "${FLUX_AWS_CONFIG_FILE:-}" ]] && export AWS_CONFIG_FILE="$FLUX_AWS_CONFIG_FILE"
   _flux_apply_dvc_profile "$DVC"
 
-  local _dvc_err
+  local _dvc_out
   _flux_spin_start "pulling DVC data..."
-  _dvc_err=$(mktemp)
-  if "$DVC" pull --quiet 2>"$_dvc_err"; then
+  _dvc_out=$(mktemp)
+  if "$DVC" pull --force --quiet &>"$_dvc_out"; then
     _flux_spin_stop; ok "Pulled DVC data from R2."
-  elif grep -qiE 'AccessDenied|Access Denied' "$_dvc_err" 2>/dev/null; then
+  elif grep -qiE 'AccessDenied|Access Denied' "$_dvc_out" 2>/dev/null; then
     _flux_spin_stop; warn "DVC pull failed — access denied. Check R2 API token permissions (Admin Read & Write required)."
-  elif grep -qiE 'Checkout failed|missing-files|do not exist neither' "$_dvc_err" 2>/dev/null; then
+  elif grep -qiE 'Checkout failed|missing-files|do not exist neither' "$_dvc_out" 2>/dev/null; then
     _flux_spin_stop; warn "DVC pull failed — some files missing from remote. Run 'dvc pull' for details."
-  elif grep -q . "$_dvc_err" 2>/dev/null; then
-    _flux_spin_stop; warn "DVC pull failed — run 'dvc pull' to see the full error."
+  elif grep -q . "$_dvc_out" 2>/dev/null; then
+    _flux_spin_stop; warn "DVC pull failed — run 'dvc pull' for details:"
+    sed 's/^/    /' "$_dvc_out" >&2
   else
-    _flux_spin_stop; warn "DVC pull skipped — R2 may be empty (first push)."
+    _flux_spin_stop; warn "DVC pull exited with an error but produced no output — run 'dvc pull' to diagnose."
   fi
-  rm -f "$_dvc_err"
+  rm -f "$_dvc_out"
 
   _flux_spin_start "pushing to Git..."
   if git push --quiet 2>/dev/null; then
@@ -2097,17 +2181,10 @@ _flux_dry_run() {
   while IFS= read -r line; do [[ -n "$line" ]] && FORCE_GIT_DIRS+=("$line"); done \
     < <(git config --get-all dvc-router.force-git 2>/dev/null || true)
 
-  local staged_files scan_mode
-  staged_files=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)
-
-  if [[ -z "$staged_files" ]]; then
-    staged_files=$(
-      { git ls-files 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | sort -u
-    )
-    scan_mode="all files"
-  else
-    scan_mode="staged files"
-  fi
+  local staged_files scan_mode="all files"
+  staged_files=$(
+    { git ls-files 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | sort -u
+  )
 
   if [[ -z "$staged_files" ]]; then
     echo ""
@@ -2209,7 +2286,7 @@ _flux_dry_run() {
   (( _pin_count > 0 )) && _pin_note=", ${_pin_count} pin(s) active"
 
   echo ""
-  echo "  flux dry-run — routing preview (${scan_mode}, cap: ${SIZE_CAP_MB} MB${_pin_note})"
+  echo "  flux dry-run — routing preview (cap: ${SIZE_CAP_MB} MB${_pin_note})"
   echo ""
 
   local skip_bytes=0 skip_file_sizes=()
@@ -2284,6 +2361,17 @@ _flux_dry_run() {
   echo ""
   (( _leg_git > 0 )) && printf "  ░ → Git\n"
   (( _leg_dvc > 0 )) && printf "  █ → DVC\n"
+
+  if (( ${#FORCE_DVC_DIRS[@]} > 0 || ${#FORCE_GIT_DIRS[@]} > 0 )); then
+    echo ""
+    printf "  Pinned directories:\n"
+    for _pd in "${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}"; do
+      printf "    ✦  %-24s → DVC\n" "$_pd"
+    done
+    for _pd in "${FORCE_GIT_DIRS[@]+"${FORCE_GIT_DIRS[@]}"}"; do
+      printf "    ·  %-24s → Git\n" "$_pd"
+    done
+  fi
 
   local show_details=false
   if [[ -t 0 && -t 1 ]]; then
@@ -2373,9 +2461,9 @@ _flux_cap() {
   fi
 
   if [[ "$arg" == "--reset" ]]; then
-    git config --file .dvc/config --unset flux.size-cap-mb 2>/dev/null || true
+    rm -f .dvc/flux
+    git rm --cached .dvc/flux 2>/dev/null || true
     git config --unset dvc-router.size-cap-mb 2>/dev/null || true  # clean legacy location
-    [[ -f ".dvc/config" ]] && git add .dvc/config 2>/dev/null || true
     ok "Per-project cap removed — global default (${global_cap} MB) is now active."
     return 0
   fi
@@ -2385,9 +2473,9 @@ _flux_cap() {
   fi
 
   if [[ -d ".dvc" ]]; then
-    git config --file .dvc/config flux.size-cap-mb "$arg"
-    git add .dvc/config 2>/dev/null || true
-    ok "Per-project cap set to ${arg} MB (stored in .dvc/config — commit to share across machines)."
+    _flux_dvc_config_write flux.size-cap-mb "$arg"
+    git add .dvc/flux 2>/dev/null || true
+    ok "Per-project cap set to ${arg} MB (stored in .dvc/flux — commit to share across machines)."
   else
     git config dvc-router.size-cap-mb "$arg"
     ok "Per-project cap set to ${arg} MB (will move to .dvc/config when 'flux add' initialises this project)."
@@ -2657,7 +2745,8 @@ _flux_list() {
     fi
     [[ -n "$bucket" ]] && dvc_remote="${bucket}/${dvc_folder}" || dvc_remote="-"
 
-    cap="$(git config --file "$repo_dir/.dvc/config" --get flux.size-cap-mb 2>/dev/null || \
+    cap="$(_flux_dvc_config_read flux.size-cap-mb "$repo_dir/.dvc/flux" 2>/dev/null || \
+           _flux_dvc_config_read flux.size-cap-mb "$repo_dir/.dvc/config" 2>/dev/null || \
            git -C "$repo_dir" config --get dvc-router.size-cap-mb 2>/dev/null || echo "5")"
     git_remote="$(git -C "$repo_dir" remote get-url origin 2>/dev/null || echo "-")"
 
