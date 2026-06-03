@@ -57,6 +57,35 @@ teardown() { teardown_flux_test; }
   rm -rf "$no_git"
 }
 
+@test "flux add writes git_initialized flag when it creates the git repo" {
+  local no_git
+  no_git=$(mktemp -d)
+  local _env="HOME='$MOCK_HOME' XDG_CONFIG_HOME='$MOCK_HOME/.config' MOCK_KEYCHAIN_DIR='$MOCK_KEYCHAIN_DIR' PATH='$PATH' GIT_AUTHOR_EMAIL=test@example.com GIT_AUTHOR_NAME=Test GIT_COMMITTER_EMAIL=test@example.com GIT_COMMITTER_NAME=Test"
+  bash -c "cd '$no_git' && $_env bash '$REPO_ROOT/flux' add" < /dev/null
+  grep -q "git_initialized:true" "$no_git/.git/flux-registry"
+  rm -rf "$no_git"
+}
+
+@test "flux remove auto-removes .git/ and .gitignore when flux created the git repo" {
+  local no_git
+  no_git=$(mktemp -d)
+  local _env="HOME='$MOCK_HOME' XDG_CONFIG_HOME='$MOCK_HOME/.config' MOCK_KEYCHAIN_DIR='$MOCK_KEYCHAIN_DIR' PATH='$PATH' GIT_AUTHOR_EMAIL=test@example.com GIT_AUTHOR_NAME=Test GIT_COMMITTER_EMAIL=test@example.com GIT_COMMITTER_NAME=Test"
+  bash -c "cd '$no_git' && $_env bash '$REPO_ROOT/flux' add" < /dev/null
+  run bash -c "cd '$no_git' && $_env bash '$REPO_ROOT/flux' remove"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Git repository removed"* ]]
+  [ ! -d "$no_git/.git" ]
+  [ ! -f "$no_git/.gitignore" ]
+  rm -rf "$no_git"
+}
+
+@test "flux remove leaves .git/ when flux did not create it" {
+  bash "$REPO_ROOT/flux" add
+  run bash "$REPO_ROOT/flux" remove
+  [ "$status" -eq 0 ]
+  [ -d "$TEST_REPO/.git" ]
+}
+
 # ---------------------------------------------------------------------------
 # Happy path
 # ---------------------------------------------------------------------------
@@ -802,6 +831,14 @@ EOF
   run bash "$REPO_ROOT/flux" list
   [ "$status" -eq 0 ]
   [[ "$output" == *"20 MB"* ]]
+}
+
+@test "flux list defaults to 5 MB cap when no .dvc/flux file exists" {
+  make_flux_repo "$TEST_REPO/nocap" "nocap-data" "bucket"
+  rm "$TEST_REPO/nocap/.dvc/flux"
+  run bash "$REPO_ROOT/flux" list
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"5 MB"* ]]
 }
 
 @test "flux list falls back to .dvc/config when flux.dvc-remote-bucket is missing" {

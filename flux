@@ -116,7 +116,7 @@ _flux_registry_delete() {
 _flux_dvc_config_read() {
   local key="$1" file="${2:-.dvc/flux}"  # key = "flux.size-cap-mb"
   local section="${key%%.*}" option="${key#*.}"
-  [[ -f "$file" ]] || return 0
+  [[ -f "$file" ]] || return 1
   local in_sec=false
   while IFS= read -r _line; do
     if [[ "$_line" =~ ^\["$section"\] ]]; then
@@ -128,6 +128,7 @@ _flux_dvc_config_read() {
       return 0
     fi
   done < "$file"
+  return 1
 }
 
 _flux_dvc_config_write() {
@@ -1759,31 +1760,35 @@ _flux_remove_dvc() {
 # ---------------------------------------------------------------------------
 
 _flux_maybe_remove_git_repo() {
-  [[ "$(_flux_registry_read git_initialized)" == "true" ]] || return 0
+  local _gitdir
+  _gitdir=$(git rev-parse --git-dir 2>/dev/null) || return 0
 
-  local _extra_branches _stash_count _commit_count
-  _extra_branches=$(git branch 2>/dev/null | grep -v '^\* ' | wc -l | tr -d ' ')
-  _stash_count=$(git stash list 2>/dev/null | wc -l | tr -d ' ')
-  _commit_count=$(git rev-list --count HEAD 2>/dev/null || echo 0)
+  local _remove=false
+  if [[ "$(_flux_registry_read git_initialized)" == "true" ]]; then
+    _remove=true
+  else
+    local _extra_branches _stash_count _commit_count
+    _extra_branches=$(git branch 2>/dev/null | grep -v '^\* ' | wc -l | tr -d ' ') || true
+    _stash_count=$(git stash list 2>/dev/null | wc -l | tr -d ' ')
+    _commit_count=$(git rev-list --count HEAD 2>/dev/null || echo 0)
 
-  echo ""
-  if (( _extra_branches > 0 )); then
-    warn "Other branches: ${_extra_branches}"
-  fi
-  if (( _stash_count > 0 )); then
-    warn "Stashed changes: ${_stash_count}"
-  fi
-  if (( _commit_count > 1 )); then
-    warn "Commits in history: ${_commit_count}"
+    echo ""
+    if (( _extra_branches > 0 )); then warn "Other branches: ${_extra_branches}"; fi
+    if (( _stash_count > 0 ));    then warn "Stashed changes: ${_stash_count}"; fi
+    if (( _commit_count > 1 ));   then warn "Commits in history: ${_commit_count}"; fi
+
+    local _confirm
+    read -rp "  Remove .git/ and .gitignore? [y/N]: " _confirm || true
+    if [[ "${_confirm:-N}" =~ ^[Yy]$ ]]; then _remove=true; fi
   fi
 
-  local _confirm
-  read -rp "  flux created this git repo — remove .git/ too? [Y/n]: " _confirm || true
-  if [[ "${_confirm:-Y}" =~ ^[Yy]?$ ]]; then
-    local _gitdir
-    _gitdir=$(git rev-parse --git-dir 2>/dev/null)
+  if [[ "$_remove" == "true" ]]; then
     rm -rf "$_gitdir"
     ok "Git repository removed."
+    if [[ -f ".gitignore" ]]; then
+      rm ".gitignore"
+      ok ".gitignore removed."
+    fi
   fi
 }
 
