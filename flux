@@ -1826,21 +1826,22 @@ _flux_sync() {
   [[ -n "${FLUX_AWS_CONFIG_FILE:-}" ]] && export AWS_CONFIG_FILE="$FLUX_AWS_CONFIG_FILE"
   _flux_apply_dvc_profile "$DVC"
 
-  local _dvc_err
+  local _dvc_out
   _flux_spin_start "pulling DVC data..."
-  _dvc_err=$(mktemp)
-  if "$DVC" pull --quiet 2>"$_dvc_err"; then
+  _dvc_out=$(mktemp)
+  if "$DVC" pull --quiet &>"$_dvc_out"; then
     _flux_spin_stop; ok "Pulled DVC data from R2."
-  elif grep -qiE 'AccessDenied|Access Denied' "$_dvc_err" 2>/dev/null; then
+  elif grep -qiE 'AccessDenied|Access Denied' "$_dvc_out" 2>/dev/null; then
     _flux_spin_stop; warn "DVC pull failed — access denied. Check R2 API token permissions (Admin Read & Write required)."
-  elif grep -qiE 'Checkout failed|missing-files|do not exist neither' "$_dvc_err" 2>/dev/null; then
+  elif grep -qiE 'Checkout failed|missing-files|do not exist neither' "$_dvc_out" 2>/dev/null; then
     _flux_spin_stop; warn "DVC pull failed — some files missing from remote. Run 'dvc pull' for details."
-  elif grep -q . "$_dvc_err" 2>/dev/null; then
-    _flux_spin_stop; warn "DVC pull failed — run 'dvc pull' to see the full error."
+  elif grep -q . "$_dvc_out" 2>/dev/null; then
+    _flux_spin_stop; warn "DVC pull failed — run 'dvc pull' for details:"
+    sed 's/^/    /' "$_dvc_out" >&2
   else
-    _flux_spin_stop; warn "DVC pull skipped — R2 may be empty (first push)."
+    _flux_spin_stop; warn "DVC pull exited with an error but produced no output — run 'dvc pull' to diagnose."
   fi
-  rm -f "$_dvc_err"
+  rm -f "$_dvc_out"
 
   _flux_spin_start "pushing to Git..."
   if git push --quiet 2>/dev/null; then
