@@ -2272,7 +2272,7 @@ _flux_dry_run() {
   (( _bin_n > _sum_max_n )) && _sum_max_n=$_bin_n
   local _sum_count_w=${#_sum_max_n}; (( _sum_count_w < 1 )) && _sum_count_w=1
 
-  _H_GIT=("${_H_TEXT_GIT[@]}"); _H_DVC=("${_H_TEXT_DVC[@]}")
+  _H_GIT=("${_H_TEXT_GIT[@]+"${_H_TEXT_GIT[@]}"}"); _H_DVC=("${_H_TEXT_DVC[@]+"${_H_TEXT_DVC[@]}"}")
   _flux_render_histogram "Text files" "$SIZE_CAP_BYTES"
   echo ""
   _flux_render_summary_row "Pinned Git" "░" "$_pin_git_n" "$_pin_git_bytes" "$_sum_count_w"
