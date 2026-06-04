@@ -312,16 +312,29 @@ migrate_dvc_to_git() {
     # File is now text AND below cap → migrate back to Git
     info "Migrating DVC → Git (now $(( file_size / 1024 )) KB, below ${SIZE_CAP_MB} MB cap): $target_abs"
 
-    # dvc remove deletes the .dvc pointer and removes the entry from .gitignore
-    # default dvc remove keeps outputs on disk; --outs would delete them
-    "$DVC" remove "$dvc_file" --quiet &>/dev/null || {
-      warn "  dvc remove failed for $dvc_file — skipping migration"
-      continue
-    }
+    # Remove the .dvc pointer from disk and from the git index.
+    # Done manually rather than via 'dvc remove' to avoid spawning a DVC
+    # subprocess that calls git internally — a hidden git process can leave a
+    # stale index.lock if it crashes, causing the next git operation in this
+    # hook to fail with a visible "index.lock: File exists" error.
+    rm -f "$dvc_file"
+    git rm --cached "$dvc_file" 2>/dev/null || true
 
-    # dvc remove cleaned the sibling .gitignore entry; also clean the root
-    # .gitignore (consolidated format used for non-root files).
-    if [[ "$dvc_dir" != "." ]]; then
+    # Clean the .gitignore entry written by 'dvc add'.
+    # Two formats exist depending on where the file lives:
+    #   - Root-level files: DVC wrote /<basename> directly into root .gitignore
+    #   - Non-root files: flux moved that entry to root .gitignore as the full
+    #     repo-relative path ($target_abs) during original routing; the sibling
+    #     .gitignore was already cleaned at that time and needs no action here.
+    if [[ "$dvc_dir" == "." ]]; then
+      local bn; bn=$(basename "$target_abs")
+      if [[ -f ".gitignore" ]] && grep -qxF "/$bn" .gitignore 2>/dev/null; then
+        local _tmp; _tmp=$(mktemp)
+        grep -vxF "/$bn" .gitignore > "$_tmp" || true
+        mv "$_tmp" .gitignore
+        git add .gitignore
+      fi
+    else
       if [[ -f ".gitignore" ]] && grep -qxF "$target_abs" .gitignore 2>/dev/null; then
         local _tmp; _tmp=$(mktemp)
         grep -vxF "$target_abs" .gitignore > "$_tmp" || true

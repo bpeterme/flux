@@ -164,12 +164,78 @@ EOF
   run bash .git/hooks/pre-commit 2>&1
   [ "$status" -eq 0 ]
 
-  assert_dvc_called "remove big.txt.dvc"
+  assert_dvc_not_called "remove"
 
   [ ! -f "big.txt.dvc" ]
 
   run git diff --cached --name-only
   [[ "$output" == *"big.txt"* ]]
+}
+
+@test "migration removes root-level .gitignore entry and unstages .dvc pointer" {
+  echo "content" > notes.txt
+  cat > notes.txt.dvc << 'EOF'
+outs:
+- md5: aabbccdd
+  path: notes.txt
+EOF
+  echo "/notes.txt" >> .gitignore
+  git add notes.txt.dvc .gitignore
+  git commit -m "root dvc file" --no-verify -q
+
+  echo "still small" > notes.txt
+  echo "trigger" > trigger.txt
+  git add trigger.txt
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+
+  # .dvc pointer gone from disk and from git index
+  [ ! -f "notes.txt.dvc" ]
+  run git ls-files notes.txt.dvc
+  [ -z "$output" ]
+
+  # /notes.txt entry removed from root .gitignore
+  run grep -xF "/notes.txt" .gitignore
+  [ "$status" -ne 0 ]
+
+  # file is staged in Git
+  run git diff --cached --name-only
+  [[ "$output" == *"notes.txt"* ]]
+}
+
+@test "migration removes full-path .gitignore entry for non-root DVC file" {
+  mkdir -p docs
+  echo "content" > docs/report.md
+  cat > docs/report.md.dvc << 'EOF'
+outs:
+- md5: 11223344
+  path: report.md
+EOF
+  # flux consolidates non-root entries as full paths in root .gitignore
+  echo "docs/report.md" >> .gitignore
+  git add docs/report.md.dvc .gitignore
+  git commit -m "non-root dvc file" --no-verify -q
+
+  echo "still small" > docs/report.md
+  echo "trigger" > trigger.txt
+  git add trigger.txt
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+
+  # .dvc pointer gone from disk and from git index
+  [ ! -f "docs/report.md.dvc" ]
+  run git ls-files docs/report.md.dvc
+  [ -z "$output" ]
+
+  # full-path entry removed from root .gitignore
+  run grep -xF "docs/report.md" .gitignore
+  [ "$status" -ne 0 ]
+
+  # file is staged in Git
+  run git diff --cached --name-only
+  [[ "$output" == *"docs/report.md"* ]]
 }
 
 @test "DVC-tracked binary file stays in DVC even when small" {
