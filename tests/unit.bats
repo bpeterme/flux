@@ -675,3 +675,51 @@ EOF
   [ -f "overlap/file.txt.dvc" ]
   assert_dvc_called "add overlap/file.txt"
 }
+
+@test "DVC-tracked file in force-dvc pinned dir is not migrated to Git" {
+  mkdir -p archive
+  echo "small content" > archive/notes.md
+  cat > archive/notes.md.dvc << 'EOF'
+outs:
+- md5: aabbccdd
+  path: archive/notes.md
+EOF
+  echo "/archive/notes.md" >> .gitignore
+  git add archive/notes.md.dvc .gitignore
+  git commit -m "dvc-tracked file in archive" --no-verify -q
+
+  git config --add dvc-router.force-dvc "archive"
+
+  echo "trigger" > trigger.txt
+  git add trigger.txt
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+
+  assert_dvc_not_called "remove archive/notes.md.dvc"
+  [ -f "archive/notes.md.dvc" ]
+}
+
+@test "DVC-tracked file in .dvc/flux pinned dir is not migrated to Git" {
+  mkdir -p archive
+  echo "small content" > archive/notes.md
+  cat > archive/notes.md.dvc << 'EOF'
+outs:
+- md5: aabbccdd
+  path: archive/notes.md
+EOF
+  echo "/archive/notes.md" >> .gitignore
+  mkdir -p .dvc
+  printf '[flux]\n    pin-dvc = archive\n' > .dvc/flux
+  git add archive/notes.md.dvc .gitignore .dvc/flux
+  git commit -m "dvc-tracked file with flux pin" --no-verify -q
+
+  echo "trigger" > trigger.txt
+  git add trigger.txt
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+
+  assert_dvc_not_called "remove archive/notes.md.dvc"
+  [ -f "archive/notes.md.dvc" ]
+}

@@ -60,11 +60,41 @@ SIZE_CAP_MB=$(git config --get dvc-router.size-cap-mb 2>/dev/null || echo "5")
 SIZE_CAP_BYTES=$(( SIZE_CAP_MB * 1024 * 1024 ))
 VERBOSE=$(git config --get dvc-router.verbose 2>/dev/null || echo "false")
 
-# Directory pins — multi-value git config; empty array when key is absent
+# Directory pins — read from .dvc/flux (current), fall back to legacy git config.
+# Mirrors _flux_pins_read logic in the main flux script.
+_read_dvc_flux_pins() {
+  local key="$1" file="$2"
+  local section="${key%%.*}" option="${key#*.}"
+  [[ -f "$file" ]] || return 0
+  local in_sec=false
+  while IFS= read -r _line; do
+    if [[ "$_line" =~ ^\["$section"\] ]]; then
+      in_sec=true
+    elif [[ "$_line" =~ ^\[ ]]; then
+      in_sec=false
+    elif [[ "$in_sec" == true && "$_line" =~ ^[[:space:]]*"$option"[[:space:]]*=[[:space:]]*(.*) ]]; then
+      echo "${BASH_REMATCH[1]}"
+    fi
+  done < "$file"
+}
+
+_load_pins() {
+  local new_key="$1" legacy_key="$2"
+  local git_root dvc_flux out
+  git_root=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
+  dvc_flux="$git_root/.dvc/flux"
+  out=$(_read_dvc_flux_pins "$new_key" "$dvc_flux" 2>/dev/null || true)
+  if [[ -n "$out" ]]; then
+    echo "$out"
+  else
+    git config --get-all "$legacy_key" 2>/dev/null || true
+  fi
+}
+
 FORCE_DVC_DIRS=()
-while IFS= read -r _line; do FORCE_DVC_DIRS+=("$_line"); done < <(git config --get-all dvc-router.force-dvc 2>/dev/null || true)
+while IFS= read -r _line; do [[ -n "$_line" ]] && FORCE_DVC_DIRS+=("$_line"); done < <(_load_pins flux.pin-dvc dvc-router.force-dvc)
 FORCE_GIT_DIRS=()
-while IFS= read -r _line; do FORCE_GIT_DIRS+=("$_line"); done < <(git config --get-all dvc-router.force-git 2>/dev/null || true)
+while IFS= read -r _line; do [[ -n "$_line" ]] && FORCE_GIT_DIRS+=("$_line"); done < <(_load_pins flux.pin-git dvc-router.force-git)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -258,6 +288,12 @@ migrate_dvc_to_git() {
 
     # Skip missing targets — handled by cleanup_orphaned_dvc_pointers
     [[ ! -f "$target_abs" ]] && continue
+
+    # Skip files in DVC-pinned directories — pins override size/binary logic
+    if _in_dir_override "$target_abs" "${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}"; then
+      log "Pinned to DVC, skipping migration: $target_abs"
+      continue
+    fi
 
     # Check binary status — binary files always stay in DVC regardless of size
     if ! grep -qI . "$target_abs" 2>/dev/null; then
