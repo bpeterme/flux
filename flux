@@ -2272,12 +2272,20 @@ _flux_dry_run() {
   local git_files=() git_bytes=0 git_notes=() git_file_sizes=()
   local dvc_files=() dvc_bytes=0 dvc_migrating=() dvc_notes=() dvc_file_sizes=() dvc_file_is_binary=()
   local skip_files=()
+  local dvc_ptr_files=()
 
   while IFS= read -r file; do
     [[ ! -f "$file" ]] && continue
 
     if [[ -f "${file}.dvc" ]]; then
       skip_files+=("$file")
+      continue
+    fi
+
+    # .dvc pointer files are git-tracked bookkeeping — collect them separately
+    # so they are excluded from counts and shown as real data paths instead.
+    if [[ "$file" == *.dvc ]]; then
+      dvc_ptr_files+=("$file")
       continue
     fi
 
@@ -2317,29 +2325,11 @@ _flux_dry_run() {
     fi
   done <<< "$staged_files"
 
-  # .dvc pointer files that landed in dvc_files (because they're in a pinned dir) were sized
-  # via wc -c, giving the tiny pointer-file size instead of the actual data size.  Fix that now.
-  local _pdi=0 _pdf _pds _pline _old_ptr_sz
-  for _pdf in "${dvc_files[@]+"${dvc_files[@]}"}"; do
-    if [[ "$_pdf" == *.dvc ]]; then
-      _pds=0
-      while IFS= read -r _pline; do
-        [[ "$_pline" =~ ^[[:space:]]*size:[[:space:]]*([0-9]+) ]] && \
-          _pds=$(( _pds + BASH_REMATCH[1] ))
-      done < "$_pdf"
-      if (( _pds > 0 )); then
-        _old_ptr_sz="${dvc_file_sizes[$_pdi]:-0}"
-        dvc_bytes=$(( dvc_bytes - _old_ptr_sz + _pds ))
-        dvc_file_sizes[$_pdi]=$_pds
-      fi
-    fi
-    (( _pdi++ )) || true
-  done
-
-  local dvc_managed_paths=() dvc_managed_sizes=() dvc_managed_total=0
+  # Extract real data paths from all .dvc pointer files (pinned and non-pinned).
+  # These are shown in the DVC section instead of the pointer files themselves.
+  local dvc_managed_paths=() dvc_managed_sizes=() dvc_managed_notes=() dvc_managed_total=0
   local _pm _pp _ps _pd _line
-  for _pm in "${git_files[@]+"${git_files[@]}"}"; do
-    [[ "$_pm" != *.dvc ]] && continue
+  for _pm in "${dvc_ptr_files[@]+"${dvc_ptr_files[@]}"}"; do
     _pp=""; _ps=0
     while IFS= read -r _line; do
       if [[ -z "$_pp" ]] && [[ "$_line" =~ ^[[:space:]]*path:[[:space:]]+(.+)$ ]]; then
@@ -2355,6 +2345,11 @@ _flux_dry_run() {
     dvc_managed_paths+=("$_pp")
     dvc_managed_sizes+=("$_ps")
     dvc_managed_total=$(( dvc_managed_total + _ps ))
+    if _flux_in_dir_override "$_pm" "${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}"; then
+      dvc_managed_notes+=("[pinned]")
+    else
+      dvc_managed_notes+=("")
+    fi
   done
 
   local _pin_count=$(( ${#FORCE_DVC_DIRS[@]} + ${#FORCE_GIT_DIRS[@]} ))
@@ -2365,18 +2360,8 @@ _flux_dry_run() {
   echo "  flux dry-run — routing preview (cap: ${SIZE_CAP_MB} MB${_pin_note})"
   echo ""
 
-  local skip_bytes=0 skip_file_sizes=()
-  local _sf _ssz
-  for _sf in "${skip_files[@]+"${skip_files[@]}"}"; do
-    if [[ -f "$_sf" ]]; then
-      _ssz=$(wc -c < "$_sf" | tr -d ' ')
-      skip_bytes=$(( skip_bytes + _ssz ))
-      skip_file_sizes+=("$_ssz")
-    fi
-  done
-
-  local _dvc_total_n=$(( ${#dvc_files[@]} + ${#skip_files[@]} + ${#dvc_managed_paths[@]} ))
-  local _dvc_total_b=$(( dvc_bytes + skip_bytes + dvc_managed_total ))
+  local _dvc_total_n=$(( ${#dvc_files[@]} + ${#dvc_managed_paths[@]} ))
+  local _dvc_total_b=$(( dvc_bytes + dvc_managed_total ))
   printf "  → Git     %d file(s)    %s\n" "${#git_files[@]}" "$(_flux_format_size "$git_bytes")"
   printf "  → DVC     %d file(s)    %s\n" "$_dvc_total_n" "$(_flux_format_size "$_dvc_total_b")"
 
@@ -2401,12 +2386,16 @@ _flux_dry_run() {
     (( _hj++ )) || true
   done
 
-  # Already-DVC-managed files (skip_files + dvc_managed_paths) → binary category
-  _H_BIN+=("${skip_file_sizes[@]+"${skip_file_sizes[@]}"}")
+  # Already-DVC-managed files (from pointer extraction) — pinned go to _H_PIN_DVC,
+  # others to _H_BIN.
   local _dm=0
   for _dmp in "${dvc_managed_paths[@]+"${dvc_managed_paths[@]}"}"; do
     local _dmsz="${dvc_managed_sizes[$_dm]:-0}"
-    (( _dmsz > 0 )) && _H_BIN+=("$_dmsz")
+    if [[ "${dvc_managed_notes[$_dm]:-}" == "[pinned]" ]]; then
+      (( _dmsz > 0 )) && _H_PIN_DVC+=("$_dmsz")
+    else
+      (( _dmsz > 0 )) && _H_BIN+=("$_dmsz")
+    fi
     (( _dm++ )) || true
   done
 
@@ -2482,10 +2471,6 @@ _flux_dry_run() {
         printf "    ✦  %-42s %s%s\n" "$f" "$(_flux_format_size "$sz")" "$_note_str"
         (( _j++ )) || true
       done
-      for f in "${skip_files[@]+"${skip_files[@]}"}"; do
-        local sz; sz=$(wc -c < "$f" | tr -d ' ')
-        printf "    ✦  %-42s %s\n" "$f" "$(_flux_format_size "$sz")"
-      done
       local _dm=0
       for _dmp in "${dvc_managed_paths[@]+"${dvc_managed_paths[@]}"}"; do
         local _dmsz="${dvc_managed_sizes[$_dm]:-0}"
@@ -2495,7 +2480,9 @@ _flux_dry_run() {
         else
           _dmsz_str="(size unknown)"
         fi
-        printf "    ✦  %-42s %s\n" "$_dmp" "$_dmsz_str"
+        local _dmn="${dvc_managed_notes[$_dm]:-}"
+        local _dmn_str; _dmn_str="${_dmn:+   ${_dmn}}"
+        printf "    ✦  %-42s %s%s\n" "$_dmp" "$_dmsz_str" "$_dmn_str"
         (( _dm++ )) || true
       done
     fi
