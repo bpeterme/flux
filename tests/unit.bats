@@ -373,6 +373,63 @@ EOF
 # ---------------------------------------------------------------------------
 # .dvcignore sync
 # ---------------------------------------------------------------------------
+# Git/DVC duplicate cleanup — data file in git index AND has a .dvc pointer
+# ---------------------------------------------------------------------------
+
+@test "binary file tracked by git AND with a committed .dvc pointer is removed from git index" {
+  # Reproduce the real-world inconsistent state: a binary file was committed to
+  # git, then 'dvc add' was run without 'git rm --cached', leaving both the
+  # data file and its .dvc pointer committed in git.
+  # migrate_dvc_to_git keeps binary files in DVC, so cleanup_git_dvc_duplicates
+  # must then remove the data file from the git index.
+  make_binary_file asset.bin
+  git add asset.bin
+  git commit -m "binary in git" --no-verify -q
+
+  printf 'outs:\n- md5: abc\n  path: asset.bin\n  size: 100\n' > asset.bin.dvc
+  git add asset.bin.dvc
+  git commit -m "pointer also committed" --no-verify -q
+
+  echo "trigger" > trigger.txt
+  git add trigger.txt
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+
+  run git ls-files asset.bin
+  [ -z "$output" ]
+
+  [ -f "asset.bin.dvc" ]
+  run git ls-files asset.bin.dvc
+  [ -n "$output" ]
+
+  run git check-ignore -q asset.bin
+  [ "$status" -eq 0 ]
+}
+
+@test "git/DVC duplicate cleanup adds gitignore entry for non-root binary file" {
+  mkdir -p archive
+  make_binary_file archive/data.bin
+  git add archive/data.bin
+  git commit -m "binary in git" --no-verify -q
+
+  printf 'outs:\n- md5: abc\n  path: data.bin\n  size: 100\n' > archive/data.bin.dvc
+  git add archive/data.bin.dvc
+  git commit -m "pointer also committed" --no-verify -q
+
+  echo "trigger" > trigger.txt
+  git add trigger.txt
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+
+  run git ls-files archive/data.bin
+  [ -z "$output" ]
+
+  grep -qxF "archive/data.bin" .gitignore
+}
+
+# ---------------------------------------------------------------------------
 
 @test ".dvcignore is generated from .gitignore" {
   cat > .gitignore << 'EOF'
@@ -788,4 +845,26 @@ EOF
 
   assert_dvc_not_called "remove archive/notes.md.dvc"
   [ -f "archive/notes.md.dvc" ]
+}
+
+@test ".dvc pointer file staged inside a force-dvc dir is kept in Git, not re-wrapped" {
+  # Regression: a .dvc pointer file inside a DVC-pinned directory would be
+  # mistakenly routed to DVC storage, creating a broken .dvc.dvc chain and
+  # removing the pointer from git.
+  mkdir -p archive
+  echo "some content" > archive/report.md
+  git config --add dvc-router.force-dvc "archive"
+
+  # Simulate an existing .dvc pointer that a previous hook run created.
+  # Stage the pointer directly as the hook always does after dvc add.
+  printf 'outs:\n- md5: abc123\n  path: report.md\n  size: 12\n' > archive/report.md.dvc
+  git add archive/report.md.dvc
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+
+  assert_dvc_not_called "add archive/report.md.dvc"
+  [ ! -f "archive/report.md.dvc.dvc" ]
+  run git diff --cached --name-only
+  [[ "$output" == *"archive/report.md.dvc"* ]]
 }

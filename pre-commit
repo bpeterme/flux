@@ -259,6 +259,56 @@ cleanup_orphaned_dvc_pointers() {
 }
 
 # ---------------------------------------------------------------------------
+# Remove git-tracked files that also have a .dvc pointer
+#
+# This inconsistent state occurs when 'dvc add' was run on a file that was
+# already committed to git without also running 'git rm --cached'. The file
+# ends up in both the git index and in DVC storage simultaneously.
+#
+# Fix: remove the data file from the git index and ensure it is gitignored,
+# so DVC is the sole owner. The .dvc pointer and R2 data are left untouched.
+# ---------------------------------------------------------------------------
+cleanup_git_dvc_duplicates() {
+  local cleaned=()
+
+  while IFS= read -r file; do
+    [[ -z "$file" || "$file" == *.dvc ]] && continue
+    [[ -f "${file}.dvc" ]] || continue
+
+    # Only fix the inconsistency when the .dvc pointer is already committed.
+    # If it was just staged this commit, migrate_dvc_to_git may legitimately
+    # move it back to git — don't interfere with that in-flight decision.
+    git cat-file -e "HEAD:${file}.dvc" 2>/dev/null || continue
+
+    log "Inconsistent state: '$file' is in git index AND has a committed .dvc pointer — removing from git index"
+
+    git rm --cached "$file" &>/dev/null || true
+
+    # Ensure the file is gitignored so it stays out of the index.
+    # Use the full repo-relative path in the root .gitignore (flux style).
+    local _dir; _dir=$(dirname "$file")
+    if [[ "$_dir" == "." ]]; then
+      local _base; _base=$(basename "$file")
+      grep -qxF "/$_base" .gitignore 2>/dev/null || \
+        grep -qxF "$file"  .gitignore 2>/dev/null || \
+        { echo "$file" >> .gitignore; git add .gitignore; }
+    else
+      grep -qxF "$file" .gitignore 2>/dev/null || \
+        { echo "$file" >> .gitignore; git add .gitignore; }
+    fi
+
+    cleaned+=("$file")
+  done < <(git -c core.quotepath=false ls-files 2>/dev/null | grep -v '\.dvc$' || true)
+
+  if (( ${#cleaned[@]} > 0 )); then
+    info "Fixed git/DVC duplicate tracking (${#cleaned[@]} file(s) removed from git index):"
+    for f in "${cleaned[@]}"; do
+      info "  ✦ $f"
+    done
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Migrate DVC-tracked files back to Git if they now fall below the cap
 #
 # Scans every .dvc pointer file known to Git. For each, checks the current
@@ -399,10 +449,22 @@ cleanup_orphaned_dvc_pointers
 
 # ---------------------------------------------------------------------------
 # Migrate DVC-tracked files that now fall below the cap back to Git
-# Runs after cleanup (so deleted targets are already gone) and before the
-# routing loop (so the routing loop only sees the user's original staged set)
+# Runs after orphan cleanup (so deleted targets are already gone) and before
+# the routing loop (so the routing loop only sees the user's original staged set).
+# Must run before cleanup_git_dvc_duplicates: if a small text file is in the
+# duplicate state, migration wins (restores it to git and removes the pointer),
+# so cleanup_git_dvc_duplicates then finds no pointer and leaves it alone.
 # ---------------------------------------------------------------------------
 migrate_dvc_to_git
+
+# ---------------------------------------------------------------------------
+# Remove data files that are tracked by git AND have a committed .dvc pointer
+# Runs after migration so that files migrate_dvc_to_git already moved back to
+# git (deleting their pointer) are naturally excluded by the [[ -f *.dvc ]] check.
+# What remains are files that belong in DVC (binary, large, or pinned) but
+# were never removed from the git index when DVC took them over.
+# ---------------------------------------------------------------------------
+cleanup_git_dvc_duplicates
 
 if [[ -z "$staged_files" ]]; then
   log "No staged files to process."
@@ -429,6 +491,16 @@ while IFS= read -r file; do
   # Skip files already tracked by DVC (have a corresponding .dvc file)
   if [[ -f "${file}.dvc" ]]; then
     log "Already DVC-tracked, skipping: $file"
+    continue
+  fi
+
+  # .dvc pointer files must always stay in git — they are the tracking mechanism
+  # DVC requires in the git history. Routing them to DVC storage (e.g. because
+  # they live inside a DVC-pinned directory) would create a broken .dvc.dvc chain
+  # and remove the pointer from git entirely.
+  if [[ "$file" == *.dvc ]]; then
+    log "DVC pointer file → Git (always): $file"
+    git_kept+=("$file")
     continue
   fi
 
