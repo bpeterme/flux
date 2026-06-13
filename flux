@@ -3127,6 +3127,55 @@ flux() {
   esac
 }
 
+# ---------------------------------------------------------------------------
+# shell completion
+# ---------------------------------------------------------------------------
+
+if [[ -n "${ZSH_VERSION:-}" ]]; then
+  _flux_zsh_complete() {
+    case $CURRENT in
+      2)
+        compadd add clone list remove pull dry-run cap pin config doctor version help
+        ;;
+      3)
+        case "${words[2]}" in
+          remove) compadd git dvc ;;
+          pin)    compadd dvc git reset ;;
+          cap)    compadd --reset ;;
+        esac
+        ;;
+      4)
+        if [[ "${words[2]}" == "pin" && "${words[3]}" == "reset" ]]; then
+          compadd --all
+        fi
+        ;;
+    esac
+  }
+  (( ${+functions[compdef]} )) && compdef _flux_zsh_complete flux
+elif [[ -n "${BASH_VERSION:-}" ]]; then
+  _flux_bash_complete() {
+    local cur="${COMP_WORDS[COMP_CWORD]}"
+    local prev="${COMP_WORDS[COMP_CWORD-1]}"
+    local pprev="${COMP_WORDS[COMP_CWORD-2]:-}"
+    COMPREPLY=()
+
+    if [[ $COMP_CWORD -eq 1 ]]; then
+      COMPREPLY=( $(compgen -W \
+        "add clone list remove pull dry-run cap pin config doctor version help" \
+        -- "$cur") )
+    elif [[ $COMP_CWORD -eq 2 ]]; then
+      case "$prev" in
+        remove) COMPREPLY=( $(compgen -W "git dvc"       -- "$cur") ) ;;
+        pin)    COMPREPLY=( $(compgen -W "dvc git reset" -- "$cur") ) ;;
+        cap)    COMPREPLY=( $(compgen -W "--reset"       -- "$cur") ) ;;
+      esac
+    elif [[ $COMP_CWORD -eq 3 && "$pprev" == "pin" && "$prev" == "reset" ]]; then
+      COMPREPLY=( $(compgen -W "--all" -- "$cur") )
+    fi
+  }
+  complete -F _flux_bash_complete flux
+fi
+
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   flux "$@"
 fi

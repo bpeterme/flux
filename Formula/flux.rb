@@ -17,6 +17,7 @@ class Flux < Formula
     (share/"flux").install "pre-commit"
     (share/"flux").install "flux.env.example"
     bin.install "flux"
+    zsh_completion.install "completions/_flux"
   end
 
   def caveats

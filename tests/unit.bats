@@ -868,3 +868,54 @@ EOF
   run git diff --cached --name-only
   [[ "$output" == *"archive/report.md.dvc"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# Bash tab completion
+# ---------------------------------------------------------------------------
+
+@test "_flux_bash_complete: position 1 suggests subcommands" {
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/flux"
+  COMP_WORDS=(flux "")
+  COMP_CWORD=1
+  _flux_bash_complete
+  [[ "${COMPREPLY[*]}" == *"remove"* ]]
+  [[ "${COMPREPLY[*]}" == *"pin"* ]]
+  [[ "${COMPREPLY[*]}" == *"cap"* ]]
+}
+
+@test "_flux_bash_complete: position 2 after remove suggests git and dvc" {
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/flux"
+  COMP_WORDS=(flux remove "")
+  COMP_CWORD=2
+  _flux_bash_complete
+  [ "${COMPREPLY[*]}" = "git dvc" ]
+}
+
+@test "_flux_bash_complete: position 2 after pin suggests dvc git reset" {
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/flux"
+  COMP_WORDS=(flux pin "")
+  COMP_CWORD=2
+  _flux_bash_complete
+  [ "${COMPREPLY[*]}" = "dvc git reset" ]
+}
+
+@test "_flux_bash_complete: position 2 after cap suggests --reset" {
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/flux"
+  COMP_WORDS=(flux cap "")
+  COMP_CWORD=2
+  _flux_bash_complete
+  [ "${COMPREPLY[*]}" = "--reset" ]
+}
+
+@test "_flux_bash_complete: position 3 after pin reset suggests --all" {
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/flux"
+  COMP_WORDS=(flux pin reset "")
+  COMP_CWORD=3
+  _flux_bash_complete
+  [ "${COMPREPLY[*]}" = "--all" ]
+}
