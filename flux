@@ -1971,19 +1971,25 @@ _flux_sync() {
   # Remove macOS metadata files before pulling — they can cause DVC to report
   # conflicts for DVC-tracked directories without needing --force on real data.
   find . -name ".DS_Store" -not -path "./.git/*" -delete 2>/dev/null || true
-  if "$DVC" pull --quiet &>"$_dvc_out"; then
+  # --quiet suppresses error output in some DVC versions, so omit it and rely
+  # on &> redirect to keep terminal clean while still capturing all output.
+  if "$DVC" pull &>"$_dvc_out"; then
     _flux_spin_stop; ok "Pulled DVC data from R2."
   elif grep -qiE 'AccessDenied|Access Denied' "$_dvc_out" 2>/dev/null; then
     _flux_spin_stop; warn "DVC pull failed — access denied. Check R2 API token permissions (Admin Read & Write required)."
   elif grep -qiE 'Checkout failed|missing-files|do not exist neither' "$_dvc_out" 2>/dev/null; then
     _flux_spin_stop; warn "DVC pull failed — some files missing from remote. Run 'dvc pull' for details."
-  elif grep -qiE 'exists locally|not empty|already exists' "$_dvc_out" 2>/dev/null; then
-    _flux_spin_stop; warn "DVC pull skipped locally modified files — your local versions are preserved. Run 'dvc pull --force' only if you want to overwrite them with the remote version."
+  elif grep -qiE "unsaved files|Can't remove|exists locally|not empty|already exists" "$_dvc_out" 2>/dev/null; then
+    _flux_spin_stop
+    warn "DVC pull skipped locally modified file(s) — your local versions are preserved."
+    grep -oE '[^ ]+\.pdf|[^ ]+\.dvc' "$_dvc_out" 2>/dev/null | sort -u | sed 's/^/    /' >&2 || true
+    warn "  • To keep your local version and push it:  dvc add <file> then flux sync"
+    warn "  • To accept the remote version:            dvc pull --force <file>.dvc"
   elif grep -q . "$_dvc_out" 2>/dev/null; then
     _flux_spin_stop; warn "DVC pull failed — run 'dvc pull' for details:"
     sed 's/^/    /' "$_dvc_out" >&2
   else
-    _flux_spin_stop; warn "DVC pull exited with an error but produced no output — run 'dvc pull' to diagnose."
+    _flux_spin_stop; warn "DVC pull failed — run 'dvc pull' to diagnose."
   fi
   rm -f "$_dvc_out"
 
