@@ -85,7 +85,16 @@ EOF
     exit 0
     ;;
 
-  gc|status|push|pull|version)
+  status)
+    # If MOCK_DVC_STATUS_FILE points to a file, print its contents to simulate
+    # locally modified DVC-tracked files; otherwise report clean (no output).
+    if [[ -f "${MOCK_DVC_STATUS_FILE:-}" ]]; then
+      cat "$MOCK_DVC_STATUS_FILE"
+    fi
+    exit 0
+    ;;
+
+  gc|push|pull|version)
     exit 0
     ;;
 

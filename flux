@@ -1945,6 +1945,26 @@ _flux_sync() {
   _flux_hook_update
   _flux_subrepo_sync
 
+  # Auto-stage locally modified DVC-tracked files before committing.
+  # Without this, dvc pull refuses to overwrite them and the local version
+  # is never pushed to R2.
+  local _dvc_st _dvc_modified=() _dvc_f
+  _dvc_st=$("$DVC" status 2>/dev/null || true)
+  if [[ -n "$_dvc_st" ]]; then
+    while IFS= read -r _dvc_f; do
+      [[ -n "$_dvc_f" ]] && _dvc_modified+=("$_dvc_f")
+    done < <(printf '%s\n' "$_dvc_st" \
+      | grep -E '[[:space:]]modified:[[:space:]]' \
+      | sed 's/.*modified:[[:space:]]*//' | sed 's/[[:space:]]*$//')
+  fi
+  if (( ${#_dvc_modified[@]} > 0 )); then
+    _flux_spin_stop
+    for _dvc_f in "${_dvc_modified[@]}"; do
+      ok "Staging local change: $_dvc_f"
+      "$DVC" add "$_dvc_f" 2>/dev/null || warn "Could not stage: $_dvc_f"
+    done
+  fi
+
   if [[ -n "$(git status --porcelain 2>/dev/null | head -1)" ]]; then
     git add -A
     _flux_spin_stop  # stop before commit so hook output appears cleanly
@@ -1971,19 +1991,25 @@ _flux_sync() {
   # Remove macOS metadata files before pulling — they can cause DVC to report
   # conflicts for DVC-tracked directories without needing --force on real data.
   find . -name ".DS_Store" -not -path "./.git/*" -delete 2>/dev/null || true
-  if "$DVC" pull --quiet &>"$_dvc_out"; then
+  # --quiet suppresses error output in some DVC versions, so omit it and rely
+  # on &> redirect to keep terminal clean while still capturing all output.
+  if "$DVC" pull &>"$_dvc_out"; then
     _flux_spin_stop; ok "Pulled DVC data from R2."
   elif grep -qiE 'AccessDenied|Access Denied' "$_dvc_out" 2>/dev/null; then
     _flux_spin_stop; warn "DVC pull failed — access denied. Check R2 API token permissions (Admin Read & Write required)."
   elif grep -qiE 'Checkout failed|missing-files|do not exist neither' "$_dvc_out" 2>/dev/null; then
     _flux_spin_stop; warn "DVC pull failed — some files missing from remote. Run 'dvc pull' for details."
-  elif grep -qiE 'exists locally|not empty|already exists' "$_dvc_out" 2>/dev/null; then
-    _flux_spin_stop; warn "DVC pull skipped locally modified files — your local versions are preserved. Run 'dvc pull --force' only if you want to overwrite them with the remote version."
+  elif grep -qiE "unsaved files|Can't remove|exists locally|not empty|already exists" "$_dvc_out" 2>/dev/null; then
+    _flux_spin_stop
+    warn "DVC pull skipped locally modified file(s) — your local versions are preserved."
+    grep -oE '[^ ]+\.pdf|[^ ]+\.dvc' "$_dvc_out" 2>/dev/null | sort -u | sed 's/^/    /' >&2 || true
+    warn "  • To keep your local version and push it:  dvc add <file> then flux sync"
+    warn "  • To accept the remote version:            dvc pull --force <file>.dvc"
   elif grep -q . "$_dvc_out" 2>/dev/null; then
     _flux_spin_stop; warn "DVC pull failed — run 'dvc pull' for details:"
     sed 's/^/    /' "$_dvc_out" >&2
   else
-    _flux_spin_stop; warn "DVC pull exited with an error but produced no output — run 'dvc pull' to diagnose."
+    _flux_spin_stop; warn "DVC pull failed — run 'dvc pull' to diagnose."
   fi
   rm -f "$_dvc_out"
 

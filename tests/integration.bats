@@ -408,6 +408,33 @@ teardown() { teardown_flux_test; }
   rm -rf "$(dirname "$bare")"
 }
 
+@test "flux sync auto-stages locally modified DVC-tracked files before pull" {
+  local bare; bare="$(mktemp -d)/origin.git"
+  git clone --bare -q "$TEST_REPO" "$bare"
+  git remote set-url origin "file://$bare"
+  git push -u origin main -q
+
+  bash "$REPO_ROOT/flux" add
+
+  # Simulate dvc status reporting overview.pdf as locally modified
+  export MOCK_DVC_STATUS_FILE
+  MOCK_DVC_STATUS_FILE=$(mktemp)
+  printf 'overview.pdf.dvc:\n\tchanged outs:\n\t\tmodified:\t\tStartupCandidates/overview.pdf\n' \
+    > "$MOCK_DVC_STATUS_FILE"
+
+  run bash "$REPO_ROOT/flux" sync
+  [ "$status" -eq 0 ]
+
+  # dvc add must have been called for the modified file
+  assert_dvc_called "add StartupCandidates/overview.pdf"
+  # The sync output must mention staging
+  [[ "$output" == *"Staging local change"* ]]
+
+  rm -f "$MOCK_DVC_STATUS_FILE"
+  unset MOCK_DVC_STATUS_FILE
+  rm -rf "$(dirname "$bare")"
+}
+
 # ---------------------------------------------------------------------------
 # flux dry-run
 # ---------------------------------------------------------------------------
