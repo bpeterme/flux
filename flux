@@ -1945,6 +1945,26 @@ _flux_sync() {
   _flux_hook_update
   _flux_subrepo_sync
 
+  # Auto-stage locally modified DVC-tracked files before committing.
+  # Without this, dvc pull refuses to overwrite them and the local version
+  # is never pushed to R2.
+  local _dvc_st _dvc_modified=() _dvc_f
+  _dvc_st=$("$DVC" status 2>/dev/null || true)
+  if [[ -n "$_dvc_st" ]]; then
+    while IFS= read -r _dvc_f; do
+      [[ -n "$_dvc_f" ]] && _dvc_modified+=("$_dvc_f")
+    done < <(printf '%s\n' "$_dvc_st" \
+      | grep -E '[[:space:]]modified:[[:space:]]' \
+      | sed 's/.*modified:[[:space:]]*//' | sed 's/[[:space:]]*$//')
+  fi
+  if (( ${#_dvc_modified[@]} > 0 )); then
+    _flux_spin_stop
+    for _dvc_f in "${_dvc_modified[@]}"; do
+      ok "Staging local change: $_dvc_f"
+      "$DVC" add "$_dvc_f" 2>/dev/null || warn "Could not stage: $_dvc_f"
+    done
+  fi
+
   if [[ -n "$(git status --porcelain 2>/dev/null | head -1)" ]]; then
     git add -A
     _flux_spin_stop  # stop before commit so hook output appears cleanly
