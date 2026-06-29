@@ -1928,6 +1928,55 @@ _flux_repair_dvcignore() {
 }
 
 # ---------------------------------------------------------------------------
+# _flux_git_pull_smart — pull with automatic rebase fallback on merge conflict
+#
+# Sequence:
+#   1. Try a regular merge pull.
+#   2. If git left the repo in a conflicted merge state, abort and retry with
+#      --rebase (handles the common "two sync commits diverged" case cleanly).
+#   3. If rebase also produces conflicts, abort and list the files that need
+#      manual resolution — those are genuinely non-trivial.
+#   4. For any other pull failure (network, no upstream) show the raw error.
+# ---------------------------------------------------------------------------
+_flux_git_pull_smart() {
+  local _err _rc
+  _err=$(mktemp)
+
+  git pull --quiet 2>"$_err"
+  _rc=$?
+
+  if [[ $_rc -eq 0 ]]; then
+    ok "Pulled from Git remote."
+    rm -f "$_err"; return 0
+  fi
+
+  # Detect a conflicted merge state (MERGE_HEAD exists = merge in progress)
+  if git rev-parse MERGE_HEAD &>/dev/null; then
+    git merge --abort 2>/dev/null || true
+    if git pull --rebase --quiet 2>/dev/null; then
+      ok "Pulled from Git remote (auto-resolved via rebase)."
+      rm -f "$_err"; return 0
+    fi
+    # Rebase also conflicted — collect files and abort cleanly
+    local _conflicted
+    _conflicted=$(git diff --name-only --diff-filter=U 2>/dev/null)
+    git rebase --abort 2>/dev/null || true
+    rm -f "$_err"
+    warn "Git pull failed — these files have conflicts that need manual resolution:"
+    [[ -n "$_conflicted" ]] && printf '%s\n' "$_conflicted" | sed 's/^/    /' >&2
+    return 1
+  fi
+
+  # Non-conflict failure (network error, no upstream, etc.)
+  local _msg
+  _msg=$(cat "$_err")
+  rm -f "$_err"
+  warn "Git pull failed — check remote."
+  [[ -n "$_msg" ]] && printf '%s\n' "$_msg" | sed 's/^/    /' >&2
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # sync — pull then push (git + dvc)
 # ---------------------------------------------------------------------------
 
@@ -1976,11 +2025,8 @@ _flux_sync() {
   _flux_sync_summary
 
   _flux_spin_start "pulling from Git..."
-  if git pull --quiet 2>/dev/null; then
-    _flux_spin_stop; ok "Pulled from Git remote."
-  else
-    _flux_spin_stop; warn "Git pull failed — check remote or resolve conflicts."
-  fi
+  _flux_spin_stop
+  _flux_git_pull_smart || true
 
   [[ -n "${FLUX_AWS_CONFIG_FILE:-}" ]] && export AWS_CONFIG_FILE="$FLUX_AWS_CONFIG_FILE"
   _flux_apply_dvc_profile "$DVC"
