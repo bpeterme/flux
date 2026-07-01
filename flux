@@ -528,6 +528,7 @@ flux - Git + DVC auto-router for Cloudflare R2
 
 Usage:
   flux                         Sync both ways (pull then push)
+  flux "description"           Sync and add a note to the commit
   flux add                     Opt current project into sync
   flux list                    List flux projects; shows pins when inside a project
   flux clone <git-url>         Clone a flux-managed repo and wire up DVC + credentials
@@ -1981,6 +1982,7 @@ _flux_git_pull_smart() {
 # ---------------------------------------------------------------------------
 
 _flux_sync() {
+  local _description="${1:-}"
   git rev-parse --git-dir &>/dev/null \
     || fail "Not inside a Git repository."
   clear 2>/dev/null || true
@@ -2017,7 +2019,11 @@ _flux_sync() {
   if [[ -n "$(git status --porcelain 2>/dev/null | head -1)" ]]; then
     git add -A
     _flux_spin_stop  # stop before commit so hook output appears cleanly
-    git commit --quiet -m "sync: $(date '+%Y-%m-%d %H:%M')"
+    local _commit_msg="sync: $(date '+%Y-%m-%d %H:%M')"
+    if [[ -n "$_description" ]]; then
+      _commit_msg+=$'\n\n'"$_description"
+    fi
+    git commit --quiet -m "$_commit_msg"
   else
     _flux_spin_stop
   fi
@@ -3151,6 +3157,12 @@ flux() {
   local cmd="${1:-}"
   shift || true
 
+  # flux -m "description" — undocumented alias for flux "description"
+  if [[ "$cmd" == "-m" ]]; then
+    _flux_sync "${1:-}"
+    return
+  fi
+
   case "$cmd" in
     add)               _flux_add ;;
     clone)             _flux_clone "$@" ;;
@@ -3196,10 +3208,8 @@ flux() {
       fi
       ;;
     *)
-      echo "Unknown command: $cmd"
-      echo
-      _flux_help
-      exit 1
+      # Treat any unrecognised argument as a sync description: flux "my note"
+      _flux_sync "$cmd"
       ;;
   esac
 }
