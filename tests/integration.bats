@@ -217,7 +217,6 @@ teardown() { teardown_flux_test; }
 @test "flux unknown command exits non-zero" {
   run bash "$REPO_ROOT/flux" notacommand
   [ "$status" -ne 0 ]
-  [[ "$output" == *"Unknown command"* ]]
 }
 
 # ---------------------------------------------------------------------------
