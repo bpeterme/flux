@@ -399,6 +399,16 @@ brew tap bpeterme/claudebox && brew install bpeterme/claudebox/claudebox
 cbox           # start Claude Code in a container for the current project
 ```
 
+#### Claude Code integration
+
+Claude Code has no built-in awareness that a repo is flux-managed — left alone, it treats it as a plain Git repo and, since a claudebox session already syncs DVC content at session boundaries, either does nothing useful or (worse) tries to run `flux push`/`dvc push` itself mid-session, which needlessly duplicates the exit-time sync. Add this to your `CLAUDE.md` (global, or per-project) so Claude recognizes flux-managed repos and pushes correctly inside a claudebox session:
+
+```markdown
+- **Flux-managed repos need push-message awareness, not different behavior.** Before committing, check if the repo is flux-managed: `.dvc/config` exists, and/or `git config --get flux.dvc-remote-bucket` returns a value, and/or `.git/hooks/pre-commit` is a flux-installed hook. If so: commit as normal, always with a real, descriptive commit message (flux's pre-commit hook routes large/binary files to DVC automatically — no extra action needed from you). Then push as normal too: `git push` only needs SSH, which is always available, so there's no reason to hold it back. Do NOT run or suggest running `flux push`/`dvc push` yourself — claudebox already wraps every container session with `flux _pull` before entering and `flux _push` after exiting (cbox.sh, host-side, using the host's Keychain; this only applies inside claudebox). Just add a short one-line note after pushing that the DVC-routed content will sync to R2 automatically when the claudebox session ends.
+```
+
+If you use flux without claudebox (plain host-side git), drop the last two sentences — there's no exit-time hook to rely on, so `flux push` after committing is the correct move there.
+
 ### [claudedot](https://github.com/bpeterme/claudedot)
 
 [claudedot](https://github.com/bpeterme/claudedot) (`cdot`) syncs your Claude configuration and per-project conversation history across machines via a private git remote. Keeps your Claude settings consistent everywhere you work.

@@ -281,35 +281,75 @@ _flux_in_dir_override() {
 }
 
 # ---------------------------------------------------------------------------
-# Keychain helpers
+# Keychain / keyring helpers
 # ---------------------------------------------------------------------------
+# macOS: securityd-backed Keychain. Linux (inside a claudebox container):
+# kernel session keyring, seeded from the host's Keychain by cbox at
+# container create/start (see cbox.sh in the claudebox repo). Same function
+# signatures either way — callers never branch on OS themselves.
+
+_flux_is_linux() { [[ "$(uname -s)" == "Linux" ]]; }
 
 _kc_get() {
-  security find-generic-password -a "${USER:-$(id -un)}" -s "flux.$1" -w 2>/dev/null || true
+  if _flux_is_linux; then
+    local _id
+    _id=$(keyctl search @s user "flux.$1" 2>/dev/null) || return 0
+    keyctl print "$_id" 2>/dev/null || true
+  else
+    security find-generic-password -a "${USER:-$(id -un)}" -s "flux.$1" -w 2>/dev/null || true
+  fi
 }
 
 _kc_set() {
-  security add-generic-password -U -a "${USER:-$(id -un)}" -s "flux.$1" -w "$2" \
-    -l "flux: $1" 2>/dev/null \
-    || fail "Failed to write 'flux.$1' to Keychain."
+  if _flux_is_linux; then
+    keyctl add user "flux.$1" "$2" @s >/dev/null 2>&1 \
+      || fail "Failed to write 'flux.$1' to keyring."
+  else
+    security add-generic-password -U -a "${USER:-$(id -un)}" -s "flux.$1" -w "$2" \
+      -l "flux: $1" 2>/dev/null \
+      || fail "Failed to write 'flux.$1' to Keychain."
+  fi
 }
 
 _kc_del() {
-  security delete-generic-password -a "${USER:-$(id -un)}" -s "flux.$1" 2>/dev/null || true
+  if _flux_is_linux; then
+    local _id
+    _id=$(keyctl search @s user "flux.$1" 2>/dev/null) || return 0
+    keyctl unlink "$_id" @s >/dev/null 2>&1 || true
+  else
+    security delete-generic-password -a "${USER:-$(id -un)}" -s "flux.$1" 2>/dev/null || true
+  fi
 }
 
 _kc_get_dvc() {
-  security find-generic-password -a "${USER:-$(id -un)}" -s "flux.dvc.$1.$2" -w 2>/dev/null || true
+  if _flux_is_linux; then
+    local _id
+    _id=$(keyctl search @s user "flux.dvc.$1.$2" 2>/dev/null) || return 0
+    keyctl print "$_id" 2>/dev/null || true
+  else
+    security find-generic-password -a "${USER:-$(id -un)}" -s "flux.dvc.$1.$2" -w 2>/dev/null || true
+  fi
 }
 
 _kc_set_dvc() {
-  security add-generic-password -U -a "${USER:-$(id -un)}" -s "flux.dvc.$1.$2" -w "$3" \
-    -l "flux: dvc $1 $2" 2>/dev/null \
-    || fail "Failed to write 'flux.dvc.$1.$2' to Keychain."
+  if _flux_is_linux; then
+    keyctl add user "flux.dvc.$1.$2" "$3" @s >/dev/null 2>&1 \
+      || fail "Failed to write 'flux.dvc.$1.$2' to keyring."
+  else
+    security add-generic-password -U -a "${USER:-$(id -un)}" -s "flux.dvc.$1.$2" -w "$3" \
+      -l "flux: dvc $1 $2" 2>/dev/null \
+      || fail "Failed to write 'flux.dvc.$1.$2' to Keychain."
+  fi
 }
 
 _kc_del_dvc() {
-  security delete-generic-password -a "${USER:-$(id -un)}" -s "flux.dvc.$1.$2" 2>/dev/null || true
+  if _flux_is_linux; then
+    local _id
+    _id=$(keyctl search @s user "flux.dvc.$1.$2" 2>/dev/null) || return 0
+    keyctl unlink "$_id" @s >/dev/null 2>&1 || true
+  else
+    security delete-generic-password -a "${USER:-$(id -un)}" -s "flux.dvc.$1.$2" 2>/dev/null || true
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -382,6 +422,22 @@ _flux_apply_dvc_profile() {
     grep -vE '^\s*(access_key_id|secret_access_key)\s*=' "$_cfg" > "$_tmp" || true
     mv "$_tmp" "$_cfg"
   fi
+}
+
+# ---------------------------------------------------------------------------
+# Container bootstrap (Linux) — called by cbox at container create/start to
+# seed the kernel keyring and wire up the AWS credential profile, mirroring
+# what `flux add`/`flux clone` do on the host. Not macOS-gated: this runs
+# inside the claudebox container, never on the host.
+# ---------------------------------------------------------------------------
+
+_flux_container_init() {
+  local _bucket="${1:-}" _ak="${2:-}" _sk="${3:-}"
+  [[ -n "$_bucket" && -n "$_ak" && -n "$_sk" ]] \
+    || fail "Usage: flux _container-init <bucket> <access-key-id> <secret-key>"
+  _kc_set_dvc "$_bucket" "access-key-id" "$_ak"
+  _kc_set_dvc "$_bucket" "secret-key"    "$_sk"
+  _flux_apply_dvc_profile
 }
 
 # ---------------------------------------------------------------------------
@@ -3171,6 +3227,7 @@ flux() {
     sync|"")           _flux_sync ;;
     _api-version)      echo "1" ;;
     _credential-helper) _flux_credential_helper ;;
+    _container-init)    _flux_container_init "$@" ;;
     _pull)
       _flux_require_dvc_repo
       local DVC; _flux_require_dvc
