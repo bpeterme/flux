@@ -232,6 +232,8 @@ make_flux_repo() {
 
 # ---------------------------------------------------------------------------
 # teardown_flux_test — cleans up temp dirs created by setup_flux_test
+# (and setup_flux_test_linux, which reuses the same variable names plus
+# MOCK_KEYRING_DIR)
 # ---------------------------------------------------------------------------
 teardown_flux_test() {
   cd /tmp
@@ -242,7 +244,71 @@ teardown_flux_test() {
   else
     unset XDG_CONFIG_HOME
   fi
-  rm -rf "$TEST_REPO" "$MOCK_HOME" "$MOCK_BIN" "$MOCK_KEYCHAIN_DIR"
-  unset TEST_REPO MOCK_HOME MOCK_BIN MOCK_KEYCHAIN_DIR \
+  rm -rf "$TEST_REPO" "$MOCK_HOME" "$MOCK_BIN" "$MOCK_KEYCHAIN_DIR" "${MOCK_KEYRING_DIR:-}"
+  unset TEST_REPO MOCK_HOME MOCK_BIN MOCK_KEYCHAIN_DIR MOCK_KEYRING_DIR \
         REAL_HOME REAL_PATH REAL_XDG_CONFIG_HOME MOCK_DVC_LOG
+}
+
+# ---------------------------------------------------------------------------
+# setup_flux_test_linux
+#
+# Same as setup_flux_test, but exercises the Linux code path: mocks `uname
+# -s` as "Linux" and mocks `keyctl` (kernel keyring) instead of `security`
+# (macOS Keychain). No credentials are pre-populated — on Linux nothing
+# seeds the keyring except `flux _container-init`, which is what these
+# tests are for.
+#
+# Exports: TEST_REPO, MOCK_HOME, MOCK_BIN, MOCK_KEYRING_DIR,
+#          REAL_HOME, REAL_PATH, MOCK_DVC_LOG
+# ---------------------------------------------------------------------------
+setup_flux_test_linux() {
+  TEST_REPO=$(mktemp -d)
+  MOCK_HOME=$(mktemp -d)
+  MOCK_BIN=$(mktemp -d)
+  MOCK_KEYRING_DIR=$(mktemp -d)
+
+  cp "$REPO_ROOT/tests/helpers/mock_dvc" "$MOCK_BIN/dvc"
+  chmod +x "$MOCK_BIN/dvc"
+
+  cp "$REPO_ROOT/tests/helpers/mock_keyctl" "$MOCK_BIN/keyctl"
+  chmod +x "$MOCK_BIN/keyctl"
+
+  # Mock uname — returns "Linux" so flux takes the keyctl-backed branch
+  cat > "$MOCK_BIN/uname" << 'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-s" ]]; then echo "Linux"; else /usr/bin/uname "$@"; fi
+EOF
+  chmod +x "$MOCK_BIN/uname"
+
+  cat > "$MOCK_BIN/python3" << 'PYEOF'
+#!/usr/bin/env bash
+exit 0
+PYEOF
+  chmod +x "$MOCK_BIN/python3"
+
+  export REAL_HOME="$HOME"
+  export REAL_PATH="$PATH"
+  export REAL_XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-}"
+  export HOME="$MOCK_HOME"
+  export XDG_CONFIG_HOME="$MOCK_HOME/.config"
+  export PATH="$MOCK_BIN:$PATH"
+  export MOCK_DVC_LOG="$TEST_REPO/dvc_calls.log"
+  export MOCK_KEYRING_DIR
+
+  mkdir -p "$MOCK_HOME/.config/flux"
+  cat > "$MOCK_HOME/.config/flux/flux.env" << 'EOF'
+FLUX_DVC_REMOTES=(
+  "test-bucket:test-account-id"
+)
+FLUX_SIZE_CAP_MB=5
+FLUX_VERBOSE=false
+EOF
+
+  cd "$TEST_REPO"
+
+  git init -q
+  git config user.email "test@example.com"
+  git config user.name "Test"
+  git remote add origin "https://github.com/test/test-project.git"
+  git commit --allow-empty -m "initial" --no-verify -q
 }
