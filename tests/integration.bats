@@ -435,6 +435,74 @@ teardown() { teardown_flux_test; }
 }
 
 # ---------------------------------------------------------------------------
+# flux _push — internal session-close hook cbox runs automatically
+# ---------------------------------------------------------------------------
+
+@test "flux _push commits dirty work before pushing" {
+  local bare; bare="$(mktemp -d)/origin.git"
+  git clone --bare -q "$TEST_REPO" "$bare"
+  git remote set-url origin "file://$bare"
+  git push -u origin main -q
+
+  bash "$REPO_ROOT/flux" add
+
+  echo "work in progress" > wip.txt
+
+  run bash "$REPO_ROOT/flux" _push
+  [ "$status" -eq 0 ]
+
+  # The dirty file must have been committed locally...
+  git log --oneline | grep -q "^.\{7\} sync:"
+  git ls-files wip.txt | grep -q "wip.txt"
+
+  # ...and pushed to the remote.
+  local remote_log
+  remote_log=$(git -C "$bare" log --oneline)
+  [[ "$remote_log" == *"sync:"* ]]
+
+  rm -rf "$(dirname "$bare")"
+}
+
+@test "flux _push still pushes git even when dvc push fails" {
+  local bare; bare="$(mktemp -d)/origin.git"
+  git clone --bare -q "$TEST_REPO" "$bare"
+  git remote set-url origin "file://$bare"
+  git push -u origin main -q
+
+  bash "$REPO_ROOT/flux" add
+  echo "work in progress" > wip.txt
+
+  export MOCK_DVC_PUSH_FAIL=1
+  run bash "$REPO_ROOT/flux" _push
+  unset MOCK_DVC_PUSH_FAIL
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"DVC push failed"* ]]
+
+  # Git push must still have gone through despite the DVC failure.
+  local remote_log
+  remote_log=$(git -C "$bare" log --oneline)
+  [[ "$remote_log" == *"sync:"* ]]
+
+  rm -rf "$(dirname "$bare")"
+}
+
+@test "flux _push surfaces a git push failure instead of failing silently" {
+  bash "$REPO_ROOT/flux" add
+  # Point origin at a path that can never succeed, so git push fails fast
+  # without touching the network.
+  git remote set-url origin "file:///nonexistent/origin.git"
+  echo "work in progress" > wip.txt
+
+  run bash "$REPO_ROOT/flux" _push
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Git push failed"* ]]
+
+  # The commit must still exist locally even though the push failed.
+  git log --oneline | grep -q "^.\{7\} sync:"
+}
+
+# ---------------------------------------------------------------------------
 # flux dry-run
 # ---------------------------------------------------------------------------
 

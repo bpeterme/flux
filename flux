@@ -1981,20 +1981,13 @@ _flux_git_pull_smart() {
 # sync — pull then push (git + dvc)
 # ---------------------------------------------------------------------------
 
-_flux_sync() {
+# Stage any locally-modified DVC-tracked files and commit anything dirty in
+# git. Shared by `flux sync` (interactive) and `_flux_push_internal` (the
+# session-close hook cbox runs automatically) so neither path can leave a
+# repo with uncommitted work. Requires $DVC to already be set by the caller
+# (via _flux_require_dvc).
+_flux_stage_and_commit_if_dirty() {
   local _description="${1:-}"
-  git rev-parse --git-dir &>/dev/null \
-    || fail "Not inside a Git repository."
-  clear 2>/dev/null || true
-  _flux_spin_start "flux syncing..."
-  _flux_require_dvc_repo
-  _flux_require_git_remote
-  _flux_is_configured \
-    || fail "Not configured. Run 'flux config' to set up."
-  local DVC; _flux_require_dvc
-
-  _flux_hook_update
-  _flux_subrepo_sync
 
   # Auto-stage locally modified DVC-tracked files before committing.
   # Without this, dvc pull refuses to overwrite them and the local version
@@ -2027,6 +2020,39 @@ _flux_sync() {
   else
     _flux_spin_stop
   fi
+}
+
+# Internal: the session-close hook cbox runs automatically for flux-managed
+# repos. Auto-commits any dirty work (same rule as `flux sync`), then pushes
+# git and DVC as independent steps — a DVC/R2 failure must never block the
+# git push, and vice versa. Always warns on failure so callers must not
+# silence this; returns non-zero if either push failed.
+_flux_push_internal() {
+  local DVC; _flux_require_dvc
+  _flux_stage_and_commit_if_dirty
+
+  local _failed=0
+  git push || { warn "Git push failed — check remote."; _failed=1; }
+  "$DVC" push || { warn "DVC push failed — run 'dvc push' to see the full error."; _failed=1; }
+  return "$_failed"
+}
+
+_flux_sync() {
+  local _description="${1:-}"
+  git rev-parse --git-dir &>/dev/null \
+    || fail "Not inside a Git repository."
+  clear 2>/dev/null || true
+  _flux_spin_start "flux syncing..."
+  _flux_require_dvc_repo
+  _flux_require_git_remote
+  _flux_is_configured \
+    || fail "Not configured. Run 'flux config' to set up."
+  local DVC; _flux_require_dvc
+
+  _flux_hook_update
+  _flux_subrepo_sync
+
+  _flux_stage_and_commit_if_dirty "$_description"
 
   _flux_sync_summary
 
@@ -3179,7 +3205,7 @@ flux() {
       fi
       "$DVC" pull
       ;;
-    _push)             _flux_require_dvc_repo; local DVC; _flux_require_dvc; "$DVC" push && git push ;;
+    _push)             _flux_require_dvc_repo; _flux_push_internal ;;
     _doctor)           _flux_doctor_inline ;;
     pull)              _flux_pull "$@" ;;
     dry-run)           _flux_dry_run ;;
