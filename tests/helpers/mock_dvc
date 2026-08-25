@@ -94,7 +94,15 @@ EOF
     exit 0
     ;;
 
-  gc|push|pull|version)
+  push)
+    if [[ "${MOCK_DVC_PUSH_FAIL:-0}" == "1" ]]; then
+      echo "mock_dvc: simulated push failure" >&2
+      exit 1
+    fi
+    exit 0
+    ;;
+
+  gc|pull|version)
     exit 0
     ;;
 
