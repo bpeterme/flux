@@ -13,6 +13,28 @@
 
 set -uo pipefail
 
+# ---------------------------------------------------------------------------
+# Safety net: refuse to push a commit that drops most tracked files
+#
+# Same rule as the pre-commit check, applied to what actually leaves this
+# machine (also catches commits made with --no-verify or elsewhere). Compares
+# each pushed commit's tree with what the remote branch has now.
+# ---------------------------------------------------------------------------
+zero=0000000000000000000000000000000000000000
+while read -r _lref lsha _rref rsha; do
+  [[ "${FLUX_ALLOW_MASS_DELETE:-}" == "1" ]] && continue
+  [[ -z "${lsha:-}" || "$lsha" == "$zero" || "${rsha:-$zero}" == "$zero" ]] && continue
+  git cat-file -e "${rsha}^{commit}" 2>/dev/null || continue
+  before=$(git ls-tree -r --name-only "$rsha" | wc -l | tr -d ' ')
+  after=$(git ls-tree -r --name-only "$lsha" | wc -l | tr -d ' ')
+  if (( before - after >= 10 && after * 2 < before )); then
+    echo "✘ flux: this push would leave ${after} of ${before} tracked files on ${_rref#refs/heads/} — stopped." >&2
+    echo "  Look at the last commits (git log --stat) before pushing." >&2
+    echo "  If you really mean it: FLUX_ALLOW_MASS_DELETE=1 git push ..." >&2
+    exit 1
+  fi
+done
+
 [[ "${FLUX_DVC_PUSHED:-}" == "1" ]] && exit 0
 
 root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0

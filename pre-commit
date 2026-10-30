@@ -433,6 +433,29 @@ DVC=$(find_dvc) || {
 log "Using DVC at: $DVC"
 
 # ---------------------------------------------------------------------------
+# Safety net: refuse a commit that deletes most tracked files
+#
+# A commit made where the working tree looked empty or unreadable (a broken
+# mount, a half-synced folder) once recorded every file as deleted; pushing
+# it would have wiped the remote. Real mass deletions are rare and deliberate:
+# allow them with FLUX_ALLOW_MASS_DELETE=1.
+# ---------------------------------------------------------------------------
+refuse_mass_deletion() {
+  local _tracked _deleted
+  if [[ "${FLUX_ALLOW_MASS_DELETE:-}" != "1" ]] && git rev-parse --verify -q HEAD >/dev/null; then
+    _tracked=$(git ls-tree -r --name-only HEAD | wc -l | tr -d ' ')
+    _deleted=$(git diff --cached --name-only --diff-filter=D | wc -l | tr -d ' ')
+    if (( _deleted >= 10 && _deleted * 2 > _tracked )); then
+      echo "✘ flux: this commit deletes ${_deleted} of ${_tracked} tracked files — stopped." >&2
+      echo "  If the files still exist on disk, the working tree is not visible correctly here" >&2
+      echo "  (check with: git status). Unstage everything with: git reset" >&2
+      echo "  If you really mean to delete them: FLUX_ALLOW_MASS_DELETE=1 git commit ..." >&2
+      exit 1
+    fi
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Capture the user's originally staged files BEFORE cleanup or migration
 # run — both may stage their own bookkeeping files (.gitignore edits, pointer
 # deletions, migrated data files) which must not be re-processed by the
@@ -465,6 +488,8 @@ migrate_dvc_to_git
 # were never removed from the git index when DVC took them over.
 # ---------------------------------------------------------------------------
 cleanup_git_dvc_duplicates
+
+refuse_mass_deletion
 
 if [[ -z "$staged_files" ]]; then
   log "No staged files to process."
@@ -609,6 +634,8 @@ done <<< "$staged_files"
 # Runs after routing so DVC-added .gitignore entries are included
 # ---------------------------------------------------------------------------
 sync_dvcignore
+
+refuse_mass_deletion
 
 # ---------------------------------------------------------------------------
 # Summary
