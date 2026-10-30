@@ -1253,3 +1253,134 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"pin(s) active"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# Storage endpoint: per-bucket AWS profile, never in the committed .dvc/config
+# ---------------------------------------------------------------------------
+
+# A flux project as older flux versions left it: endpointurl in .dvc/config.
+_legacy_project() {
+  git config flux.dvc-remote-bucket test-bucket
+  mkdir -p .dvc
+  printf '[core]\n    remote = r2remote\n[remote "r2remote"]\n    url = s3://test-bucket/test-project\n    endpointurl = %s\n    region = auto\n' \
+    "${1:-https://acct.eu.r2.cloudflarestorage.com}" > .dvc/config
+}
+
+# Run a flux function in the test repo (flux sourced, so internals are callable).
+_flux_fn() {
+  bash -c "source '$REPO_ROOT/flux'; $*"
+}
+
+# Mock cbox: logs calls (and stdin of _ensure); _exposed answers from MOCK_CBOX_EXPOSED.
+_mock_cbox() {
+  cat > "$MOCK_BIN/cbox" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$HOME/cbox_calls.log"
+case "$2" in
+  _exposed) [[ -n "${MOCK_CBOX_EXPOSED:-}" ]] && { echo "$MOCK_CBOX_EXPOSED"; exit 0; }; exit 1 ;;
+  _ensure)  cat >> "$HOME/cbox_calls.log"; echo "✔ added warden resource '$3' to /x/resources" ;;
+esac
+EOF
+  chmod +x "$MOCK_BIN/cbox"
+}
+
+@test "storage endpoint: legacy endpointurl moves from .dvc/config to the host AWS profile" {
+  _legacy_project
+  run _flux_fn _flux_apply_dvc_profile "$MOCK_BIN/dvc"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Storage endpoint moved"* ]]
+  ! grep -q endpointurl .dvc/config || false
+  grep -q 'url = s3://test-bucket/test-project' .dvc/config
+  grep -q 'endpoint = https://acct.eu.r2.cloudflarestorage.com' .dvc/flux
+  profile=$(awk '/^\[profile flux-dvc-test-bucket\]/{f=1;next} /^\[/{f=0} f' "$HOME/.aws/config")
+  [[ "$profile" == *"_credential-helper test-bucket"* ]]
+  [[ "$profile" == *"endpoint_url = https://acct.eu.r2.cloudflarestorage.com"* ]]
+  grep -q "remote modify --local r2remote profile flux-dvc-test-bucket" "$MOCK_DVC_LOG"
+}
+
+@test "storage endpoint: the host profile wins over an endpoint later written into the repo" {
+  _legacy_project
+  _flux_fn _flux_apply_dvc_profile "$MOCK_BIN/dvc" >/dev/null
+  # e.g. edited from inside a container
+  _legacy_project "https://attacker.example"
+  _flux_fn _flux_apply_dvc_profile "$MOCK_BIN/dvc" >/dev/null
+  ! grep -q attacker "$HOME/.aws/config" || false
+  ! grep -q endpointurl .dvc/config || false
+  grep -q 'endpoint = https://acct.eu.r2.cloudflarestorage.com' .dvc/flux
+}
+
+@test "storage endpoint: rewriting the profile is idempotent and keeps other profiles" {
+  mkdir -p "$HOME/.aws"
+  printf '[profile other]\nregion = eu-west-1\n' > "$HOME/.aws/config"
+  _legacy_project
+  _flux_fn _flux_apply_dvc_profile "$MOCK_BIN/dvc" >/dev/null
+  _flux_fn _flux_apply_dvc_profile "$MOCK_BIN/dvc" >/dev/null
+  [ "$(grep -c '^\[profile flux-dvc-test-bucket\]' "$HOME/.aws/config")" -eq 1 ]
+  grep -q '^\[profile other\]' "$HOME/.aws/config"
+  grep -q 'region = eu-west-1' "$HOME/.aws/config"
+}
+
+@test "storage endpoint: the credential helper uses the bucket named in the profile" {
+  git config flux.dvc-remote-bucket some-other-bucket
+  run _flux_fn _flux_credential_helper test-bucket
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"AccessKeyId":"test-key-id"'* ]]
+}
+
+@test "storage endpoint: flux clone finds the endpoint in .dvc/flux" {
+  local remote; remote=$(mktemp -d)
+  make_clone_remote "$remote" "test-bucket" "test-project" "abc123"
+  sed -i.bak '/endpointurl/d' "$remote/.dvc/config"
+  printf '[remote]\n    endpoint = https://abc123.eu.r2.cloudflarestorage.com\n' > "$remote/.dvc/flux"
+  git -C "$remote" add .dvc && git -C "$remote" commit -qm "endpoint in .dvc/flux" --no-verify
+  run bash "$REPO_ROOT/flux" clone "$remote" "$TEST_REPO/cloned"
+  rm -rf "$remote"
+  [ "$status" -eq 0 ]
+  grep -q 'endpoint_url = https://abc123.eu.r2.cloudflarestorage.com' "$HOME/.aws/config"
+}
+
+@test "storage endpoint: in a container (Linux) flux writes no profile and needs no flux.env" {
+  printf '#!/usr/bin/env bash\nif [[ "${1:-}" == "-s" ]]; then echo Linux; else /usr/bin/uname "$@"; fi\n' > "$MOCK_BIN/uname"
+  rm -f "$HOME/.config/flux/flux.env"
+  _legacy_project
+  run _flux_fn '_flux_is_configured && echo configured; _flux_apply_dvc_profile '"$MOCK_BIN/dvc"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *configured* ]]
+  [ ! -f "$HOME/.aws/config" ]
+  grep -q endpointurl .dvc/config
+  run _flux_fn _flux_storage_hint
+  [[ "$output" == *"No storage access in this container"* ]]
+  run _flux_fn AWS_CONFIG_FILE=/x _flux_storage_hint
+  [ -z "$output" ]
+}
+
+@test "storage endpoint: with claudebox, .warden and the warden resource are set up once" {
+  _mock_cbox
+  _legacy_project
+  run _flux_fn _flux_apply_dvc_profile "$MOCK_BIN/dvc"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"added warden resource 'dvc-test-bucket'"* ]]
+  [ "$(_flux_fn _flux_dvc_config_read dvc-test-bucket.prefix .warden)" = "test-project" ]
+  calls=$(cat "$MOCK_HOME/cbox_calls.log")
+  [[ "$calls" == *"warden _ensure dvc-test-bucket"* ]]
+  [[ "$calls" == *"upstream     = https://acct.eu.r2.cloudflarestorage.com"* ]]
+  [[ "$calls" == *"key-id       = flux.dvc.test-bucket.access-key-id"* ]]
+  [[ "$calls" == *"profile      = flux-dvc-test-bucket"* ]]
+  _flux_fn _flux_apply_dvc_profile "$MOCK_BIN/dvc" >/dev/null
+  [ "$(grep -c '_ensure' "$MOCK_HOME/cbox_calls.log")" -eq 1 ]
+}
+
+@test "storage endpoint: refuses an AWS config file that containers can see" {
+  _mock_cbox
+  _legacy_project
+  run env MOCK_CBOX_EXPOSED=/mounted bash -c "source '$REPO_ROOT/flux'; _flux_apply_dvc_profile '$MOCK_BIN/dvc'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"visible inside claudebox containers (via /mounted)"* ]]
+  ! grep -qs flux-dvc-test-bucket "$HOME/.aws/config" || false
+  grep -q endpointurl .dvc/config
+}
+
+@test "storage endpoint: bucket names become valid warden resource names" {
+  [ "$(_flux_fn _flux_warden_name My.Bucket.Name)" = "dvc-my-bucket-name" ]
+  [ "$(_flux_fn _flux_warden_name a-very-long-bucket-name-that-goes-on-and-on)" = "dvc-a-very-long-bucket-name-that" ]
+}

@@ -254,7 +254,7 @@ flux clone <remote-url>   # clones, wires up DVC, and pulls large files
 cd <repo>
 ```
 
-`flux clone` reads the bucket and endpoint from the committed `.dvc/config`, looks up credentials in macOS Keychain, and prompts for them once if they are not found. After that, the repo is fully configured with no additional steps.
+`flux clone` reads the bucket from the committed `.dvc/config` and the storage endpoint from `.dvc/flux`, looks up credentials in macOS Keychain, and prompts for them once if they are not found. After that, the repo is fully configured with no additional steps.
 
 If you prefer to set up credentials globally first (so `flux clone` never prompts):
 
@@ -269,8 +269,10 @@ cd <repo>
 ```
 my-project/
 ├── .dvc/
-│   ├── config          ← committed (R2 endpoint, bucket — no secrets)
-│   └── config.local    ← git-ignored (contains your secret key)
+│   ├── config          ← committed (bucket and folder — no secrets)
+│   ├── flux            ← committed (size cap, R2 endpoint record for flux clone)
+│   └── config.local    ← git-ignored (names the AWS profile; no secrets)
+├── .warden             ← committed, only with claudebox (lets its containers reach this bucket folder)
 ├── .gitignore          ← you maintain this; source of truth for ignores
 ├── .dvcignore          ← auto-generated from .gitignore, never edit manually
 ├── src/                ← tracked by Git → GitLab / GitHub

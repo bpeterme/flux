@@ -316,11 +316,35 @@ _kc_del_dvc() {
 # DVC credential-process helpers
 # ---------------------------------------------------------------------------
 
+_flux_on_macos() { [[ "$(uname -s)" == "Darwin" ]]; }
+
+# Per-bucket names: the AWS profile flux writes on the host (claudebox's
+# warden creates the same profile inside containers), and the warden resource.
+_flux_profile_name() { echo "flux-dvc-$1"; }
+
+_flux_warden_name() {
+  local _n
+  _n="dvc-$(printf '%s' "$1" | tr 'A-Z.' 'a-z-' | tr -cd 'a-z0-9_-')"
+  echo "${_n:0:32}"
+}
+
+_flux_aws_config_file() { echo "${FLUX_AWS_CONFIG_FILE:-$HOME/.aws/config}"; }
+
+# Body of [profile $1] in the AWS config file (empty when absent).
+_flux_profile_section() {
+  awk -v s="[profile $1]" '$0==s{f=1;next} /^\[/{f=0} f && NF' "$(_flux_aws_config_file)" 2>/dev/null || true
+}
+
+_flux_profile_endpoint() {
+  _flux_profile_section "$1" | sed -n 's/^[[:space:]]*endpoint_url[[:space:]]*=[[:space:]]*//p' | head -1
+}
+
 # Called by boto3 via credential_process — reads Keychain and outputs JSON.
-# Must run inside a flux-managed project (needs git config flux.dvc-remote-bucket).
+# The bucket comes from the profile line; older profiles omit it, then the
+# project's git config flux.dvc-remote-bucket is used.
 _flux_credential_helper() {
-  local _bucket
-  _bucket=$(git config --get flux.dvc-remote-bucket 2>/dev/null || true)
+  local _bucket="${1:-}"
+  [[ -n "$_bucket" ]] || _bucket=$(git config --get flux.dvc-remote-bucket 2>/dev/null || true)
   if [[ -z "$_bucket" ]]; then
     echo "flux _credential-helper: not inside a flux-managed project" >&2
     exit 1
@@ -335,46 +359,79 @@ _flux_credential_helper() {
   printf '{"Version":1,"AccessKeyId":"%s","SecretAccessKey":"%s"}\n' "$_ak" "$_sk"
 }
 
-# Write (or update) the [profile flux-dvc] credential_process entry in the
-# AWS config file. Idempotent: fast-paths when already correct, otherwise
-# removes the stale section and appends a fresh one. Uses FLUX_AWS_CONFIG_FILE
-# when set, otherwise the default ~/.aws/config.
+# Write (or update) [profile $1] for bucket $2 with endpoint $3 in the AWS
+# config file: credential_process (Keychain) + endpoint_url. Idempotent.
+# Uses FLUX_AWS_CONFIG_FILE when set, otherwise the default ~/.aws/config.
+# Refuses a file that a claudebox container can see: editing it from there
+# could make the host run any command (credential_process) or send data
+# elsewhere (endpoint_url).
 _flux_setup_aws_credential_process() {
-  local _cfg_file="${FLUX_AWS_CONFIG_FILE:-$HOME/.aws/config}"
+  local _profile="$1" _bucket="$2" _endpoint="$3"
+  local _cfg_file; _cfg_file=$(_flux_aws_config_file)
   local _flux_bin
   _flux_bin=$(command -v flux 2>/dev/null || true)
   [[ -z "$_flux_bin" ]] \
     && _flux_bin="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
-  local _cred_line="credential_process = ${_flux_bin} _credential-helper"
+  local _want
+  _want=$(printf 'credential_process = %s _credential-helper %s\nendpoint_url = %s' "$_flux_bin" "$_bucket" "$_endpoint")
+
+  if command -v cbox >/dev/null 2>&1; then
+    local _mount
+    if _mount=$(cbox warden _exposed "$_cfg_file" 2>/dev/null); then
+      warn "${_cfg_file} is visible inside claudebox containers (via ${_mount}) — AWS profile not written."
+      warn "  Set FLUX_AWS_CONFIG_FILE and AWS_CONFIG_FILE to a path no container mounts."
+      return 1
+    fi
+  fi
 
   mkdir -p "$(dirname "$_cfg_file")"
   [[ -f "$_cfg_file" ]] || touch "$_cfg_file"
+  [[ "$(_flux_profile_section "$_profile")" == "$_want" ]] && return 0
 
-  # Fast path: section already has the correct credential_process line
-  if grep -qF '[profile flux-dvc]' "$_cfg_file" 2>/dev/null \
-  && grep -qF "$_cred_line"        "$_cfg_file" 2>/dev/null; then
-    return 0
-  fi
-
-  # Remove existing [profile flux-dvc] section (if any), then append fresh one.
+  # Remove the existing section (if any), then append a fresh one.
   local _tmp; _tmp=$(mktemp)
-  awk '/^\[profile flux-dvc\]/{skip=1;next} skip && /^\[/{skip=0} !skip{print}' \
+  awk -v s="[profile $_profile]" '$0==s{skip=1;next} skip && /^\[/{skip=0} !skip{print}' \
     "$_cfg_file" > "$_tmp" || true
-  printf '\n[profile flux-dvc]\n%s\n' "$_cred_line" >> "$_tmp"
+  printf '\n[profile %s]\n%s\n' "$_profile" "$_want" >> "$_tmp"
   cp "$_tmp" "$_cfg_file"
   rm -f "$_tmp"
 }
 
-# Point .dvc/config.local at the flux-dvc AWS profile instead of storing
-# plaintext credentials. Also removes legacy credential lines from older flux
-# versions. Calls _flux_setup_aws_credential_process to ensure the profile
-# exists in the AWS config file before DVC tries to use it.
+# Wire the project's DVC remote to its per-bucket AWS profile flux-dvc-<bucket>
+# and keep the storage endpoint out of the committed .dvc/config. DVC lets a
+# repo endpointurl override the profile, and the repo is writable from inside
+# a container; so the host trusts only its own profile for where data goes.
+#   $2 (optional): endpoint chosen by the user (flux add, flux clone).
+# Otherwise, in order: the profile's endpoint, a legacy endpointurl in
+# .dvc/config (moved out once), the committed record in .dvc/flux.
+# Outside macOS (a claudebox container) the profile comes from claudebox's
+# warden, so nothing is written there.
 _flux_apply_dvc_profile() {
-  local _dvc="${1:-}"
+  local _dvc="${1:-}" _endpoint="${2:-}"
   [[ -n "$_dvc" ]] || _dvc=$(_flux_find_dvc 2>/dev/null || true)
   [[ -x "$_dvc" ]] || return 0
-  _flux_setup_aws_credential_process
-  "$_dvc" remote modify --local r2remote profile flux-dvc --quiet 2>/dev/null || true
+  _flux_on_macos || return 0
+
+  local _url _bucket _folder=""
+  _url=$(sed -n 's/^[[:space:]]*url[[:space:]]*=[[:space:]]*s3:\/\///p' .dvc/config 2>/dev/null | head -1 | tr -d ' ')
+  _bucket=$(git config --get flux.dvc-remote-bucket 2>/dev/null || true)
+  [[ -n "$_bucket" ]] || _bucket="${_url%%/*}"
+  [[ "$_url" == */* ]] && _folder="${_url#*/}"
+  [[ -n "$_bucket" ]] || return 0
+
+  local _profile _repo_endpoint
+  _profile=$(_flux_profile_name "$_bucket")
+  _repo_endpoint=$(sed -n 's/^[[:space:]]*endpointurl[[:space:]]*=[[:space:]]*//p' .dvc/config 2>/dev/null | head -1 | tr -d ' ')
+  [[ -n "$_endpoint" ]] || _endpoint=$(_flux_profile_endpoint "$_profile")
+  [[ -n "$_endpoint" ]] || _endpoint="$_repo_endpoint"
+  [[ -n "$_endpoint" ]] || _endpoint=$(_flux_dvc_config_read remote.endpoint 2>/dev/null || true)
+  if [[ -z "$_endpoint" ]]; then
+    warn "No storage endpoint known for bucket '${_bucket}' — run: flux add"
+    return 0
+  fi
+
+  _flux_setup_aws_credential_process "$_profile" "$_bucket" "$_endpoint" || return 0
+  "$_dvc" remote modify --local r2remote profile "$_profile" --quiet 2>/dev/null || true
   # Strip legacy plaintext credentials written by older flux versions
   local _cfg=".dvc/config.local"
   if [[ -f "$_cfg" ]]; then
@@ -382,6 +439,59 @@ _flux_apply_dvc_profile() {
     grep -vE '^\s*(access_key_id|secret_access_key)\s*=' "$_cfg" > "$_tmp" || true
     mv "$_tmp" "$_cfg"
   fi
+
+  # Committed record of the endpoint, so 'flux clone' works on a new machine.
+  [[ "$(_flux_dvc_config_read remote.endpoint 2>/dev/null || true)" == "$_endpoint" ]] \
+    || _flux_dvc_config_write remote.endpoint "$_endpoint"
+  if [[ -n "$_repo_endpoint" ]]; then
+    local _tmp2; _tmp2=$(mktemp)
+    grep -vE '^\s*endpointurl\s*=' .dvc/config > "$_tmp2" || true
+    mv "$_tmp2" .dvc/config
+    ok "Storage endpoint moved from .dvc/config to the AWS profile '${_profile}'."
+  fi
+
+  _flux_warden_setup "$_bucket" "$_folder" "$_profile" "$_endpoint"
+}
+
+# claudebox (optional): let its containers reach this project's DVC storage
+# through warden, the host-side broker — containers never hold the R2 keys.
+# Writes the tracked .warden (approved on the host at the next cbox session)
+# and registers the bucket as a warden resource the first time.
+_flux_warden_setup() {
+  local _bucket="$1" _folder="$2" _profile="$3" _endpoint="$4"
+  command -v cbox >/dev/null 2>&1 || return 0
+  [[ -n "$_folder" ]] || return 0
+  local _name; _name=$(_flux_warden_name "$_bucket")
+  [[ "$(_flux_dvc_config_read "${_name}.prefix" .warden 2>/dev/null || true)" == "$_folder" ]] && return 0
+  _flux_dvc_config_write "${_name}.prefix" "$_folder" .warden
+  ok "claudebox: .warden lets this project's containers use bucket '${_bucket}' (prefix ${_folder})."
+  local _out _spec
+  _spec=$(printf '%s\n' \
+    "type         = http" \
+    "upstream     = ${_endpoint}" \
+    "auth         = sigv4" \
+    "key-id       = flux.dvc.${_bucket}.access-key-id" \
+    "secret       = flux.dvc.${_bucket}.secret-key" \
+    "policy       = dvc" \
+    "bucket       = ${_bucket}" \
+    "availability = project" \
+    "profile      = ${_profile}")
+  if _out=$(printf '%s\n' "$_spec" | cbox warden _ensure "$_name" 2>&1); then
+    [[ "$_out" == *added* ]] && ok "claudebox: ${_out#✔ }"
+  else
+    warn "claudebox: could not register warden resource '${_name}' — update claudebox (brew upgrade claudebox)."
+  fi
+  return 0
+}
+
+# In a claudebox container, storage access comes from warden's AWS profile.
+# Without it DVC can only fail, so say why up front.
+_flux_storage_hint() {
+  _flux_on_macos && return 0
+  [[ -n "${AWS_CONFIG_FILE:-}" ]] && return 0
+  warn "No storage access in this container — DVC pull/push will fail."
+  warn "  On the host: run 'flux' once in this project, then approve it with 'cbox warden approve'."
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -493,6 +603,13 @@ _flux_prompt_value() {
 # ---------------------------------------------------------------------------
 
 _flux_is_configured() {
+  # In a claudebox container there is no Keychain and usually no flux.env:
+  # project settings come from the repo, storage access from warden.
+  if ! _flux_on_macos; then
+    # shellcheck source=/dev/null
+    [[ -f "$FLUX_CONFIG" ]] && source "$FLUX_CONFIG" 2>/dev/null
+    return 0
+  fi
   [[ -f "$FLUX_CONFIG" ]] || return 1
   FLUX_DVC_REMOTES=()
   FLUX_GIT_ACCOUNTS=()
@@ -1372,9 +1489,9 @@ _flux_add() {
   grep -q 'r2remote' .dvc/config 2>/dev/null && remote_verb="updated"
   "$DVC" remote add    -f      r2remote "s3://${chosen_bucket}/${FLUX_R2_FOLDER}" --quiet
   "$DVC" remote default        r2remote                                            --quiet
-  "$DVC" remote modify         r2remote endpointurl "$R2_ENDPOINT"                --quiet
   "$DVC" remote modify         r2remote region      auto                          --quiet
-  _flux_apply_dvc_profile "$DVC"
+  # The endpoint goes to the host's AWS profile, not the committed .dvc/config.
+  _flux_apply_dvc_profile "$DVC" "$R2_ENDPOINT"
   _flux_registry_write dvc_remote r2remote
   ok "DVC remote ${remote_verb}: s3://${chosen_bucket}/${FLUX_R2_FOLDER}"
 
@@ -1406,6 +1523,7 @@ _flux_add() {
   ok ".gitignore updated."
 
   git add .dvc/config .gitignore 2>/dev/null || true
+  [[ -f .warden ]] && git add .warden 2>/dev/null || true
 
   if ! git diff --cached --quiet 2>/dev/null; then
     # Check for files the user staged themselves (not DVC/flux-created files)
@@ -1872,8 +1990,9 @@ _flux_pull() {
     fi
   fi
 
-  [[ -n "${FLUX_AWS_CONFIG_FILE:-}" ]] && export AWS_CONFIG_FILE="$FLUX_AWS_CONFIG_FILE"
+  _flux_on_macos && [[ -n "${FLUX_AWS_CONFIG_FILE:-}" ]] && export AWS_CONFIG_FILE="$FLUX_AWS_CONFIG_FILE"
   _flux_apply_dvc_profile "$DVC"
+  _flux_storage_hint
   ok "Pulling from Git remote..."; git pull "$@"
   ok "Pulling DVC data from R2..."; "$DVC" pull
 }
@@ -2060,8 +2179,9 @@ _flux_sync() {
   _flux_spin_stop
   _flux_git_pull_smart || true
 
-  [[ -n "${FLUX_AWS_CONFIG_FILE:-}" ]] && export AWS_CONFIG_FILE="$FLUX_AWS_CONFIG_FILE"
+  _flux_on_macos && [[ -n "${FLUX_AWS_CONFIG_FILE:-}" ]] && export AWS_CONFIG_FILE="$FLUX_AWS_CONFIG_FILE"
   _flux_apply_dvc_profile "$DVC"
+  _flux_storage_hint
 
   local _dvc_out
   _flux_spin_start "pulling DVC data..."
@@ -3082,10 +3202,12 @@ _flux_clone() {
   local dvc_cfg="$target_dir/.dvc/config"
   local raw_url endpoint
   raw_url=$(grep -E '^\s*url\s*='         "$dvc_cfg" 2>/dev/null | head -1 | sed 's/.*=\s*//' | tr -d ' ')
-  endpoint=$(grep -E '^\s*endpointurl\s*=' "$dvc_cfg" 2>/dev/null | head -1 | sed 's/.*=\s*//' | tr -d ' ')
+  endpoint=$(grep -E '^\s*endpointurl\s*=' "$dvc_cfg" 2>/dev/null | head -1 | sed 's/.*=\s*//' | tr -d ' ' || true)
+  # Current repos keep the endpoint in .dvc/flux; older ones in .dvc/config.
+  [[ -n "$endpoint" ]] || endpoint=$(_flux_dvc_config_read remote.endpoint "$target_dir/.dvc/flux" 2>/dev/null || true)
 
   [[ -n "$raw_url" ]]  || fail "Cannot find DVC remote URL in .dvc/config."
-  [[ -n "$endpoint" ]] || fail "Cannot find DVC endpoint URL in .dvc/config — was this repository set up with flux?"
+  [[ -n "$endpoint" ]] || fail "Cannot find the storage endpoint in .dvc/flux or .dvc/config — was this repository set up with flux?"
 
   local s3_path="${raw_url#s3://}"
   local bucket="${s3_path%%/*}"
@@ -3121,7 +3243,7 @@ _flux_clone() {
   fi
 
   # Step 5: wire up AWS credential process and point .dvc/config.local at the profile
-  (cd "$target_dir" && _flux_apply_dvc_profile "$DVC")
+  (cd "$target_dir" && _flux_apply_dvc_profile "$DVC" "$endpoint")
 
   # Step 6: write git config and registry
   local verbose
@@ -3196,7 +3318,7 @@ flux() {
     remove)            _flux_remove "$@" ;;
     sync|"")           _flux_sync ;;
     _api-version)      echo "1" ;;
-    _credential-helper) _flux_credential_helper ;;
+    _credential-helper) _flux_credential_helper "$@" ;;
     _pull)
       _flux_require_dvc_repo
       local DVC; _flux_require_dvc
