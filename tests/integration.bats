@@ -1293,7 +1293,7 @@ EOF
   [[ "$output" == *"Storage endpoint moved"* ]]
   ! grep -q endpointurl .dvc/config || false
   grep -q 'url = s3://test-bucket/test-project' .dvc/config
-  grep -q 'endpoint = https://acct.eu.r2.cloudflarestorage.com' .dvc/flux
+  grep -q '^ *endpoint = https://' .dvc/flux
   profile=$(awk '/^\[profile flux-dvc-test-bucket\]/{f=1;next} /^\[/{f=0} f' "$HOME/.aws/config")
   [[ "$profile" == *"_credential-helper test-bucket"* ]]
   [[ "$profile" == *"endpoint_url = https://acct.eu.r2.cloudflarestorage.com"* ]]
@@ -1308,7 +1308,7 @@ EOF
   _flux_fn _flux_apply_dvc_profile "$MOCK_BIN/dvc" >/dev/null
   ! grep -q attacker "$HOME/.aws/config" || false
   ! grep -q endpointurl .dvc/config || false
-  grep -q 'endpoint = https://acct.eu.r2.cloudflarestorage.com' .dvc/flux
+  grep -q '^ *endpoint = https://' .dvc/flux
 }
 
 @test "storage endpoint: rewriting the profile is idempotent and keeps other profiles" {
@@ -1483,4 +1483,22 @@ _flux_project_with_remote() {
   printf '#!/usr/bin/env bash\nif [[ "${1:-}" == "-s" ]]; then echo Linux; else /usr/bin/uname "$@"; fi\n' > "$MOCK_BIN/uname"
   run bash -c "source '$REPO_ROOT/flux'; _flux_protect_git; echo \"count=\${GIT_CONFIG_COUNT:-none}\""
   [[ "$output" == *"count=none"* ]]
+}
+
+@test "storage endpoint: flux sync commits the migration it makes (nothing left behind)" {
+  _mock_cbox
+  _flux_project_with_remote
+  # As older flux versions left it: endpoint in the committed .dvc/config.
+  printf '[core]\n    remote = r2remote\n[remote "r2remote"]\n    url = s3://test-bucket/test-project\n    endpointurl = https://acct.eu.r2.cloudflarestorage.com\n' > .dvc/config
+  git add .dvc/config && git commit -qm "legacy config" --no-verify && git push -q
+  run bash "$REPO_ROOT/flux" sync
+  [ "$status" -eq 0 ]
+  # (dvc_calls.log is the mock's own log)
+  [ -z "$(git status --porcelain | grep -v dvc_calls.log)" ]
+  ! grep -q endpointurl .dvc/config || false
+  committed=$(git -C "$BARE" show --stat --format= HEAD)
+  [[ "$committed" == *".dvc/config"* ]]
+  grep -q '^ *endpoint = https://' .dvc/flux
+  [[ "$committed" == *".warden"* ]]
+  rm -rf "$(dirname "$BARE")"
 }
