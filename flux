@@ -1378,6 +1378,7 @@ _flux_add() {
         ok "Pre-commit hook installed."
       fi
     fi
+    _flux_install_pre_push "$_HOOKS_DIR"
 
     _flux_subrepo_sync
     if [[ "${FLUX_SUBREPO_CHANGED}" == "true" ]]; then
@@ -1575,6 +1576,8 @@ _flux_add() {
     ok "Pre-commit hook installed."
   fi
   _flux_registry_write hook pre-commit
+  _flux_install_pre_push "$HOOKS_DIR"
+  _flux_registry_write hook pre-push
 
   # Git remote setup
   local _existing_remote
@@ -1680,6 +1683,11 @@ _flux_remove_git() {
     fi
   else
     warn "No pre-commit hook found."
+  fi
+  if [[ -f "${HOOKS_DIR}/pre-push" ]] && grep -q 'flux' "${HOOKS_DIR}/pre-push" 2>/dev/null; then
+    rm "${HOOKS_DIR}/pre-push"
+    _flux_registry_delete hook pre-push
+    ok "Pre-push hook removed."
   fi
 
   # Remove per-project cap and pins from .dvc/flux
@@ -1948,6 +1956,50 @@ _flux_remove() {
 # Called during sync so repos stay current after brew upgrade flux.
 # ---------------------------------------------------------------------------
 
+# Packaged hook file: Homebrew's share/flux/<name>, or next to this script.
+_flux_hook_source() {
+  local _dir; _dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [[ -f "${_dir}/../share/flux/$1" ]]; then echo "${_dir}/../share/flux/$1"
+  elif [[ -f "${_dir}/$1" ]]; then echo "${_dir}/$1"
+  else return 1
+  fi
+}
+
+# Install or refresh the pre-push hook (uploads DVC data before git push).
+# A pre-push hook that does not belong to flux is left alone, with a warning.
+_flux_install_pre_push() {
+  local _dst="$1/pre-push" _src
+  _src=$(_flux_hook_source pre-push) || return 0
+  if [[ -f "$_dst" ]] && ! grep -q 'flux' "$_dst" 2>/dev/null; then
+    warn "A pre-push hook already exists and does not belong to flux — git push will not upload DVC data."
+    warn "  Inspect: ${_dst}"
+    return 0
+  fi
+  cmp -s "$_src" "$_dst" && return 0
+  cp "$_src" "$_dst"
+  chmod +x "$_dst"
+}
+
+# On the Mac, git must not run the repo's own hooks: .git/hooks is writable
+# from inside a claudebox container, so a planted hook would run here with
+# your Keychain and SSH keys. flux therefore points git at its own hooks (the
+# packaged ones, copied to a folder no container mounts) via environment
+# config, which also reaches git processes started by dvc. Plain git outside
+# flux keeps using .git/hooks, where flux installs the same hooks.
+_flux_protect_git() {
+  _flux_on_macos || return 0
+  local _dir="${XDG_DATA_HOME:-$HOME/.local/share}/flux/hooks" _h _src
+  mkdir -p "$_dir"
+  for _h in pre-commit pre-push; do
+    _src=$(_flux_hook_source "$_h") || continue
+    cmp -s "$_src" "${_dir}/${_h}" || { cp "$_src" "${_dir}/${_h}"; chmod +x "${_dir}/${_h}"; }
+  done
+  local _n="${GIT_CONFIG_COUNT:-0}"
+  export "GIT_CONFIG_KEY_${_n}=core.hooksPath" "GIT_CONFIG_VALUE_${_n}=${_dir}"
+  export "GIT_CONFIG_KEY_$((_n + 1))=core.fsmonitor" "GIT_CONFIG_VALUE_$((_n + 1))=false"
+  export GIT_CONFIG_COUNT=$((_n + 2))
+}
+
 _flux_hook_update() {
   local _hooks_dir _installed _script_dir _hook_source
   _hooks_dir="$(git rev-parse --git-dir 2>/dev/null)/hooks"
@@ -1966,6 +2018,7 @@ _flux_hook_update() {
     chmod +x "$_installed"
     warn "Pre-commit hook updated to latest version."
   fi
+  _flux_install_pre_push "$_hooks_dir"
 }
 
 # ---------------------------------------------------------------------------
@@ -2150,9 +2203,17 @@ _flux_push_internal() {
   local DVC; _flux_require_dvc
   _flux_stage_and_commit_if_dirty
 
+  _flux_hook_update
+
+  # Data first: Git must never publish pointers whose data is not uploaded.
   local _failed=0
-  git push || { warn "Git push failed — check remote."; _failed=1; }
-  "$DVC" push || { warn "DVC push failed — run 'dvc push' to see the full error."; _failed=1; }
+  if "$DVC" push; then
+    FLUX_DVC_PUSHED=1 git push || { warn "Git push failed — check remote."; _failed=1; }
+  else
+    warn "DVC push failed — run 'dvc push' to see the full error."
+    warn "  Git push skipped: it would publish pointers to data that is not uploaded."
+    _failed=1
+  fi
   return "$_failed"
 }
 
@@ -2211,25 +2272,31 @@ _flux_sync() {
   fi
   rm -f "$_dvc_out"
 
-  _flux_spin_start "pushing to Git..."
-  if git push --quiet 2>/dev/null; then
-    _flux_spin_stop; ok "Pushed to Git remote."
-  else
-    _flux_spin_stop; warn "Git push failed — check remote."
-  fi
-
   _flux_repair_dvcignore
 
+  # Data first: Git must never publish pointers whose data is not uploaded.
+  local _dvc_pushed=false
   _flux_spin_start "pushing DVC data..."
   _dvc_err=$(mktemp)
   if "$DVC" push --quiet 2>"$_dvc_err"; then
-    _flux_spin_stop; ok "Pushed DVC data to R2."
+    _flux_spin_stop; ok "Pushed DVC data to R2."; _dvc_pushed=true
   elif grep -qiE 'AccessDenied|Access Denied' "$_dvc_err" 2>/dev/null; then
     _flux_spin_stop; warn "DVC push failed — access denied. Check R2 API token permissions (Admin Read & Write required)."
   else
     _flux_spin_stop; warn "DVC push failed — run 'dvc push' to see the full error."
   fi
   rm -f "$_dvc_err"
+
+  if [[ "$_dvc_pushed" == true ]]; then
+    _flux_spin_start "pushing to Git..."
+    if FLUX_DVC_PUSHED=1 git push --quiet 2>/dev/null; then
+      _flux_spin_stop; ok "Pushed to Git remote."
+    else
+      _flux_spin_stop; warn "Git push failed — check remote."
+    fi
+  else
+    warn "Git push skipped: it would publish pointers to data that is not uploaded."
+  fi
 }
 
 _flux_sync_summary() {
@@ -3265,6 +3332,7 @@ _flux_clone() {
     echo "git_config:flux.r2-folder"
     echo "git_config:flux.dvc-remote-bucket"
     echo "hook:pre-commit"
+    echo "hook:pre-push"
   } > "$target_dir/.git/flux-registry"
 
   ok "Repository configured."
@@ -3279,7 +3347,8 @@ _flux_clone() {
 
   cp "$_hook_source" "${_hooks_dir}/pre-commit"
   chmod +x "${_hooks_dir}/pre-commit"
-  ok "Pre-commit hook installed."
+  _flux_install_pre_push "$_hooks_dir"
+  ok "Pre-commit and pre-push hooks installed."
 
   # Step 8: dvc pull
   echo ""
@@ -3304,6 +3373,11 @@ _flux_clone() {
 flux() {
   local cmd="${1:-}"
   shift || true
+
+  case "$cmd" in
+    _api-version|_credential-helper|version|help|--help|-h) ;;
+    *) _flux_protect_git ;;
+  esac
 
   # flux -m "description" — undocumented alias for flux "description"
   if [[ "$cmd" == "-m" ]]; then

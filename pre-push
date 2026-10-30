@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# =============================================================================
+# pre-push hook (flux): upload DVC data before Git publishes the pointers.
+#
+# A plain `git push` would publish .dvc pointer files whose data exists only in
+# this machine's DVC cache; every other machine's `dvc pull` then fails for
+# them. So this hook runs `dvc push` first and stops the Git push when the
+# upload fails. With it, "commit and push" is plain git in every flux project.
+#
+# flux sync / flux _push upload the data themselves and set FLUX_DVC_PUSHED=1,
+# so it is not checked twice.
+# =============================================================================
+
+set -uo pipefail
+
+[[ "${FLUX_DVC_PUSHED:-}" == "1" ]] && exit 0
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+[[ -d "$root/.dvc" ]] || exit 0
+
+# ---------------------------------------------------------------------------
+# Locate DVC — checks all common Homebrew install locations before PATH
+# ---------------------------------------------------------------------------
+find_dvc() {
+  local candidates=(
+    "/opt/homebrew/bin/dvc"      # system Homebrew, Apple Silicon
+    "/usr/local/bin/dvc"         # system Homebrew, Intel
+    "${HOME}/.homebrew/bin/dvc"  # user-local Homebrew (common)
+    "${HOME}/homebrew/bin/dvc"   # user-local Homebrew (alternative)
+  )
+  for candidate in "${candidates[@]}"; do
+    [[ -x "$candidate" ]] && { echo "$candidate"; return 0; }
+  done
+  command -v dvc 2>/dev/null
+}
+
+if ! dvc=$(find_dvc); then
+  echo "✘ flux: dvc not found — cannot upload DVC data, so the Git push is stopped." >&2
+  exit 1
+fi
+
+cd "$root" || exit 1
+if ! out=$("$dvc" push 2>&1); then
+  echo "✘ flux: uploading DVC data failed — the Git push is stopped, so no pointer goes out without its data." >&2
+  # DVC's own error lines; its support footer is noise here.
+  errors=$(printf '%s\n' "$out" | grep -E '^ERROR' || printf '%s\n' "$out" | tail -n 5)
+  printf '%s\n' "$errors" | tail -n 3 | sed 's/^/    /' >&2
+  if [[ "$(uname -s)" != "Darwin" && -z "${AWS_CONFIG_FILE:-}" ]]; then
+    echo "  No storage access in this container: on the host, run 'flux' once in this project," >&2
+    echo "  then approve the .warden prompt at the next 'cbox' start." >&2
+  fi
+  echo "  Fix the storage access, then push again." >&2
+  exit 1
+fi
+exit 0

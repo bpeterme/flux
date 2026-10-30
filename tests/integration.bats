@@ -463,7 +463,7 @@ teardown() { teardown_flux_test; }
   rm -rf "$(dirname "$bare")"
 }
 
-@test "flux _push still pushes git even when dvc push fails" {
+@test "flux _push does not push git when dvc push fails (no pointers without data)" {
   local bare; bare="$(mktemp -d)/origin.git"
   git clone --bare -q "$TEST_REPO" "$bare"
   git remote set-url origin "file://$bare"
@@ -478,11 +478,13 @@ teardown() { teardown_flux_test; }
 
   [ "$status" -ne 0 ]
   [[ "$output" == *"DVC push failed"* ]]
+  [[ "$output" == *"Git push skipped"* ]]
 
-  # Git push must still have gone through despite the DVC failure.
+  # The work is committed locally, but nothing reached the remote.
+  [[ "$(git log --oneline)" == *"sync:"* ]]
   local remote_log
   remote_log=$(git -C "$bare" log --oneline)
-  [[ "$remote_log" == *"sync:"* ]]
+  [[ "$remote_log" != *"sync:"* ]]
 
   rm -rf "$(dirname "$bare")"
 }
@@ -1383,4 +1385,102 @@ EOF
 @test "storage endpoint: bucket names become valid warden resource names" {
   [ "$(_flux_fn _flux_warden_name My.Bucket.Name)" = "dvc-my-bucket-name" ]
   [ "$(_flux_fn _flux_warden_name a-very-long-bucket-name-that-goes-on-and-on)" = "dvc-a-very-long-bucket-name-that" ]
+}
+
+# ---------------------------------------------------------------------------
+# pre-push hook: plain `git push` uploads DVC data first
+# ---------------------------------------------------------------------------
+
+# Flux project with a bare remote, set up through flux add (installs the hooks).
+_flux_project_with_remote() {
+  BARE="$(mktemp -d)/origin.git"
+  git clone --bare -q "$TEST_REPO" "$BARE"
+  git remote set-url origin "file://$BARE"
+  git push -u origin main -q
+  bash "$REPO_ROOT/flux" add >/dev/null
+}
+
+@test "pre-push: flux add installs it next to pre-commit" {
+  _flux_project_with_remote
+  [ -x .git/hooks/pre-push ]
+  cmp -s "$REPO_ROOT/pre-push" .git/hooks/pre-push
+  grep -q "hook:pre-push" .git/flux-registry
+  rm -rf "$(dirname "$BARE")"
+}
+
+@test "pre-push: plain git push uploads DVC data, then pushes" {
+  _flux_project_with_remote
+  echo change > notes.txt && git add notes.txt && git commit -qm "plain commit"
+  : > "$MOCK_DVC_LOG"
+  run git push -q origin main
+  [ "$status" -eq 0 ]
+  grep -q "^push" "$MOCK_DVC_LOG"
+  [[ "$(git -C "$BARE" log --oneline)" == *"plain commit"* ]]
+  rm -rf "$(dirname "$BARE")"
+}
+
+@test "pre-push: plain git push is stopped when the DVC upload fails" {
+  _flux_project_with_remote
+  echo change > notes.txt && git add notes.txt && git commit -qm "plain commit"
+  MOCK_DVC_PUSH_FAIL=1 run git push -q origin main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"uploading DVC data failed"* ]]
+  [[ "$(git -C "$BARE" log --oneline)" != *"plain commit"* ]]
+  rm -rf "$(dirname "$BARE")"
+}
+
+@test "pre-push: skipped when flux already uploaded (FLUX_DVC_PUSHED=1)" {
+  _flux_project_with_remote
+  echo change > notes.txt && git add notes.txt && git commit -qm "plain commit"
+  : > "$MOCK_DVC_LOG"
+  FLUX_DVC_PUSHED=1 MOCK_DVC_PUSH_FAIL=1 run git push -q origin main
+  [ "$status" -eq 0 ]
+  ! grep -q "^push" "$MOCK_DVC_LOG" || false
+  rm -rf "$(dirname "$BARE")"
+}
+
+@test "pre-push: a foreign pre-push hook is left alone, with a warning" {
+  printf '#!/bin/sh\necho mine\n' > .git/hooks/pre-push
+  run bash "$REPO_ROOT/flux" add
+  [[ "$output" == *"pre-push hook already exists and does not belong to flux"* ]]
+  [ "$(cat .git/hooks/pre-push)" = "$(printf '#!/bin/sh\necho mine')" ]
+}
+
+@test "pre-push: flux sync refreshes an outdated one; flux remove removes it" {
+  _flux_project_with_remote
+  echo "# flux old version" > .git/hooks/pre-push
+  bash "$REPO_ROOT/flux" sync >/dev/null 2>&1 || true
+  cmp -s "$REPO_ROOT/pre-push" .git/hooks/pre-push
+  bash "$REPO_ROOT/flux" remove git >/dev/null 2>&1 || true
+  [ ! -f .git/hooks/pre-push ]
+  rm -rf "$(dirname "$BARE")"
+}
+
+# ---------------------------------------------------------------------------
+# Host safety: flux never runs hooks planted in .git/hooks on the Mac
+# ---------------------------------------------------------------------------
+
+@test "host hooks: flux _push runs flux's own hooks, not ones planted in .git/hooks" {
+  _flux_project_with_remote
+  # e.g. written from inside a claudebox container
+  for h in pre-commit pre-push post-commit; do
+    printf '#!/bin/sh\ntouch "%s/planted-%s"\n' "$TEST_REPO" "$h" > ".git/hooks/$h"
+    chmod +x ".git/hooks/$h"
+  done
+  echo "work" > wip.txt
+  run bash "$REPO_ROOT/flux" _push
+  [ "$status" -eq 0 ]
+  [ ! -e planted-pre-commit ]
+  [ ! -e planted-pre-push ]
+  [ ! -e planted-post-commit ]
+  [[ "$(git -C "$BARE" log --oneline)" == *"sync:"* ]]
+  cmp -s "$REPO_ROOT/pre-commit" "$HOME/.local/share/flux/hooks/pre-commit"
+  cmp -s "$REPO_ROOT/pre-push" "$HOME/.local/share/flux/hooks/pre-push"
+  rm -rf "$(dirname "$BARE")"
+}
+
+@test "host hooks: inside a container (Linux) git keeps the repo's hooks" {
+  printf '#!/usr/bin/env bash\nif [[ "${1:-}" == "-s" ]]; then echo Linux; else /usr/bin/uname "$@"; fi\n' > "$MOCK_BIN/uname"
+  run bash -c "source '$REPO_ROOT/flux'; _flux_protect_git; echo \"count=\${GIT_CONFIG_COUNT:-none}\""
+  [[ "$output" == *"count=none"* ]]
 }
