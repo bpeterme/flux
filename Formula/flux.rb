@@ -13,8 +13,9 @@ class Flux < Formula
   def install
     version_str = build.head? ? "HEAD-#{`git rev-parse --short HEAD`.chomp}" : version.to_s
     inreplace "flux", 'VERSION="dev"', "VERSION=\"#{version_str}\""
-    # Hook and example config live in share/flux/ so flux add can find them.
+    # Hooks and example config live in share/flux/ so flux add can find them.
     (share/"flux").install "pre-commit"
+    (share/"flux").install "pre-push"
     (share/"flux").install "flux.env.example"
     bin.install "flux"
     zsh_completion.install "completions/_flux"
