@@ -1456,6 +1456,19 @@ _flux_project_with_remote() {
   rm -rf "$(dirname "$BARE")"
 }
 
+@test "pre-push: flux sync leaves a read-only .git/hooks alone (claudebox container)" {
+  _flux_project_with_remote
+  echo "# flux old version" > .git/hooks/pre-push
+  echo "# flux old version" > .git/hooks/pre-commit
+  chmod a-w .git/hooks
+  run bash "$REPO_ROOT/flux" sync
+  chmod u+w .git/hooks
+  [[ "$output" != *"Permission denied"* ]]
+  [ "$(cat .git/hooks/pre-push)" = "# flux old version" ]
+  [ "$(cat .git/hooks/pre-commit)" = "# flux old version" ]
+  rm -rf "$(dirname "$BARE")"
+}
+
 # ---------------------------------------------------------------------------
 # Host safety: flux never runs hooks planted in .git/hooks on the Mac
 # ---------------------------------------------------------------------------

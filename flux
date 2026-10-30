@@ -1367,7 +1367,7 @@ _flux_add() {
     _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     _HOOK_SOURCE="${_script_dir}/../share/flux/pre-commit"
     [[ -f "$_HOOK_SOURCE" ]] || _HOOK_SOURCE="${_script_dir}/pre-commit"
-    if [[ -f "$_HOOK_SOURCE" ]]; then
+    if [[ -f "$_HOOK_SOURCE" && -w "$_HOOKS_DIR" ]]; then
       if [[ -f "${_HOOKS_DIR}/pre-commit" ]] && grep -q 'dvc-router\|flux' "${_HOOKS_DIR}/pre-commit" 2>/dev/null; then
         cp "$_HOOK_SOURCE" "${_HOOKS_DIR}/pre-commit"
         chmod +x "${_HOOKS_DIR}/pre-commit"
@@ -1969,6 +1969,8 @@ _flux_hook_source() {
 # A pre-push hook that does not belong to flux is left alone, with a warning.
 _flux_install_pre_push() {
   local _dst="$1/pre-push" _src
+  # Read-only inside a claudebox container; the Mac side keeps them current.
+  [[ -w "$1" ]] || return 0
   _src=$(_flux_hook_source pre-push) || return 0
   if [[ -f "$_dst" ]] && ! grep -q 'flux' "$_dst" 2>/dev/null; then
     warn "A pre-push hook already exists and does not belong to flux — git push will not upload DVC data."
@@ -2006,6 +2008,8 @@ _flux_hook_update() {
   _installed="${_hooks_dir}/pre-commit"
 
   [[ -f "$_installed" ]] || return 0
+  # Read-only inside a claudebox container; the Mac side keeps them current.
+  [[ -w "$_hooks_dir" ]] || return 0
   grep -q 'dvc-router\|flux' "$_installed" 2>/dev/null || return 0
 
   _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
