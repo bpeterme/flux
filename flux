@@ -2231,6 +2231,10 @@ _flux_sync() {
 
   _flux_hook_update
   _flux_subrepo_sync
+  # Repo-side setup changes (endpoint moved out of .dvc/config, .warden) go
+  # into this sync's commit instead of staying behind uncommitted.
+  _flux_on_macos && [[ -n "${FLUX_AWS_CONFIG_FILE:-}" ]] && export AWS_CONFIG_FILE="$FLUX_AWS_CONFIG_FILE"
+  _flux_apply_dvc_profile "$DVC"
 
   _flux_stage_and_commit_if_dirty "$_description"
 
