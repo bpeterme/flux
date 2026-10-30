@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
 
+# GitHub occasionally delivers a push event twice. Runs queue up instead of
+# racing, and a run whose commit already has a release tag stops early.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -15,17 +21,32 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Skip when this commit is already released
+        id: guard
+        run: |
+          git fetch --tags --force --quiet
+          tag=$(git tag --points-at HEAD | grep -E '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+$' | head -1 || true)
+          if [[ -n "$tag" ]]; then
+            echo "Already released as ${tag} — nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install bats-core
+        if: steps.guard.outputs.skip != 'true'
         run: |
           git clone --depth 1 https://github.com/bats-core/bats-core.git /tmp/bats-core
           sudo /tmp/bats-core/install.sh /usr/local
 
       - name: Run tests
+        if: steps.guard.outputs.skip != 'true'
         run: |
           bats tests/unit.bats
           bats tests/integration.bats
 
       - name: Generate CalVer tag
+        if: steps.guard.outputs.skip != 'true'
         id: calver
         run: |
           DATE=$(date -u +%Y.%m.%d)
@@ -39,6 +60,7 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Create and push tag
+        if: steps.guard.outputs.skip != 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -46,6 +68,7 @@ jobs:
           git push origin "${{ steps.calver.outputs.tag }}"
 
       - name: Create GitHub release
+        if: steps.guard.outputs.skip != 'true'
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.calver.outputs.tag }}
@@ -53,6 +76,7 @@ jobs:
           generate_release_notes: true
 
       - name: Compute tarball SHA256
+        if: steps.guard.outputs.skip != 'true'
         id: sha
         run: |
           TAG="${{ steps.calver.outputs.tag }}"
@@ -62,6 +86,7 @@ jobs:
           echo "url=${URL}" >> "$GITHUB_OUTPUT"
 
       - name: Update Homebrew tap
+        if: steps.guard.outputs.skip != 'true'
         env:
           TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
         run: |
