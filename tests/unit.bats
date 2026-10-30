@@ -919,3 +919,56 @@ EOF
   _flux_bash_complete
   [ "${COMPREPLY[*]}" = "--all" ]
 }
+
+# ---------------------------------------------------------------------------
+# Safety net — a commit or push that deletes most tracked files is stopped
+# ---------------------------------------------------------------------------
+
+# Commit N small text files (hooks skipped: this is only the starting state).
+_commit_files() {
+  local i
+  for ((i = 1; i <= $1; i++)); do echo "file $i" > "f$i.txt"; done
+  git add . && git commit -qm "files" --no-verify
+}
+
+@test "safety net: a commit deleting most tracked files is stopped" {
+  _commit_files 30
+  rm -f f*.txt
+  git add -A
+  run bash .git/hooks/pre-commit
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"deletes 30 of 30 tracked files"* ]]
+}
+
+@test "safety net: FLUX_ALLOW_MASS_DELETE=1 lets a deliberate mass deletion through" {
+  _commit_files 30
+  rm -f f*.txt
+  git add -A
+  FLUX_ALLOW_MASS_DELETE=1 run bash .git/hooks/pre-commit
+  [ "$status" -eq 0 ]
+}
+
+@test "safety net: ordinary deletions are not affected" {
+  _commit_files 30
+  rm -f f1.txt f2.txt f3.txt f4.txt f5.txt f6.txt f7.txt f8.txt f9.txt f10.txt f11.txt f12.txt
+  git add -A
+  run bash .git/hooks/pre-commit
+  [ "$status" -eq 0 ]
+}
+
+@test "safety net: a push leaving most files gone is stopped, even if committed with --no-verify" {
+  cp "$REPO_ROOT/pre-push" .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+  _commit_files 30
+  local bare; bare="$(mktemp -d)/origin.git"
+  git clone --bare -q "$TEST_REPO" "$bare"
+  git remote add origin "file://$bare" 2>/dev/null || git remote set-url origin "file://$bare"
+  git fetch -q origin
+  git rm -q f*.txt && git commit -qm "oops" --no-verify
+  run git push origin HEAD:main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"would leave 0 of 30 tracked files"* ]]
+  [[ "$(git -C "$bare" log --oneline)" != *"oops"* ]]
+  FLUX_ALLOW_MASS_DELETE=1 run git push origin HEAD:main
+  [ "$status" -eq 0 ]
+  rm -rf "$(dirname "$bare")"
+}
