@@ -5,6 +5,12 @@
 # Absolute path to the flux repo root (two levels up from tests/helpers/)
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
+# Run from a git hook (the pre-push test run), git exports GIT_DIR and friends
+# — pushing from a worktree, they point at the real repository. Left set, every
+# git command in a test would act on it instead of the test repo.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+      GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
+
 # ---------------------------------------------------------------------------
 # setup_test_repo
 #
