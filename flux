@@ -514,6 +514,32 @@ _flux_warden_setup() {
   return 0
 }
 
+# Undoes _flux_warden_setup in the project: drops flux's section from .warden,
+# and .warden itself once nothing else is left in it. Other sections (the
+# user's own resources) stay. The warden resource on the host stays too —
+# other projects in the same bucket use it.
+_flux_warden_remove() {
+  [[ -f .warden ]] || return 0
+  local _url _bucket
+  _url=$(sed -n 's/^[[:space:]]*url[[:space:]]*=[[:space:]]*s3:\/\///p' .dvc/config 2>/dev/null | head -1 | tr -d ' ')
+  _bucket=$(git config --get flux.dvc-remote-bucket 2>/dev/null || true)
+  [[ -n "$_bucket" ]] || _bucket="${_url%%/*}"
+  [[ -n "$_bucket" ]] || return 0
+  local _name; _name=$(_flux_warden_name "$_bucket")
+  grep -qxF "[${_name}]" .warden || return 0
+  local _tmp; _tmp=$(mktemp)
+  awk -v s="[${_name}]" '$0==s{f=1;next} /^\[/{f=0} !f' .warden > "$_tmp"
+  if grep -q '[^[:space:]]' "$_tmp"; then
+    mv "$_tmp" .warden
+    ok "claudebox: removed this project's storage access from .warden."
+  else
+    rm -f "$_tmp"
+    git rm --cached -q .warden 2>/dev/null || true
+    rm -f .warden
+    ok "claudebox: .warden removed (it held only this project's storage access)."
+  fi
+}
+
 # In a claudebox container, storage access comes from warden's AWS profile.
 # Without it DVC can only fail, so say why up front.
 _flux_storage_hint() {
@@ -1829,6 +1855,9 @@ _flux_remove_dvc() {
     read -rp "  Continue anyway? [y/N]: " confirm || true
     [[ "${confirm:-N}" =~ ^[Yy]$ ]] || return 1
   fi
+
+  # Before .dvc/config goes: it names the bucket of flux's .warden section
+  _flux_warden_remove
 
   # Remove DVC remote and local config
   "$DVC" remote remove r2remote 2>/dev/null && ok "DVC remote 'r2remote' removed." || true
