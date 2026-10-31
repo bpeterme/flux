@@ -47,6 +47,8 @@ contains null bytes it's binary. This catches `.mp4`, `.psd`, `.db`, `.zip`,
 - **`.dvcignore` stays in sync** — regenerated from `.gitignore` on every commit; never edit it manually
 - **Automatic migration** — files that grow past or shrink below the threshold are re-routed in place
 - **Orphan cleanup** — deleted or renamed DVC-tracked files are detected and cleaned up automatically
+- **No pointers without data** — a pre-push hook uploads DVC data before `git push` publishes the pointers, and stops the push if the upload fails
+- **Mass-delete safety net** — a commit or push that would delete most of the tracked files is refused (override: `FLUX_ALLOW_MASS_DELETE=1`)
 
 ## Installation
 
@@ -141,11 +143,14 @@ flux pull                       # download the latest (git pull + dvc pull)
 Or broken out manually:
 
 ```bash
-git push   # sends Git content → GitLab / GitHub
-dvc push   # sends large/binary files → Cloudflare R2
+git push   # pre-push hook: dvc push → Cloudflare R2 first, then Git → GitLab / GitHub
 git pull   # fetches Git content from remote
 dvc pull   # fetches large/binary files from R2
 ```
+
+If the DVC upload fails, the hook stops the push and shows DVC's error, so
+the remote never gets pointers to data that is not in R2. Fix the cause and
+push again — don't bypass it with `--no-verify`.
 
 ### Adjusting the size cap
 
@@ -224,7 +229,7 @@ for those steps.
 | `flux add` | Initialise flux in the current project |
 | `flux list` | List flux-managed projects; shows pins when inside a single project |
 | `flux clone <git-url>` | Clone a flux-managed repo and wire up DVC + credentials |
-| `flux remove [git\|dvc]` | Remove all flux traces, or only git config, or only DVC |
+| `flux remove [git\|dvc]` | Remove all flux traces, or only git config, or only DVC (DVC removal also drops flux's section from `.warden`) |
 | `flux pull` | Download the latest (`git pull` + `dvc pull`) |
 | `flux` | Sync both ways (pull then push) |
 | `flux dry-run` | Preview routing without making changes |
@@ -351,9 +356,17 @@ chmod +x .git/hooks/pre-commit
 # DVC not found by hook — enable verbose to see path resolution
 git config dvc-router.verbose true
 
+# "dvc ... is broken: the Python it was installed with is gone"
+uv tool install --reinstall "dvc[s3]"   # or: pip install --force-reinstall "dvc[s3]"
+
 # DVC push/pull failing
-dvc remote list                                               # verify remote
-dvc remote modify --local r2remote secret_access_key <key>  # re-add secret if missing
+dvc remote list   # verify remote
+flux doctor       # reports missing storage credentials
+flux config       # re-enter them (kept in the Keychain, never in .dvc/config)
+
+# "this commit deletes N of M tracked files — stopped"
+git status                                   # check the deletions are intended
+FLUX_ALLOW_MASS_DELETE=1 git commit ...      # only for a deliberate mass deletion
 
 # File ended up in Git that should be in DVC
 dvc add path/to/bigfile

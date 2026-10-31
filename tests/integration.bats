@@ -1382,6 +1382,39 @@ EOF
   grep -q endpointurl .dvc/config
 }
 
+@test "flux remove dvc drops flux's .warden section and keeps the user's own" {
+  bash "$REPO_ROOT/flux" add
+  name=$(_flux_fn _flux_warden_name "$(git config --get flux.dvc-remote-bucket)")
+  printf '[build.server]\n    allow = yes\n\n[%s]\n    prefix = p\n' "$name" > .warden
+  git add .warden
+  run bash "$REPO_ROOT/flux" remove dvc
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"removed this project's storage access from .warden"* ]]
+  ! grep -qF "[$name]" .warden || false
+  grep -qxF "[build.server]" .warden
+  grep -q "allow = yes" .warden
+}
+
+@test "flux remove dvc removes .warden when only flux's section was in it" {
+  _legacy_project
+  printf '\n[dvc-test-bucket]\n    prefix = test-project\n' > .warden
+  git add .warden
+  run _flux_fn _flux_warden_remove
+  [ "$status" -eq 0 ]
+  [ ! -f .warden ]
+  ! git ls-files --error-unmatch .warden 2>/dev/null || false
+}
+
+@test "flux remove dvc leaves a .warden without flux's section alone" {
+  _legacy_project
+  printf '[dvc-other]\n    prefix = x\n' > .warden
+  before=$(cat .warden)
+  run _flux_fn _flux_warden_remove
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ "$(cat .warden)" = "$before" ]
+}
+
 @test "storage endpoint: bucket names become valid warden resource names" {
   [ "$(_flux_fn _flux_warden_name My.Bucket.Name)" = "dvc-my-bucket-name" ]
   [ "$(_flux_fn _flux_warden_name a-very-long-bucket-name-that-goes-on-and-on)" = "dvc-a-very-long-bucket-name-that" ]
