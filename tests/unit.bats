@@ -972,3 +972,54 @@ _commit_files() {
   [ "$status" -eq 0 ]
   rm -rf "$(dirname "$bare")"
 }
+
+# ---------------------------------------------------------------------------
+# Finding dvc: broken installs
+# ---------------------------------------------------------------------------
+
+@test "_flux_find_dvc: skips a dvc whose Python is gone and finds a working one" {
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/flux"
+  mkdir -p "$HOME/broken" "$HOME/ok"
+  printf '#!%s/gone/bin/python\n' "$HOME" > "$HOME/broken/dvc"
+  printf '#!/usr/bin/env bash\necho ok\n' > "$HOME/ok/dvc"
+  chmod +x "$HOME/broken/dvc" "$HOME/ok/dvc"
+  _flux_dvc_candidates() { printf '%s\n' "$HOME/broken/dvc" "$HOME/ok/dvc"; }
+  run _flux_find_dvc
+  [ "$status" -eq 0 ]
+  [ "$output" = "$HOME/ok/dvc" ]
+}
+
+@test "_flux_require_dvc: names a broken dvc and how to reinstall it" {
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/flux"
+  mkdir -p "$HOME/.local/bin"
+  printf '#!%s/.local/share/uv/tools/dvc/bin/python\n' "$HOME" > "$HOME/.local/bin/dvc"
+  chmod +x "$HOME/.local/bin/dvc"
+  _flux_dvc_candidates() { printf '%s\n' /nonexistent/dvc "$HOME/.local/bin/dvc"; }
+  run _flux_require_dvc
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"dvc at ~/.local/bin/dvc is broken: the Python it was installed with is gone"* ]]
+  [[ "$output" == *'uv tool install --reinstall "dvc[s3]"'* ]]
+}
+
+@test "_flux_require_dvc: says dvc is not installed when there is none" {
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/flux"
+  _flux_dvc_candidates() { echo /nonexistent/dvc; }
+  run _flux_require_dvc
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'dvc not found. Install:'* ]]
+}
+
+@test "_flux_dvc_runs: binaries and env shebangs count as working" {
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/flux"
+  run _flux_dvc_runs /bin/ls
+  [ "$status" -eq 0 ]
+  printf '#! /usr/bin/env python3\n' > "$HOME/envdvc"; chmod +x "$HOME/envdvc"
+  run _flux_dvc_runs "$HOME/envdvc"
+  [ "$status" -eq 0 ]
+  run _flux_dvc_runs "$HOME"
+  [ "$status" -ne 0 ]
+}
