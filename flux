@@ -47,23 +47,53 @@ _flux_require_macos() {
 # Locate DVC — checks all common Homebrew install locations before PATH
 # ---------------------------------------------------------------------------
 
+# Places dvc may be, in order of preference, one per line.
+_flux_dvc_candidates() {
+  printf '%s\n' \
+    "/opt/homebrew/bin/dvc" \
+    "/usr/local/bin/dvc" \
+    "${HOME}/.homebrew/bin/dvc" \
+    "${HOME}/homebrew/bin/dvc"
+  type -ap dvc 2>/dev/null || true
+}
+
+# A dvc installed with `uv tool` or pip is a script whose first line names its
+# Python. When that Python is removed (a uv or Homebrew upgrade), the script
+# still looks executable but fails with "bad interpreter".
+_flux_dvc_runs() {
+  local first interp
+  [[ -x "$1" && ! -d "$1" ]] || return 1
+  IFS= read -r first < "$1" 2>/dev/null || return 0  # binary: trust the -x
+  [[ "$first" == '#!'* ]] || return 0
+  interp=${first#\#!}
+  interp=${interp#"${interp%%[! ]*}"}
+  interp=${interp%% *}
+  [[ -x "$interp" ]]
+}
+
 _flux_find_dvc() {
-  local candidates=(
-    "/opt/homebrew/bin/dvc"      # system Homebrew, Apple Silicon
-    "/usr/local/bin/dvc"         # system Homebrew, Intel
-    "${HOME}/.homebrew/bin/dvc"  # user-local Homebrew (common)
-    "${HOME}/homebrew/bin/dvc"   # user-local Homebrew (alternative)
-  )
-  for candidate in "${candidates[@]}"; do
-    [[ -x "$candidate" ]] && echo "$candidate" && return 0
-  done
-  command -v dvc &>/dev/null && command -v dvc && return 0
+  local candidate
+  while IFS= read -r candidate; do
+    _flux_dvc_runs "$candidate" && echo "$candidate" && return 0
+  done < <(_flux_dvc_candidates)
   return 1
 }
 
+# Why no dvc was found: a broken install, or none at all.
+_flux_dvc_missing() {
+  local candidate
+  while IFS= read -r candidate; do
+    if [[ -x "$candidate" ]] && ! _flux_dvc_runs "$candidate"; then
+      [[ "$candidate" == "$HOME"/* ]] && candidate="~${candidate#"$HOME"}"
+      echo "dvc at $candidate is broken: the Python it was installed with is gone. Reinstall: uv tool install --reinstall \"dvc[s3]\"  (or: pip install --force-reinstall \"dvc[s3]\")"
+      return 0
+    fi
+  done < <(_flux_dvc_candidates)
+  echo 'dvc not found. Install: pip install "dvc[s3]"  or  uv tool install "dvc[s3]"'
+}
+
 _flux_require_dvc() {
-  DVC=$(_flux_find_dvc) \
-    || fail 'dvc not found. Install: pip install "dvc[s3]"  or  uv tool install "dvc[s3]"'
+  DVC=$(_flux_find_dvc) || fail "$(_flux_dvc_missing)"
 }
 
 _flux_require_dvc_repo() {
@@ -3077,7 +3107,7 @@ _flux_doctor() {
     dvc_ver=$("$dvc_path" version 2>/dev/null | head -1 || true)
     ok "DVC: ${dvc_ver:-found} ($dvc_path)"
   else
-    warn "DVC not found — run: pip install \"dvc[s3]\"  or  uv tool install \"dvc[s3]\""
+    warn "DVC: $(_flux_dvc_missing)"
     pass=false
   fi
 
