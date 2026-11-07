@@ -595,7 +595,7 @@ _flux_write_config() {
     if [[ -n "$aws_cfg" ]]; then
       echo "FLUX_AWS_CONFIG_FILE=${aws_cfg}"
     else
-      echo "# FLUX_AWS_CONFIG_FILE=\$HOME/.config/flux/aws.conf"
+      echo "# FLUX_AWS_CONFIG_FILE=${FLUX_CONFIG%/*}/aws.conf"
     fi
     echo ""
     echo "# ── git accounts ──────────────────────────────────────────────────────────────"

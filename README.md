@@ -79,7 +79,8 @@ Walks through three sections:
 - **Git accounts** — one or more hosting accounts (`ssh:github.com:yourname`,
   `https:gitlab.com:workaccount`, …). Used to propose git remote URLs during `flux add`.
 
-Non-sensitive values are saved to `~/.config/flux/flux.env` as bash arrays.
+Non-sensitive values are saved to `flux.env` as bash arrays: `~/.config/flux/flux.env`,
+or `$XDG_CONFIG_HOME/flux/flux.env` if that is set. `flux doctor` shows the file in use.
 Credentials go directly into macOS Keychain, keyed per bucket.
 
 On subsequent runs `flux config` shows a live summary and opens sub-menus to add,
@@ -121,8 +122,8 @@ Config is split by sensitivity:
 
 | Setting | Storage |
 |---|---|
-| DVC remotes (bucket, account ID) | `~/.config/flux/flux.env` |
-| Git accounts | `~/.config/flux/flux.env` |
+| DVC remotes (bucket, account ID) | `flux.env` |
+| Git accounts | `flux.env` |
 | DVC credentials (access key, secret) | macOS Keychain (per bucket) |
 | R2 folder, DVC remote bucket, size cap, verbose | per-repo `git config` |
 
