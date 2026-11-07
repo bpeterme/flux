@@ -53,6 +53,13 @@ teardown() { teardown_test_repo; }
   [ "$status" -ne 0 ] || { echo "$output"; false; }
 }
 
+@test "no doubled empty-array guard \${arr[@]+\${arr[@]+...}}" {
+  local root="$BATS_TEST_DIRNAME/.."
+  run grep -nE '\[@\]\+\$\{' \
+    "$root/flux" "$root/pre-commit" "$root/pre-push" "$root/post-checkout"
+  [ "$status" -ne 0 ] || { echo "$output"; false; }
+}
+
 @test "hook: no --keep-outs flag (removed from current DVC)" {
   run grep -En -- '--keep-outs' "$HOOK"
   [ "$status" -ne 0 ]

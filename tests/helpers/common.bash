@@ -11,6 +11,12 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
       GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
 
+# flux prompts with `read` and the tests rely on end-of-input to take each
+# default. bats passes its own stdin through, so an open but silent stdin (an
+# IDE, an agent harness, a pipe) made prompting tests wait forever. Tests that
+# need input pipe it in explicitly, which still overrides this.
+exec </dev/null
+
 # ---------------------------------------------------------------------------
 # setup_test_repo
 #

@@ -385,7 +385,7 @@ migrate_dvc_to_git() {
     [[ ! -f "$target_abs" ]] && continue
 
     # Skip files in DVC-pinned directories — pins override size/binary logic
-    if _in_dir_override "$target_abs" "${FORCE_DVC_DIRS[@]+${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}}"; then
+    if _in_dir_override "$target_abs" "${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}"; then
       log "Pinned to DVC, skipping migration: $target_abs"
       continue
     fi
@@ -595,11 +595,11 @@ while IFS= read -r file; do
   # ------------------------------------------------------------------
   # Routing decision — directory pins take priority over size/binary
   # ------------------------------------------------------------------
-  if _in_dir_override "$file" "${FORCE_DVC_DIRS[@]+${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}}"; then
+  if _in_dir_override "$file" "${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}"; then
     log "Pinned → DVC: $file"
     route="dvc"
     pin_overridden=$(( pin_overridden + 1 ))
-  elif _in_dir_override "$file" "${FORCE_GIT_DIRS[@]+${FORCE_GIT_DIRS[@]+"${FORCE_GIT_DIRS[@]}"}}"; then
+  elif _in_dir_override "$file" "${FORCE_GIT_DIRS[@]+"${FORCE_GIT_DIRS[@]}"}"; then
     log "Pinned → Git: $file"
     route="git"
     pin_overridden=$(( pin_overridden + 1 ))
