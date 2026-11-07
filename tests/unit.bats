@@ -893,13 +893,13 @@ EOF
   [ "${COMPREPLY[*]}" = "git dvc" ]
 }
 
-@test "_flux_bash_complete: position 2 after pin suggests dvc git reset" {
+@test "_flux_bash_complete: position 2 after pin suggests list dvc git reset" {
   # shellcheck source=/dev/null
   source "$REPO_ROOT/flux"
   COMP_WORDS=(flux pin "")
   COMP_CWORD=2
   _flux_bash_complete
-  [ "${COMPREPLY[*]}" = "dvc git reset" ]
+  [ "${COMPREPLY[*]}" = "list dvc git reset" ]
 }
 
 @test "_flux_bash_complete: position 2 after cap suggests --reset" {
@@ -918,6 +918,58 @@ EOF
   COMP_CWORD=3
   _flux_bash_complete
   [ "${COMPREPLY[*]}" = "--all" ]
+}
+
+@test "_flux_bash_complete: filters by the typed prefix" {
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/flux"
+  COMP_WORDS=(flux d)
+  COMP_CWORD=1
+  _flux_bash_complete
+  [ "${COMPREPLY[*]}" = "dry-run doctor" ]
+}
+
+@test "_flux_complete: offers every command the dispatcher handles" {
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/flux"
+  run _flux_complete
+  local cmd
+  # Commands in flux()'s second case, without internal (_*), hidden
+  # companion and alias ones.
+  for cmd in $(awk '/^flux\(\) \{/{f=1} f && /^    [a-z|"-]+\)/{s=$1; gsub(/[)"]/,"",s); gsub(/\|/," ",s); print s} f && /^}/{exit}' "$REPO_ROOT/flux"); do
+    [[ "$cmd" == cbox || "$cmd" == cdot || "$cmd" == --help || "$cmd" == -h ]] && continue
+    [[ $'\n'"$output"$'\n' == *$'\n'"$cmd"$'\n'* ]] || { echo "missing: $cmd"; false; }
+  done
+}
+
+@test "_flux_complete: remove dvc offers --force, unknown words nothing" {
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/flux"
+  [ "$(_flux_complete remove dvc)" = "--force" ]
+  [ -z "$(_flux_complete nonsense)" ]
+}
+
+@test "zsh completion (Homebrew file): asks flux and offers its candidates" {
+  command -v zsh >/dev/null || skip "zsh not installed"
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  printf '#!/usr/bin/env bash\nexec bash %q "$@"\n' "$REPO_ROOT/flux" > "$BATS_TEST_TMPDIR/bin/flux"
+  chmod +x "$BATS_TEST_TMPDIR/bin/flux"
+  run env PATH="$BATS_TEST_TMPDIR/bin:$PATH" zsh -f -c '
+    compadd() { [[ $1 == -a ]] && print -l -- "${(@P)2}"; }
+    source "$1" >/dev/null 2>&1
+    words=(flux pin ""); CURRENT=3; _flux' _ "$REPO_ROOT/completions/_flux"
+  [ "$status" -eq 0 ]
+  [ "$output" = $'list\ndvc\ngit\nreset' ]
+}
+
+@test "zsh completion (sourced flux): same candidates" {
+  command -v zsh >/dev/null || skip "zsh not installed"
+  run zsh -f -c '
+    compadd() { [[ $1 == -a ]] && print -l -- "${(@P)2}"; }
+    source "$1" >/dev/null 2>&1
+    words=(flux remove ""); CURRENT=3; _flux_zsh_complete' _ "$REPO_ROOT/flux"
+  [ "$status" -eq 0 ]
+  [ "$output" = $'git\ndvc' ]
 }
 
 # ---------------------------------------------------------------------------

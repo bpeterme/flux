@@ -1,23 +1,12 @@
 #compdef flux
 
+# The candidates come from flux itself (`flux _complete`), so they always
+# match its commands.
 _flux() {
-  case $CURRENT in
-    2)
-      compadd add clone list remove pull dry-run cap pin config doctor version help
-      ;;
-    3)
-      case "${words[2]}" in
-        remove) compadd git dvc ;;
-        pin)    compadd dvc git reset ;;
-        cap)    compadd --reset ;;
-      esac
-      ;;
-    4)
-      if [[ "${words[2]}" == "pin" && "${words[3]}" == "reset" ]]; then
-        compadd --all
-      fi
-      ;;
-  esac
+  local IFS=$'\n'
+  local -a candidates
+  candidates=($(flux _complete "${words[@]:1:$((CURRENT - 2))}" 2>/dev/null))
+  compadd -a candidates
 }
 
 _flux "$@"
