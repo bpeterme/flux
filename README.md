@@ -53,11 +53,26 @@ contains null bytes it's binary. This catches `.mp4`, `.psd`, `.db`, `.zip`,
 
 ## Installation
 
+**macOS** — Homebrew:
+
 ```bash
 brew tap bpeterme/flux
 brew install bpeterme/flux/flux
-pip install "dvc[s3]"
-# or: uv tool install "dvc[s3]"
+```
+
+**Linux and WSL** — from the repository (Homebrew on Linux is untested):
+
+```bash
+git clone https://github.com/bpeterme/flux.git ~/.local/share/flux-src
+mkdir -p ~/.local/bin && ln -s ~/.local/share/flux-src/flux ~/.local/bin/flux
+# update later: git -C ~/.local/share/flux-src pull
+```
+
+**DVC**, on both:
+
+```bash
+uv tool install "dvc[s3]"
+# or: pip install "dvc[s3]"
 ```
 
 Prerequisites: macOS or Linux (including WSL2), a Cloudflare R2 bucket with an

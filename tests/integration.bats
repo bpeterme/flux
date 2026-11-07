@@ -1651,3 +1651,12 @@ _linux_host() {
   line=$(grep '^credential_process = ' "$HOME/.aws/config")
   [ "$line" = "credential_process = $REPO_ROOT/flux _credential-helper test-bucket" ]
 }
+
+@test "manual install: flux run through a symlink finds its hooks" {
+  local bin; bin=$(mktemp -d)
+  ln -s "$REPO_ROOT/flux" "$bin/flux"
+  run bash -c "source '$bin/flux'; _flux_hook_source pre-commit"
+  rm -rf "$bin"
+  [ "$status" -eq 0 ]
+  [ "$output" -ef "$REPO_ROOT/pre-commit" ]
+}

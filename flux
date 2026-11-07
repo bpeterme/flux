@@ -2054,7 +2054,14 @@ _flux_remove() {
 
 # Packaged hook file: Homebrew's share/flux/<name>, or next to this script.
 _flux_hook_source() {
-  local _dir; _dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # Follow symlinks (e.g. ~/.local/bin/flux -> a git checkout): the hooks sit
+  # next to the real file. Plain readlink, for macOS' too.
+  local _self="${BASH_SOURCE[0]}" _t _n=0
+  while [[ -L "$_self" ]] && (( _n++ < 10 )); do
+    _t=$(readlink "$_self")
+    [[ "$_t" == /* ]] && _self="$_t" || _self="$(dirname "$_self")/$_t"
+  done
+  local _dir; _dir="$(cd "$(dirname "$_self")" && pwd)"
   if [[ -f "${_dir}/../share/flux/$1" ]]; then echo "${_dir}/../share/flux/$1"
   elif [[ -f "${_dir}/$1" ]]; then echo "${_dir}/$1"
   else return 1
