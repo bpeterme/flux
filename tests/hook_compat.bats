@@ -45,6 +45,21 @@ teardown() { teardown_test_repo; }
   [ "$status" -ne 0 ]
 }
 
+@test "no unguarded \"\${arr[@]}\" (empty array is unbound under set -u in bash 3.2)" {
+  # Use ${arr[@]+"${arr[@]}"} instead: same result on every bash version.
+  local root="$BATS_TEST_DIRNAME/.."
+  run grep -nE '(^|[^+])"\$\{[A-Za-z_]+\[@\]\}"' \
+    "$root/flux" "$root/pre-commit" "$root/pre-push" "$root/post-checkout"
+  [ "$status" -ne 0 ] || { echo "$output"; false; }
+}
+
+@test "no doubled empty-array guard \${arr[@]+\${arr[@]+...}}" {
+  local root="$BATS_TEST_DIRNAME/.."
+  run grep -nE '\[@\]\+\$\{' \
+    "$root/flux" "$root/pre-commit" "$root/pre-push" "$root/post-checkout"
+  [ "$status" -ne 0 ] || { echo "$output"; false; }
+}
+
 @test "hook: no --keep-outs flag (removed from current DVC)" {
   run grep -En -- '--keep-outs' "$HOOK"
   [ "$status" -ne 0 ]

@@ -50,7 +50,7 @@ find_dvc() {
     "${HOME}/.homebrew/bin/dvc"  # user-local Homebrew (common)
     "${HOME}/homebrew/bin/dvc"   # user-local Homebrew (alternative)
   )
-  for candidate in "${candidates[@]}"; do
+  for candidate in ${candidates[@]+"${candidates[@]}"}; do
     [[ -x "$candidate" ]] && { echo "$candidate"; return 0; }
   done
   command -v dvc 2>/dev/null
