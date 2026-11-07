@@ -47,6 +47,7 @@ contains null bytes it's binary. This catches `.mp4`, `.psd`, `.db`, `.zip`,
 - **`.dvcignore` stays in sync** — regenerated from `.gitignore` on every commit; never edit it manually
 - **Automatic migration** — files that grow past or shrink below the threshold are re-routed in place
 - **Orphan cleanup** — deleted or renamed DVC-tracked files are detected and cleaned up automatically
+- **Data follows plain Git** — after `git checkout`, `merge`, `pull` or `rebase`, hooks put the matching DVC data on disk from the local cache; unsaved edits are never overwritten
 - **No pointers without data** — a pre-push hook uploads DVC data before `git push` publishes the pointers, and stops the push if the upload fails
 - **Mass-delete safety net** — a commit or push that would delete most of the tracked files is refused (override: `FLUX_ALLOW_MASS_DELETE=1`)
 
@@ -303,18 +304,41 @@ and hands it off to DVC. The old small version remains in Git history — run
 At the start of every commit the hook reads the full list of DVC-tracked files
 from `git ls-files '*.dvc'`. For each, it checks the current on-disk size and
 binary status. If a file is now text and below the threshold it is automatically
-migrated back to Git in the same commit. `dvc gc --cloud --all-branches` runs
-automatically after migration to purge the now-unreferenced R2 data.
+migrated back to Git in the same commit. The old copy stays on R2: flux never
+deletes R2 data from a hook (see the cleanup note below).
 
 **File deleted**
 The hook scans all tracked `.dvc` pointers at the start of every commit, detects
 missing targets, and stages the pointer for deletion automatically. The stale
 entry in `.gitignore` is also cleaned up.
 
+A missing file only counts as deleted if it was on this machine before (its data
+is in the local DVC cache). A file that was never downloaded here — for example
+after a plain `git checkout` or `git merge` without `flux pull` — is kept, and the
+commit lists it with a hint to run `flux pull`. To delete such a file on purpose,
+run `git rm <file>.dvc`.
+
 **File renamed**
 Same mechanism as deletion — the old pointer's target is gone so the hook removes
 it. The file at its new name gets staged normally, routed fresh, and a new `.dvc`
 pointer is created. One commit handles both the cleanup and the re-routing.
+
+**Branch switch, merge, pull, rebase**
+Git only moves the `.dvc` pointers; the data files are git-ignored. flux's
+post-checkout, post-merge and post-rewrite hooks (one script, installed by
+`flux add` under all three names) then update the data on disk from the local
+DVC cache — no network involved:
+
+- Changed or new pointer → the matching data is restored. Data that never
+  reached this machine is listed with a hint to run `flux pull`.
+- Pointer the new branch does not have → its file is removed, but only if it is
+  unmodified and safe in the cache (so it comes back when you switch back).
+  Edited files are left in place and listed.
+- Unsaved edits to DVC-tracked files are never overwritten; they are listed with
+  how to keep (commit) or discard (`dvc checkout --force <file>.dvc`) them.
+
+Git has no hook for `git reset --hard`, `git stash`, `git restore` and
+`git cherry-pick`. After those, run `flux pull` (or `dvc checkout`).
 
 ### Handle manually if needed
 
@@ -380,9 +404,10 @@ dvc push
 dvc status      # local vs cache
 dvc status -c   # local vs R2
 
-# Clean up unreferenced R2 data (runs automatically after migration)
-dvc gc --cloud --all-branches
-dvc gc
+# Clean up unreferenced R2 data (never automatic). Careful: dvc gc keeps only
+# data that local branches/commits reference. Run it on a machine that has every
+# branch checked out locally, or data of other branches is deleted from R2.
+dvc gc --cloud --all-branches --all-commits
 ```
 
 ## Running tests
@@ -421,6 +446,7 @@ In a flux-managed repo, "commit and push" is plain `git commit` + `git push` —
 
 ```markdown
 - **Flux-managed repos need no special handling.** "Commit and push" is plain `git commit` + `git push`: flux's pre-commit hook routes large files to DVC, and its pre-push hook uploads the DVC data before Git pushes. If the pre-push hook stops the push because the upload failed, report its error to the user — never bypass it (no `--no-verify`, no `FLUX_DVC_PUSHED=1`), since that would publish pointers to data that is not uploaded.
+- In flux repos, branch work (checkout, merge, pull, rebase) is plain git too: flux's post-checkout/-merge/-rewrite hooks update the DVC data. Read their `flux:` output — files listed as "not downloaded", "unsaved edits" or "left on disk" need attention before the next commit. After `git reset --hard`, `git stash`, `git restore` or `git cherry-pick` (no hooks), run `flux pull`.
 ```
 
 This works the same with or without claudebox. Inside a claudebox container, storage access comes from warden; if a push fails there because `$AWS_CONFIG_FILE` is not set, run `flux` once in the project on the host and approve the `.warden` prompt at the next `cbox` start.

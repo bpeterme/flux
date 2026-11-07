@@ -259,7 +259,7 @@ EOF
   [ -f "tiny.bin.dvc" ]
 }
 
-@test "dvc gc is called after a DVC-to-Git migration" {
+@test "no R2 garbage collection runs after a DVC-to-Git migration" {
   make_large_text_file shrinking.txt
   cat > shrinking.txt.dvc << 'EOF'
 outs:
@@ -277,7 +277,11 @@ EOF
   run bash .git/hooks/pre-commit 2>&1
   [ "$status" -eq 0 ]
 
-  assert_dvc_called "gc --cloud --all-branches --force --quiet"
+  # dvc gc only sees local branches: running it from a hook deleted R2 data
+  # that branches pushed from another machine still needed.
+  run git ls-files shrinking.txt
+  [ "$output" = "shrinking.txt" ]
+  assert_dvc_not_called "gc"
 }
 
 # ---------------------------------------------------------------------------
@@ -293,6 +297,7 @@ EOF
   echo "/video.mp4" >> .gitignore
   git add video.mp4.dvc .gitignore
   git commit -m "dvc-tracked video" --no-verify -q
+  seed_dvc_cache deadbeef
 
   echo "trigger" > trigger.txt
   git add trigger.txt
@@ -313,6 +318,7 @@ EOF
   printf '/clip.mp4\n' >> .gitignore
   git add clip.mp4.dvc .gitignore
   git commit -m "dvc-tracked clip" --no-verify -q
+  seed_dvc_cache cafebabe
 
   echo "trigger" > trigger.txt
   git add trigger.txt
@@ -321,6 +327,31 @@ EOF
   [ "$status" -eq 0 ]
 
   ! grep -qF '/clip.mp4' .gitignore
+}
+
+@test "a .gitignore emptied by orphan cleanup is removed in the same commit" {
+  cat > clip.mp4.dvc << 'EOF'
+outs:
+- md5: cafebabe
+  path: clip.mp4
+EOF
+  printf '/clip.mp4\n' > .gitignore
+  git add clip.mp4.dvc .gitignore
+  git commit -m "dvc-tracked clip" --no-verify -q
+  seed_dvc_cache cafebabe
+
+  echo "trigger" > trigger.txt
+  git add trigger.txt
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"No such file"* ]]
+
+  # Deletion is staged, not left behind as an unstaged change
+  run git diff --cached --no-renames --name-status
+  [[ "$output" == *"D"*".gitignore"* ]]
+  run git diff --name-only -- .gitignore .dvcignore
+  [ -z "$output" ]
 }
 
 @test "healthy DVC pointer whose target exists is left untouched" {
@@ -357,6 +388,7 @@ EOF
   done
   git add .gitignore
   git commit -m "three dvc files" --no-verify -q
+  for name in a b c; do seed_dvc_cache "0000000${name}"; done
 
   echo "trigger" > trigger.txt
   git add trigger.txt
@@ -368,6 +400,107 @@ EOF
     run git diff --cached --name-status
     [[ "$output" == *"D"*"${name}.bin.dvc"* ]]
   done
+}
+
+@test "pointer whose data never reached this machine is kept, not deleted" {
+  # A merge or checkout brought in a pointer for a file this machine never
+  # pulled. A missing file here means "not downloaded", not "deleted".
+  cat > model.bin.dvc << 'EOF'
+outs:
+- md5: 9a8b7c6d5e4f
+  path: model.bin
+EOF
+  echo "/model.bin" >> .gitignore
+  git add model.bin.dvc .gitignore
+  git commit -m "pointer from another branch" --no-verify -q
+
+  echo "trigger" > trigger.txt
+  git add trigger.txt
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"model.bin"*"flux pull"* ]]
+
+  [ -f "model.bin.dvc" ]
+  run git diff --cached --name-status
+  [[ "$output" != *"model.bin.dvc"* ]]
+  grep -qxF '/model.bin' .gitignore
+}
+
+@test "never-downloaded directory pointer (.dir hash) is kept" {
+  cat > dataset.dvc << 'EOF'
+outs:
+- md5: 1122334455.dir
+  path: dataset
+EOF
+  echo "/dataset" >> .gitignore
+  git add dataset.dvc .gitignore
+  git commit -m "dir pointer" --no-verify -q
+
+  echo "trigger" > trigger.txt
+  git add trigger.txt
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+  [ -f "dataset.dvc" ]
+}
+
+@test "deleted directory whose data was here has its pointer removed" {
+  cat > dataset.dvc << 'EOF'
+outs:
+- md5: 1122334455.dir
+  path: dataset
+EOF
+  echo "/dataset" >> .gitignore
+  git add dataset.dvc .gitignore
+  git commit -m "dir pointer" --no-verify -q
+  seed_dvc_cache 1122334455.dir
+
+  echo "trigger" > trigger.txt
+  git add trigger.txt
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+  run git diff --cached --name-status
+  [[ "$output" == *"D"*"dataset.dvc"* ]]
+}
+
+@test "data in a DVC 2 cache layout counts as present" {
+  cat > old.bin.dvc << 'EOF'
+outs:
+- md5: abcdef0123
+  path: old.bin
+EOF
+  echo "/old.bin" >> .gitignore
+  git add old.bin.dvc .gitignore
+  git commit -m "old pointer" --no-verify -q
+  mkdir -p .dvc/cache/ab && printf 'x' > .dvc/cache/ab/cdef0123
+
+  echo "trigger" > trigger.txt
+  git add trigger.txt
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+  run git diff --cached --name-status
+  [[ "$output" == *"D"*"old.bin.dvc"* ]]
+}
+
+@test "renamed DVC-tracked file still cleans up the old pointer" {
+  make_binary_file before.bin
+  git add before.bin
+  bash .git/hooks/pre-commit >/dev/null 2>&1
+  git commit -m "add before.bin" --no-verify -q
+  # The mock's 'add' writes this md5 into before.bin.dvc
+  seed_dvc_cache deadbeefdeadbeef00000000000000000
+
+  mv before.bin after.bin
+  git add after.bin
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+  run git diff --cached --no-renames --name-status
+  [[ "$output" == *"D"*"before.bin.dvc"* ]]
+  [ -f "after.bin.dvc" ]
 }
 
 # ---------------------------------------------------------------------------

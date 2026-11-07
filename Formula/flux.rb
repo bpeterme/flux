@@ -16,6 +16,7 @@ class Flux < Formula
     # Hooks and example config live in share/flux/ so flux add can find them.
     (share/"flux").install "pre-commit"
     (share/"flux").install "pre-push"
+    (share/"flux").install "post-checkout"
     (share/"flux").install "flux.env.example"
     bin.install "flux"
     zsh_completion.install "completions/_flux"

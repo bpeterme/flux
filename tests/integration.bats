@@ -1508,6 +1508,26 @@ _flux_project_with_remote() {
   rm -rf "$(dirname "$BARE")"
 }
 
+@test "sync hooks: flux add installs post-checkout, post-merge and post-rewrite" {
+  _flux_project_with_remote
+  for h in post-checkout post-merge post-rewrite; do
+    [ -x ".git/hooks/$h" ]
+    cmp -s "$REPO_ROOT/post-checkout" ".git/hooks/$h"
+    grep -q "hook:$h" .git/flux-registry
+  done
+  bash "$REPO_ROOT/flux" remove git >/dev/null 2>&1 || true
+  for h in post-checkout post-merge post-rewrite; do [ ! -f ".git/hooks/$h" ]; done
+  rm -rf "$(dirname "$BARE")"
+}
+
+@test "sync hooks: a foreign post-merge hook is left alone, with a warning" {
+  printf '#!/bin/sh\necho mine\n' > .git/hooks/post-merge
+  run bash "$REPO_ROOT/flux" add
+  [[ "$output" == *"post-merge hook already exists and does not belong to flux"* ]]
+  [ "$(cat .git/hooks/post-merge)" = "$(printf '#!/bin/sh\necho mine')" ]
+  [ -x .git/hooks/post-checkout ]
+}
+
 # ---------------------------------------------------------------------------
 # Host safety: flux never runs hooks planted in .git/hooks on the Mac
 # ---------------------------------------------------------------------------
@@ -1528,6 +1548,7 @@ _flux_project_with_remote() {
   [[ "$(git -C "$BARE" log --oneline)" == *"sync:"* ]]
   cmp -s "$REPO_ROOT/pre-commit" "$HOME/.local/share/flux/hooks/pre-commit"
   cmp -s "$REPO_ROOT/pre-push" "$HOME/.local/share/flux/hooks/pre-push"
+  cmp -s "$REPO_ROOT/post-checkout" "$HOME/.local/share/flux/hooks/post-merge"
   rm -rf "$(dirname "$BARE")"
 }
 

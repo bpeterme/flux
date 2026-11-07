@@ -3,6 +3,8 @@
 # Simulates the DVC behaviour that the pre-commit hook depends on:
 #   add  — creates <file>.dvc, appends /<basename> to sibling .gitignore
 #   remove — removes <file>.dvc, deletes the .gitignore entry
+#   cache dir — prints the repo's .dvc/cache path
+#   checkout — restores targets from .dvc/cache; refuses unsaved edits
 #   gc, init, remote, status, push, pull — no-ops (exit 0)
 #
 # Every invocation is appended to $MOCK_DVC_LOG for assertions.
@@ -99,6 +101,43 @@ EOF
       echo "mock_dvc: simulated push failure" >&2
       exit 1
     fi
+    exit 0
+    ;;
+
+  checkout)
+    # Restores each given pointer's target from the local cache (DVC 3
+    # layout). Like real DVC it is all-or-nothing: if any target has content
+    # that is not in the cache (unsaved edits) and --force is not given,
+    # nothing is restored and it fails.
+    shift
+    force=0 todo=()
+    _md5() { if command -v md5sum >/dev/null; then md5sum "$1" | cut -d' ' -f1; else md5 -q "$1"; fi; }
+    for arg in "$@"; do
+      case "$arg" in --force|-f) force=1 ;; --*) ;; *) [[ -f "$arg" ]] && todo+=("$arg") ;; esac
+    done
+    for arg in ${todo[@]+"${todo[@]}"}; do
+      target="$(dirname "$arg")/$(sed -n 's/^[[:space:]]*path:[[:space:]]*//p' "$arg" | head -1)"
+      if [[ -f "$target" && $force -eq 0 ]]; then
+        cur=$(_md5 "$target")
+        if [[ ! -f ".dvc/cache/files/md5/${cur:0:2}/${cur:2}" ]]; then
+          echo "ERROR: Can't remove the following unsaved files without confirmation. Use \`--force\` to force." >&2
+          echo "$target" >&2
+          exit 255
+        fi
+      fi
+    done
+    for arg in ${todo[@]+"${todo[@]}"}; do
+      md5=$(sed -n 's/^[-[:space:]]*md5:[[:space:]]*//p' "$arg" | head -1)
+      target="$(dirname "$arg")/$(sed -n 's/^[[:space:]]*path:[[:space:]]*//p' "$arg" | head -1)"
+      obj=".dvc/cache/files/md5/${md5:0:2}/${md5:2}"
+      [[ -f "$obj" ]] || { echo "ERROR: missing cache for $target" >&2; exit 1; }
+      cp "$obj" "$target"
+    done
+    exit 0
+    ;;
+
+  cache)
+    [[ "${2:-}" == "dir" ]] && echo "$PWD/.dvc/cache"
     exit 0
     ;;
 

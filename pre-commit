@@ -170,6 +170,9 @@ sync_dvcignore() {
     dir=$(dirname "$gitignore_path")
     dvcignore_path="${dir}/.dvcignore"
 
+    # Listed by Git but gone from disk (deleted, not yet staged): nothing to sync
+    [[ -f "$gitignore_path" ]] || continue
+
     # Strip comment lines and blank lines; an empty result is still valid
     grep -v '^\s*#' "$gitignore_path" | grep -v '^\s*$' > "$dvcignore_path" || true
 
@@ -200,9 +203,32 @@ sync_dvcignore() {
 #
 # In both cases the DVC-added entry in the sibling .gitignore is also cleaned
 # up so .gitignore doesn't accumulate stale entries.
+#
+# A missing target only counts as deleted if its data was on this machine
+# (it is in the local DVC cache). Otherwise the file was never downloaded
+# here — typically after a plain git checkout, merge or rebase that brought
+# in new pointers without 'dvc pull'. Removing those pointers would silently
+# delete the files from the branch, so they are kept and reported instead.
 # ---------------------------------------------------------------------------
+_DVC_CACHE_DIR=""
+
+# Returns 0 if the data a .dvc pointer refers to is in the local DVC cache.
+# Checks the DVC 3 (files/md5/) and DVC 2 layouts. A pointer without a
+# readable md5 counts as not present, so it is kept (the safe side).
+_dvc_data_was_here() {
+  local dvc_file="$1" md5
+  md5=$(sed -n 's/^[-[:space:]]*md5:[[:space:]]*//p' "$dvc_file" 2>/dev/null | head -1 | tr -d "\"'\r")
+  [[ ${#md5} -gt 2 ]] || return 1
+  if [[ -z "$_DVC_CACHE_DIR" ]]; then
+    _DVC_CACHE_DIR=$("$DVC" cache dir 2>/dev/null | tail -1) || true
+    [[ -d "$_DVC_CACHE_DIR" ]] || _DVC_CACHE_DIR=".dvc/cache"
+  fi
+  [[ -e "${_DVC_CACHE_DIR}/files/md5/${md5:0:2}/${md5:2}" \
+  || -e "${_DVC_CACHE_DIR}/${md5:0:2}/${md5:2}" ]]
+}
+
 cleanup_orphaned_dvc_pointers() {
-  local cleaned=()
+  local cleaned=() not_downloaded=()
 
   # Iterate over every .dvc pointer file currently tracked by Git
   while IFS= read -r dvc_file; do
@@ -215,6 +241,12 @@ cleanup_orphaned_dvc_pointers() {
 
     # If the target still exists, the pointer is healthy — nothing to do
     [[ -e "$target_abs" ]] && continue
+
+    if ! _dvc_data_was_here "$dvc_file"; then
+      log "Not downloaded here, keeping pointer: $dvc_file"
+      not_downloaded+=("$target_abs")
+      continue
+    fi
 
     log "Orphaned .dvc pointer: $dvc_file (target missing: $target_abs)"
 
@@ -233,7 +265,11 @@ cleanup_orphaned_dvc_pointers() {
       grep -vxF "/$target_name" "$gitignore_path" > "$_tmp" || true
       mv "$_tmp" "$gitignore_path"
       if [[ ! -s "$gitignore_path" ]]; then
-        rm -f "$gitignore_path"
+        # Stage the removal too: a plain rm left the old .gitignore (with the
+        # stale entry) in the commit and an unstaged deletion behind. Its
+        # generated sibling .dvcignore goes with it.
+        git rm -q --cached --ignore-unmatch -- "$gitignore_path" "${dvc_dir}/.dvcignore" >/dev/null 2>&1 || true
+        rm -f "$gitignore_path" "${dvc_dir}/.dvcignore"
       else
         git add "$gitignore_path"
       fi
@@ -255,6 +291,14 @@ cleanup_orphaned_dvc_pointers() {
     for f in "${cleaned[@]}"; do
       info "  ✦ $f (target deleted or renamed)"
     done
+  fi
+
+  if (( ${#not_downloaded[@]} > 0 )); then
+    info "Kept ${#not_downloaded[@]} file(s) that are not downloaded on this machine:"
+    for f in "${not_downloaded[@]}"; do
+      info "  ✦ $f"
+    done
+    info "  Get them with: flux pull   (to delete one on purpose: git rm <file>.dvc)"
   fi
 }
 
@@ -322,8 +366,9 @@ cleanup_git_dvc_duplicates() {
 # file. This is the authoritative approach: reading .dvc files directly means
 # we catch every DVC-tracked file regardless of what is or isn't in .gitignore.
 #
-# Note: dvc gc --cloud --all-branches runs automatically after any migration
-# to purge now-unreferenced R2 data while preserving data on other branches.
+# The old R2 copy is left in place on purpose. 'dvc gc --cloud' keeps only
+# data referenced by *local* branches, so running it from a hook deleted data
+# that branches pushed from other machines (or older commits) still needed.
 # ---------------------------------------------------------------------------
 migrate_dvc_to_git() {
   local migrated=()
@@ -404,11 +449,6 @@ migrate_dvc_to_git() {
     for f in "${migrated[@]}"; do
       info "  ✦ $f"
     done
-    info ""
-    info "  Cleaning up unreferenced R2 data..."
-    "$DVC" gc --cloud --all-branches --force --quiet 2>/dev/null && \
-      info "  R2 cleanup complete." || \
-      warn "  R2 cleanup failed — run 'dvc gc --cloud --all-branches' manually."
   fi
 }
 

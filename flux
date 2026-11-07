@@ -1434,7 +1434,7 @@ _flux_add() {
         ok "Pre-commit hook installed."
       fi
     fi
-    _flux_install_pre_push "$_HOOKS_DIR"
+    _flux_install_hooks "$_HOOKS_DIR"
 
     _flux_subrepo_sync
     if [[ "${FLUX_SUBREPO_CHANGED}" == "true" ]]; then
@@ -1632,8 +1632,9 @@ _flux_add() {
     ok "Pre-commit hook installed."
   fi
   _flux_registry_write hook pre-commit
-  _flux_install_pre_push "$HOOKS_DIR"
-  _flux_registry_write hook pre-push
+  _flux_install_hooks "$HOOKS_DIR"
+  local _entry
+  for _entry in "${_FLUX_EXTRA_HOOKS[@]}"; do _flux_registry_write hook "${_entry%%:*}"; done
 
   # Git remote setup
   local _existing_remote
@@ -1740,11 +1741,15 @@ _flux_remove_git() {
   else
     warn "No pre-commit hook found."
   fi
-  if [[ -f "${HOOKS_DIR}/pre-push" ]] && grep -q 'flux' "${HOOKS_DIR}/pre-push" 2>/dev/null; then
-    rm "${HOOKS_DIR}/pre-push"
-    _flux_registry_delete hook pre-push
-    ok "Pre-push hook removed."
-  fi
+  local _entry _name
+  for _entry in "${_FLUX_EXTRA_HOOKS[@]}"; do
+    _name="${_entry%%:*}"
+    if [[ -f "${HOOKS_DIR}/${_name}" ]] && grep -q 'flux' "${HOOKS_DIR}/${_name}" 2>/dev/null; then
+      rm "${HOOKS_DIR}/${_name}"
+      _flux_registry_delete hook "$_name"
+      ok "${_name} hook removed."
+    fi
+  done
 
   # Remove per-project cap and pins from .dvc/flux
   rm -f .dvc/flux
@@ -2024,21 +2029,35 @@ _flux_hook_source() {
   fi
 }
 
-# Install or refresh the pre-push hook (uploads DVC data before git push).
-# A pre-push hook that does not belong to flux is left alone, with a warning.
-_flux_install_pre_push() {
-  local _dst="$1/pre-push" _src
+# Hooks next to pre-commit, as "<installed name>:<packaged file>":
+#   pre-push                         uploads DVC data before git push
+#   post-checkout/-merge/-rewrite    keep DVC data in step after a branch
+#                                    switch, merge, pull or rebase (one file)
+_FLUX_EXTRA_HOOKS=(pre-push:pre-push post-checkout:post-checkout
+  post-merge:post-checkout post-rewrite:post-checkout)
+
+# Install or refresh the hooks in _FLUX_EXTRA_HOOKS. A hook that does not
+# belong to flux is left alone, with a warning.
+_flux_install_hooks() {
+  local _entry _name _dst _src
   # Read-only inside a claudebox container; the Mac side keeps them current.
   [[ -w "$1" ]] || return 0
-  _src=$(_flux_hook_source pre-push) || return 0
-  if [[ -f "$_dst" ]] && ! grep -q 'flux' "$_dst" 2>/dev/null; then
-    warn "A pre-push hook already exists and does not belong to flux — git push will not upload DVC data."
-    warn "  Inspect: ${_dst}"
-    return 0
-  fi
-  cmp -s "$_src" "$_dst" && return 0
-  cp "$_src" "$_dst"
-  chmod +x "$_dst"
+  for _entry in "${_FLUX_EXTRA_HOOKS[@]}"; do
+    _name="${_entry%%:*}" _dst="$1/${_entry%%:*}"
+    _src=$(_flux_hook_source "${_entry#*:}") || continue
+    if [[ -f "$_dst" ]] && ! grep -q 'flux' "$_dst" 2>/dev/null; then
+      if [[ "$_name" == pre-push ]]; then
+        warn "A pre-push hook already exists and does not belong to flux — git push will not upload DVC data."
+      else
+        warn "A ${_name} hook already exists and does not belong to flux — DVC data is not updated after git ${_name#post-}."
+      fi
+      warn "  Inspect: ${_dst}"
+      continue
+    fi
+    cmp -s "$_src" "$_dst" && continue
+    cp "$_src" "$_dst"
+    chmod +x "$_dst"
+  done
 }
 
 # On the Mac, git must not run the repo's own hooks: .git/hooks is writable
@@ -2051,8 +2070,9 @@ _flux_protect_git() {
   _flux_on_macos || return 0
   local _dir="${XDG_DATA_HOME:-$HOME/.local/share}/flux/hooks" _h _src
   mkdir -p "$_dir"
-  for _h in pre-commit pre-push; do
-    _src=$(_flux_hook_source "$_h") || continue
+  for _h in pre-commit:pre-commit "${_FLUX_EXTRA_HOOKS[@]}"; do
+    _src=$(_flux_hook_source "${_h#*:}") || continue
+    _h="${_h%%:*}"
     cmp -s "$_src" "${_dir}/${_h}" || { cp "$_src" "${_dir}/${_h}"; chmod +x "${_dir}/${_h}"; }
   done
   local _n="${GIT_CONFIG_COUNT:-0}"
@@ -2081,7 +2101,7 @@ _flux_hook_update() {
     chmod +x "$_installed"
     warn "Pre-commit hook updated to latest version."
   fi
-  _flux_install_pre_push "$_hooks_dir"
+  _flux_install_hooks "$_hooks_dir"
 }
 
 # ---------------------------------------------------------------------------
@@ -2109,7 +2129,8 @@ _flux_pull() {
   _flux_on_macos && [[ -n "${FLUX_AWS_CONFIG_FILE:-}" ]] && export AWS_CONFIG_FILE="$FLUX_AWS_CONFIG_FILE"
   _flux_apply_dvc_profile "$DVC"
   _flux_storage_hint
-  ok "Pulling from Git remote..."; git pull "$@"
+  # dvc pull follows right away, so the post-merge hook stays out of it.
+  ok "Pulling from Git remote..."; FLUX_DVC_PULLING=1 git pull "$@"
   ok "Pulling DVC data from R2..."; "$DVC" pull
 }
 
@@ -2177,6 +2198,8 @@ _flux_repair_dvcignore() {
 _flux_git_pull_smart() {
   local _err _rc
   _err=$(mktemp)
+  # Callers run dvc pull next, so the post-merge/-rewrite hook stays out of it.
+  local FLUX_DVC_PULLING=1; export FLUX_DVC_PULLING
 
   git pull --quiet 2>"$_err"
   _rc=$?
@@ -3399,7 +3422,8 @@ _flux_clone() {
     echo "git_config:flux.r2-folder"
     echo "git_config:flux.dvc-remote-bucket"
     echo "hook:pre-commit"
-    echo "hook:pre-push"
+    local _entry
+    for _entry in "${_FLUX_EXTRA_HOOKS[@]}"; do echo "hook:${_entry%%:*}"; done
   } > "$target_dir/.git/flux-registry"
 
   ok "Repository configured."
@@ -3414,7 +3438,7 @@ _flux_clone() {
 
   cp "$_hook_source" "${_hooks_dir}/pre-commit"
   chmod +x "${_hooks_dir}/pre-commit"
-  _flux_install_pre_push "$_hooks_dir"
+  _flux_install_hooks "$_hooks_dir"
   ok "Pre-commit and pre-push hooks installed."
 
   # Step 8: dvc pull
@@ -3464,7 +3488,7 @@ flux() {
       _flux_require_dvc_repo
       local DVC; _flux_require_dvc
       if git rev-parse --abbrev-ref --symbolic-full-name @{u} >/dev/null 2>&1; then
-        git pull 2>&1 || echo "⚠  Git pull failed — continuing with local state"
+        FLUX_DVC_PULLING=1 git pull 2>&1 || echo "⚠  Git pull failed — continuing with local state"
       fi
       "$DVC" pull
       ;;

@@ -25,7 +25,7 @@ jobs:
           sudo /tmp/bats-core/install.sh /usr/local
 
       - name: Run unit tests
-        run: TERM=dumb bats tests/unit.bats
+        run: TERM=dumb bats tests/unit.bats tests/post_checkout.bats
 
       - name: Run integration tests
         run: TERM=dumb bats tests/integration.bats
