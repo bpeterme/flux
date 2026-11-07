@@ -407,7 +407,7 @@ before tagging.
 
 ### [claudebox](https://github.com/bpeterme/claudebox)
 
-[claudebox](https://github.com/bpeterme/claudebox) (`cbox`) runs Claude Code inside an isolated container scoped to your current project directory. When claudebox is installed alongside flux, large-file sync runs automatically at session boundaries for flux-managed projects — no manual `flux pull`/`flux push` needed inside a claudebox session.
+[claudebox](https://github.com/bpeterme/claudebox) (`cbox`) runs Claude Code inside an isolated container scoped to your current project directory. When claudebox is installed alongside flux, the container runs the host's flux version and reaches the project's storage through warden — `dvc pull` and a plain `git push` work inside the container, without R2 keys ever entering it.
 
 ```bash
 brew tap bpeterme/claudebox && brew install bpeterme/claudebox/claudebox
@@ -416,13 +416,13 @@ cbox           # start Claude Code in a container for the current project
 
 #### Claude Code integration
 
-Claude Code has no built-in awareness that a repo is flux-managed — left alone, it treats it as a plain Git repo and either does nothing useful or (worse) tries to run `flux push`/`dvc push`/`git push` itself mid-session, which it can't do reliably (no R2 credentials inside the container) and which would duplicate the exit-time sync anyway. Add this to your `CLAUDE.md` (global, or per-project) so Claude recognizes flux-managed repos and behaves correctly inside a claudebox session:
+In a flux-managed repo, "commit and push" is plain `git commit` + `git push` — flux's pre-commit hook routes large files to DVC, and its pre-push hook uploads the DVC data before Git pushes. Left alone, Claude Code may still try to "help" by running `dvc push` separately or by bypassing a failed hook. Add this to your `CLAUDE.md` (global, or per-project) so it keeps to the plain workflow:
 
 ```markdown
-- **Flux-managed repos: commit only, don't push — claudebox handles it at exit.** Before committing, check if the repo is flux-managed: `.dvc/config` exists, and/or `git config --get flux.dvc-remote-bucket` returns a value, and/or `.git/hooks/pre-commit` is a flux-installed hook. If so: commit as normal, always with a real, descriptive commit message (flux's pre-commit hook routes large/binary files to DVC automatically — no extra action needed from you). Do NOT run `git push`, `flux push`, or `dvc push` yourself — claudebox already wraps every container session with `flux _pull` before entering and `flux _push` (which does both `dvc push` and `git push`) after exiting (cbox.sh, host-side, using the host's Keychain; this only applies inside claudebox). Tell the user something like: "This is a flux-managed repo — I can't push or pull mid-session, but I've committed your changes and everything will sync once you exit this container."
+- **Flux-managed repos need no special handling.** "Commit and push" is plain `git commit` + `git push`: flux's pre-commit hook routes large files to DVC, and its pre-push hook uploads the DVC data before Git pushes. If the pre-push hook stops the push because the upload failed, report its error to the user — never bypass it (no `--no-verify`, no `FLUX_DVC_PUSHED=1`), since that would publish pointers to data that is not uploaded.
 ```
 
-If you use flux without claudebox (plain host-side git), drop the last two sentences — there's no exit-time wrapper to rely on, so run `flux push` yourself after committing.
+This works the same with or without claudebox. Inside a claudebox container, storage access comes from warden; if a push fails there because `$AWS_CONFIG_FILE` is not set, run `flux` once in the project on the host and approve the `.warden` prompt at the next `cbox` start.
 
 ### [claudedot](https://github.com/bpeterme/claudedot)
 
