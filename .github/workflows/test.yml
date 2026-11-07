@@ -29,3 +29,39 @@ jobs:
 
       - name: Run integration tests
         run: TERM=dumb bats tests/integration.bats
+
+  # flux and its hooks run on users' Macs, where `#!/usr/bin/env bash` usually
+  # finds the system bash 3.2 and sed/stat/mktemp are the BSD versions. The
+  # Ubuntu job cannot catch regressions there. Keychain and dvc stay mocked
+  # (tests/helpers), so the runner's real Keychain is never touched.
+  test-macos:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure git
+        run: |
+          git config --global user.email "ci@test.example.com"
+          git config --global user.name "CI Runner"
+          git config --global init.defaultBranch main
+
+      - name: Install bats-core
+        run: brew install bats-core
+
+      # The runner image puts Homebrew's bash 5 first on PATH; users' Macs
+      # typically have only /bin/bash 3.2. Put that one first.
+      - name: Use the system bash (3.2)
+        run: |
+          mkdir -p "$RUNNER_TEMP/system-bash"
+          ln -s /bin/bash "$RUNNER_TEMP/system-bash/bash"
+          echo "$RUNNER_TEMP/system-bash" >> "$GITHUB_PATH"
+
+      - name: Show bash version
+        run: bash --version | head -1
+
+      - name: Run unit tests
+        run: TERM=dumb bats tests/unit.bats tests/post_checkout.bats tests/hook_compat.bats
+
+      - name: Run integration tests
+        run: TERM=dumb bats tests/integration.bats
