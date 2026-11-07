@@ -16,6 +16,12 @@ teardown() { teardown_flux_test; }
   [ "$status" -eq 0 ]
 }
 
+@test "flux is committed as executable" {
+  # Homebrew installs the file with the mode from the release tarball
+  run git -C "$REPO_ROOT" ls-files -s flux
+  [[ "$output" == 100755* ]]
+}
+
 @test "pre-commit passes bash syntax check" {
   run bash -n "$REPO_ROOT/pre-commit"
   [ "$status" -eq 0 ]
