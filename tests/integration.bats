@@ -1347,8 +1347,8 @@ EOF
   grep -q 'endpoint_url = https://abc123.eu.r2.cloudflarestorage.com' "$HOME/.aws/config"
 }
 
-@test "storage endpoint: in a container (Linux) flux writes no profile and needs no flux.env" {
-  printf '#!/usr/bin/env bash\nif [[ "${1:-}" == "-s" ]]; then echo Linux; else /usr/bin/uname "$@"; fi\n' > "$MOCK_BIN/uname"
+@test "storage endpoint: in a container flux writes no profile and needs no flux.env" {
+  export CBOX_CONTAINER=wbox
   rm -f "$HOME/.config/flux/flux.env"
   _legacy_project
   run _flux_fn '_flux_is_configured && echo configured; _flux_apply_dvc_profile '"$MOCK_BIN/dvc"
@@ -1552,8 +1552,8 @@ _flux_project_with_remote() {
   rm -rf "$(dirname "$BARE")"
 }
 
-@test "host hooks: inside a container (Linux) git keeps the repo's hooks" {
-  printf '#!/usr/bin/env bash\nif [[ "${1:-}" == "-s" ]]; then echo Linux; else /usr/bin/uname "$@"; fi\n' > "$MOCK_BIN/uname"
+@test "host hooks: inside a container git keeps the repo's hooks" {
+  export CBOX_CONTAINER=wbox
   run bash -c "source '$REPO_ROOT/flux'; _flux_protect_git; echo \"count=\${GIT_CONFIG_COUNT:-none}\""
   [[ "$output" == *"count=none"* ]]
 }
@@ -1574,4 +1574,89 @@ _flux_project_with_remote() {
   grep -q '^ *endpoint = https://' .dvc/flux
   [[ "$committed" == *".warden"* ]]
   rm -rf "$(dirname "$BARE")"
+}
+
+# ---------------------------------------------------------------------------
+# Platforms: Linux host (keyring via secret-tool) and claudebox containers
+# ---------------------------------------------------------------------------
+
+# This test runs as a Linux host: uname says Linux, secret-tool is the store.
+_linux_host() {
+  printf '#!/usr/bin/env bash\nif [[ "${1:-}" == "-s" ]]; then echo Linux; else /usr/bin/uname "$@"; fi\n' > "$MOCK_BIN/uname"
+  cp "$REPO_ROOT/tests/helpers/mock_secret_tool" "$MOCK_BIN/secret-tool"
+  chmod +x "$MOCK_BIN/secret-tool"
+  rm -f "$MOCK_KEYCHAIN_DIR"/*
+}
+
+@test "platform: WARDEN_URL alone marks a container (claudebox before CBOX_CONTAINER)" {
+  run _flux_fn '_flux_in_container && echo container || echo host'
+  [ "$output" = "host" ]
+  export WARDEN_URL=http://192.0.2.1:1/w/x
+  run _flux_fn '_flux_in_container && echo container || echo host'
+  [ "$output" = "container" ]
+}
+
+@test "platform: setup commands refuse to run inside a container" {
+  export CBOX_CONTAINER=wbox
+  run bash "$REPO_ROOT/flux" config
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not inside a claudebox container"* ]]
+}
+
+@test "linux host: credentials go to the keyring, never onto a command line" {
+  _linux_host
+  run _flux_fn '_kc_set_dvc b1 secret-key S3cr3t-value; _kc_get_dvc b1 secret-key; echo; _flux_store_name'
+  [ "$status" -eq 0 ]
+  [ "$output" = $'S3cr3t-value\nkeyring' ]
+  grep -q 'store --label=flux: dvc b1 secret-key service flux.dvc.b1.secret-key' "$MOCK_KEYCHAIN_DIR/.secret-tool-args"
+  ! grep -q 'S3cr3t-value' "$MOCK_KEYCHAIN_DIR/.secret-tool-args"
+  run _flux_fn '_kc_del_dvc b1 secret-key; _kc_get_dvc b1 secret-key'
+  [ -z "$output" ]
+}
+
+@test "linux host: the DVC credential helper reads the keyring" {
+  _linux_host
+  _flux_fn '_kc_set_dvc test-bucket access-key-id AKID; _kc_set_dvc test-bucket secret-key SK'
+  run bash "$REPO_ROOT/flux" _credential-helper test-bucket
+  [ "$status" -eq 0 ]
+  [ "$output" = '{"Version":1,"AccessKeyId":"AKID","SecretAccessKey":"SK"}' ]
+}
+
+@test "linux host: flux clone prompts for credentials and saves them to the keyring" {
+  _linux_host
+  local remote; remote=$(mktemp -d)
+  make_clone_remote "$remote" "new-bucket" "new-project" "xyz789"
+  run bash -c "printf 'new-key-id\nnew-secret\n' | bash '$REPO_ROOT/flux' clone '$remote' '$TEST_REPO/cloned'"
+  rm -rf "$remote"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Credentials saved to keyring"* ]]
+  [ "$("$MOCK_BIN/secret-tool" lookup service flux.dvc.new-bucket.access-key-id)" = "new-key-id" ]
+}
+
+@test "linux host: without secret-tool, setup says what to install" {
+  _linux_host
+  rm -f "$MOCK_BIN/secret-tool"
+  command -v secret-tool >/dev/null 2>&1 && skip "secret-tool is installed on this machine"
+  run bash "$REPO_ROOT/flux" config
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"needs secret-tool"*"libsecret-tools"* ]]
+}
+
+@test "AWS profile: credential_process names an executable even when flux is not on PATH" {
+  _legacy_project
+  # No flux on PATH (a git checkout run by path): the profile must name this file.
+  [ ! -e /usr/bin/flux ] || skip "a flux is installed in /usr/bin"
+  PATH="$MOCK_BIN:/usr/bin:/bin" run _flux_fn '_flux_apply_dvc_profile '"$MOCK_BIN/dvc"
+  [ "$status" -eq 0 ]
+  line=$(grep '^credential_process = ' "$HOME/.aws/config")
+  [ "$line" = "credential_process = $REPO_ROOT/flux _credential-helper test-bucket" ]
+}
+
+@test "manual install: flux run through a symlink finds its hooks" {
+  local bin; bin=$(mktemp -d)
+  ln -s "$REPO_ROOT/flux" "$bin/flux"
+  run bash -c "source '$bin/flux'; _flux_hook_source pre-commit"
+  rm -rf "$bin"
+  [ "$status" -eq 0 ]
+  [ "$output" -ef "$REPO_ROOT/pre-commit" ]
 }

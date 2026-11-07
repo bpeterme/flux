@@ -67,7 +67,7 @@ if ! out=$("$dvc" push 2>&1); then
   # DVC's own error lines; its support footer is noise here.
   errors=$(printf '%s\n' "$out" | grep -E '^ERROR' || printf '%s\n' "$out" | tail -n 5)
   printf '%s\n' "$errors" | tail -n 3 | sed 's/^/    /' >&2
-  if [[ "$(uname -s)" != "Darwin" && -z "${AWS_CONFIG_FILE:-}" ]]; then
+  if [[ -n "${CBOX_CONTAINER:-}${WARDEN_URL:-}" && -z "${AWS_CONFIG_FILE:-}" ]]; then
     echo "  No storage access in this container: on the host, run 'flux' once in this project," >&2
     echo "  then approve the .warden prompt at the next 'cbox' start." >&2
   fi

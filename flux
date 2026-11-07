@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # flux — Git + DVC auto-router for Cloudflare R2
-# Requires macOS — credentials are stored in macOS Keychain.
+# Runs on macOS and Linux (incl. WSL). Credentials live in the macOS Keychain,
+# on Linux in the desktop keyring via secret-tool (libsecret).
 # Install via Homebrew:
 #   brew tap bpeterme/flux && brew install bpeterme/flux/flux
 
@@ -36,11 +37,25 @@ _flux_spin_stop() {
 FLUX_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/flux/flux.env"
 
 # ---------------------------------------------------------------------------
-# macOS guard
+# Host guard
 # ---------------------------------------------------------------------------
 
-_flux_require_macos() {
-  [[ "$(uname -s)" == "Darwin" ]] || fail "flux requires macOS."
+# Inside a claudebox container. CBOX_CONTAINER is set by claudebox; WARDEN_URL
+# also marks sessions of claudebox versions from before that variable.
+_flux_in_container() { [[ -n "${CBOX_CONTAINER:-}" || -n "${WARDEN_URL:-}" ]]; }
+
+_flux_on_host() { ! _flux_in_container; }
+
+_flux_on_macos() { [[ "$(uname -s)" == "Darwin" ]]; }
+
+# Setup commands keep credentials, so they run on the host — macOS, or Linux
+# with a keyring — never inside a container.
+_flux_require_host() {
+  _flux_in_container && fail "Run this on the host, not inside a claudebox container: storage access here comes from warden."
+  _flux_on_macos && return 0
+  command -v secret-tool >/dev/null 2>&1 \
+    || fail "flux keeps credentials in your keyring and needs secret-tool: sudo apt install libsecret-tools (Fedora: libsecret). Then see README → Linux and WSL."
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -311,42 +326,57 @@ _flux_in_dir_override() {
 }
 
 # ---------------------------------------------------------------------------
-# Keychain helpers
+# Credential store: the macOS Keychain, or on Linux the desktop keyring
+# (Secret Service: GNOME Keyring, KWallet, KeePassXC) through secret-tool.
+# Items are named flux.<name> for the account $USER on both.
 # ---------------------------------------------------------------------------
 
-_kc_get() {
-  security find-generic-password -a "${USER:-$(id -un)}" -s "flux.$1" -w 2>/dev/null || true
+# What the store is called in messages.
+_flux_store_name() { _flux_on_macos && echo "Keychain" || echo "keyring"; }
+
+_flux_secret_get() {
+  local _acct="${USER:-$(id -un)}"
+  if _flux_on_macos; then
+    security find-generic-password -a "$_acct" -s "$1" -w 2>/dev/null || true
+  else
+    secret-tool lookup service "$1" account "$_acct" 2>/dev/null || true
+  fi
 }
 
-_kc_set() {
-  security add-generic-password -U -a "${USER:-$(id -un)}" -s "flux.$1" -w "$2" \
-    -l "flux: $1" 2>/dev/null \
-    || fail "Failed to write 'flux.$1' to Keychain."
+# $1 item, $2 value, $3 label. secret-tool reads the value from stdin, so it
+# never appears in the process list.
+_flux_secret_set() {
+  local _acct="${USER:-$(id -un)}"
+  if _flux_on_macos; then
+    security add-generic-password -U -a "$_acct" -s "$1" -w "$2" -l "$3" 2>/dev/null \
+      || fail "Failed to write '$1' to the Keychain."
+  else
+    command -v secret-tool >/dev/null 2>&1 \
+      || fail "secret-tool not found: sudo apt install libsecret-tools (Fedora: libsecret)."
+    printf '%s' "$2" | secret-tool store --label="$3" service "$1" account "$_acct" 2>/dev/null \
+      || fail "Failed to write '$1' to the keyring — is one running? See README → Linux and WSL."
+  fi
 }
 
-_kc_del() {
-  security delete-generic-password -a "${USER:-$(id -un)}" -s "flux.$1" 2>/dev/null || true
+_flux_secret_del() {
+  local _acct="${USER:-$(id -un)}"
+  if _flux_on_macos; then
+    security delete-generic-password -a "$_acct" -s "$1" 2>/dev/null || true
+  else
+    secret-tool clear service "$1" account "$_acct" 2>/dev/null || true
+  fi
 }
 
-_kc_get_dvc() {
-  security find-generic-password -a "${USER:-$(id -un)}" -s "flux.dvc.$1.$2" -w 2>/dev/null || true
-}
-
-_kc_set_dvc() {
-  security add-generic-password -U -a "${USER:-$(id -un)}" -s "flux.dvc.$1.$2" -w "$3" \
-    -l "flux: dvc $1 $2" 2>/dev/null \
-    || fail "Failed to write 'flux.dvc.$1.$2' to Keychain."
-}
-
-_kc_del_dvc() {
-  security delete-generic-password -a "${USER:-$(id -un)}" -s "flux.dvc.$1.$2" 2>/dev/null || true
-}
+_kc_get()     { _flux_secret_get "flux.$1"; }
+_kc_set()     { _flux_secret_set "flux.$1" "$2" "flux: $1"; }
+_kc_del()     { _flux_secret_del "flux.$1"; }
+_kc_get_dvc() { _flux_secret_get "flux.dvc.$1.$2"; }
+_kc_set_dvc() { _flux_secret_set "flux.dvc.$1.$2" "$3" "flux: dvc $1 $2"; }
+_kc_del_dvc() { _flux_secret_del "flux.dvc.$1.$2"; }
 
 # ---------------------------------------------------------------------------
 # DVC credential-process helpers
 # ---------------------------------------------------------------------------
-
-_flux_on_macos() { [[ "$(uname -s)" == "Darwin" ]]; }
 
 # Per-bucket names: the AWS profile flux writes on the host (claudebox's
 # warden creates the same profile inside containers), and the warden resource.
@@ -369,7 +399,7 @@ _flux_profile_endpoint() {
   _flux_profile_section "$1" | sed -n 's/^[[:space:]]*endpoint_url[[:space:]]*=[[:space:]]*//p' | head -1
 }
 
-# Called by boto3 via credential_process — reads Keychain and outputs JSON.
+# Called by boto3 via credential_process — reads the credential store, outputs JSON.
 # The bucket comes from the profile line; older profiles omit it, then the
 # project's git config flux.dvc-remote-bucket is used.
 _flux_credential_helper() {
@@ -390,7 +420,7 @@ _flux_credential_helper() {
 }
 
 # Write (or update) [profile $1] for bucket $2 with endpoint $3 in the AWS
-# config file: credential_process (Keychain) + endpoint_url. Idempotent.
+# config file: credential_process (credential store) + endpoint_url. Idempotent.
 # Uses FLUX_AWS_CONFIG_FILE when set, otherwise the default ~/.aws/config.
 # Refuses a file that a claudebox container can see: editing it from there
 # could make the host run any command (credential_process) or send data
@@ -399,7 +429,9 @@ _flux_setup_aws_credential_process() {
   local _profile="$1" _bucket="$2" _endpoint="$3"
   local _cfg_file; _cfg_file=$(_flux_aws_config_file)
   local _flux_bin
-  _flux_bin=$(command -v flux 2>/dev/null || true)
+  # type -P: an executable on PATH only. `command -v` would name this script's
+  # own flux() function, and DVC could then not run the helper at all.
+  _flux_bin=$(type -P flux 2>/dev/null || true)
   [[ -z "$_flux_bin" ]] \
     && _flux_bin="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
   local _want
@@ -440,7 +472,7 @@ _flux_apply_dvc_profile() {
   local _dvc="${1:-}" _endpoint="${2:-}"
   [[ -n "$_dvc" ]] || _dvc=$(_flux_find_dvc 2>/dev/null || true)
   [[ -x "$_dvc" ]] || return 0
-  _flux_on_macos || return 0
+  _flux_on_host || return 0
 
   local _url _bucket _folder=""
   _url=$(sed -n 's/^[[:space:]]*url[[:space:]]*=[[:space:]]*s3:\/\///p' .dvc/config 2>/dev/null | head -1 | tr -d ' ')
@@ -543,7 +575,7 @@ _flux_warden_remove() {
 # In a claudebox container, storage access comes from warden's AWS profile.
 # Without it DVC can only fail, so say why up front.
 _flux_storage_hint() {
-  _flux_on_macos && return 0
+  _flux_on_host && return 0
   [[ -n "${AWS_CONFIG_FILE:-}" ]] && return 0
   warn "No storage access in this container — DVC pull/push will fail."
   warn "  On the host: run 'flux' once in this project, then approve it with 'cbox warden approve'."
@@ -569,12 +601,12 @@ _flux_write_config() {
   {
     echo "# flux configuration"
     echo "# This file is managed by 'flux config' — you normally don't edit it by hand."
-    echo "# Sensitive credentials (access key, secret key) are stored in macOS Keychain,"
+    echo "# Sensitive credentials (access key, secret key) are stored in the $(_flux_store_name),"
     echo "# keyed per bucket as flux.dvc.{bucket}.{access-key-id|secret-key}."
     echo ""
     echo "# ── DVC remotes ───────────────────────────────────────────────────────────────"
     echo "# One or more Cloudflare R2 accounts. Format: \"bucket:account_id\""
-    echo "# Credentials are stored in Keychain — not here."
+    echo "# Credentials are stored in the $(_flux_store_name) — not here."
     echo "FLUX_DVC_REMOTES=("
     if [[ -n "$dvc_str" ]]; then
       while IFS= read -r entry; do
@@ -659,9 +691,9 @@ _flux_prompt_value() {
 # ---------------------------------------------------------------------------
 
 _flux_is_configured() {
-  # In a claudebox container there is no Keychain and usually no flux.env:
+  # In a claudebox container there is no credential store and usually no flux.env:
   # project settings come from the repo, storage access from warden.
-  if ! _flux_on_macos; then
+  if _flux_in_container; then
     # shellcheck source=/dev/null
     [[ -f "$FLUX_CONFIG" ]] && source "$FLUX_CONFIG" 2>/dev/null
     return 0
@@ -741,7 +773,7 @@ _flux_sanitize_repo_name() {
 # ---------------------------------------------------------------------------
 
 _flux_config() {
-  _flux_require_macos
+  _flux_require_host
   clear 2>/dev/null || true
 
   # ── helpers (defined globally when _flux_config runs) ─────────────────────
@@ -1392,7 +1424,7 @@ _flux_try_push_upstream() {
 # ---------------------------------------------------------------------------
 
 _flux_add() {
-  _flux_require_macos
+  _flux_require_host
   clear 2>/dev/null || true
 
   echo ""
@@ -2022,7 +2054,14 @@ _flux_remove() {
 
 # Packaged hook file: Homebrew's share/flux/<name>, or next to this script.
 _flux_hook_source() {
-  local _dir; _dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # Follow symlinks (e.g. ~/.local/bin/flux -> a git checkout): the hooks sit
+  # next to the real file. Plain readlink, for macOS' too.
+  local _self="${BASH_SOURCE[0]}" _t _n=0
+  while [[ -L "$_self" ]] && (( _n++ < 10 )); do
+    _t=$(readlink "$_self")
+    [[ "$_t" == /* ]] && _self="$_t" || _self="$(dirname "$_self")/$_t"
+  done
+  local _dir; _dir="$(cd "$(dirname "$_self")" && pwd)"
   if [[ -f "${_dir}/../share/flux/$1" ]]; then echo "${_dir}/../share/flux/$1"
   elif [[ -f "${_dir}/$1" ]]; then echo "${_dir}/$1"
   else return 1
@@ -2067,7 +2106,7 @@ _flux_install_hooks() {
 # config, which also reaches git processes started by dvc. Plain git outside
 # flux keeps using .git/hooks, where flux installs the same hooks.
 _flux_protect_git() {
-  _flux_on_macos || return 0
+  _flux_on_host || return 0
   local _dir="${XDG_DATA_HOME:-$HOME/.local/share}/flux/hooks" _h _src
   mkdir -p "$_dir"
   for _h in pre-commit:pre-commit ${_FLUX_EXTRA_HOOKS[@]+"${_FLUX_EXTRA_HOOKS[@]}"}; do
@@ -2126,7 +2165,7 @@ _flux_pull() {
     fi
   fi
 
-  _flux_on_macos && [[ -n "${FLUX_AWS_CONFIG_FILE:-}" ]] && export AWS_CONFIG_FILE="$FLUX_AWS_CONFIG_FILE"
+  _flux_on_host && [[ -n "${FLUX_AWS_CONFIG_FILE:-}" ]] && export AWS_CONFIG_FILE="$FLUX_AWS_CONFIG_FILE"
   _flux_apply_dvc_profile "$DVC"
   _flux_storage_hint
   # dvc pull follows right away, so the post-merge hook stays out of it.
@@ -2319,7 +2358,7 @@ _flux_sync() {
   _flux_subrepo_sync
   # Repo-side setup changes (endpoint moved out of .dvc/config, .warden) go
   # into this sync's commit instead of staying behind uncommitted.
-  _flux_on_macos && [[ -n "${FLUX_AWS_CONFIG_FILE:-}" ]] && export AWS_CONFIG_FILE="$FLUX_AWS_CONFIG_FILE"
+  _flux_on_host && [[ -n "${FLUX_AWS_CONFIG_FILE:-}" ]] && export AWS_CONFIG_FILE="$FLUX_AWS_CONFIG_FILE"
   _flux_apply_dvc_profile "$DVC"
 
   _flux_stage_and_commit_if_dirty "$_description"
@@ -2330,7 +2369,7 @@ _flux_sync() {
   _flux_spin_stop
   _flux_git_pull_smart || true
 
-  _flux_on_macos && [[ -n "${FLUX_AWS_CONFIG_FILE:-}" ]] && export AWS_CONFIG_FILE="$FLUX_AWS_CONFIG_FILE"
+  _flux_on_host && [[ -n "${FLUX_AWS_CONFIG_FILE:-}" ]] && export AWS_CONFIG_FILE="$FLUX_AWS_CONFIG_FILE"
   _flux_apply_dvc_profile "$DVC"
   _flux_storage_hint
 
@@ -3105,7 +3144,7 @@ _flux_doctor_inline() {
 # ---------------------------------------------------------------------------
 
 _flux_doctor() {
-  _flux_require_macos
+  _flux_require_host
   clear 2>/dev/null || true
 
   local pass=true
@@ -3324,7 +3363,7 @@ _flux_list() {
 # ---------------------------------------------------------------------------
 
 _flux_clone() {
-  _flux_require_macos
+  _flux_require_host
 
   # Source flux.env early so FLUX_AWS_CONFIG_FILE is available for credential setup.
   [[ -f "$FLUX_CONFIG" ]] && source "$FLUX_CONFIG" 2>/dev/null || true
@@ -3377,14 +3416,14 @@ _flux_clone() {
 
   ok "DVC remote: s3://${bucket}/${r2_folder}"
 
-  # Step 4: resolve credentials from Keychain, or prompt and save them
+  # Step 4: resolve credentials from the store, or prompt and save them
   local access_key secret_key
   access_key=$(_kc_get_dvc "$bucket" "access-key-id")
   secret_key=$(_kc_get_dvc "$bucket" "secret-key")
 
   if [[ -z "$access_key" || -z "$secret_key" ]]; then
     echo ""
-    warn "No credentials found in Keychain for bucket '${bucket}'."
+    warn "No credentials found in $(_flux_store_name) for bucket '${bucket}'."
     echo "  These are your Cloudflare R2 API credentials for this bucket."
     echo ""
     read -rp  "  Access Key ID: " access_key || true
@@ -3394,9 +3433,9 @@ _flux_clone() {
       || fail "Credentials are required to access the DVC remote."
     _kc_set_dvc "$bucket" "access-key-id" "$access_key"
     _kc_set_dvc "$bucket" "secret-key"    "$secret_key"
-    ok "Credentials saved to Keychain."
+    ok "Credentials saved to $(_flux_store_name)."
   else
-    ok "Credentials found in Keychain for bucket '${bucket}'."
+    ok "Credentials found in $(_flux_store_name) for bucket '${bucket}'."
   fi
 
   # Step 5: wire up AWS credential process and point .dvc/config.local at the profile
