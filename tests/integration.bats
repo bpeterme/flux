@@ -1641,3 +1641,13 @@ _linux_host() {
   [ "$status" -ne 0 ]
   [[ "$output" == *"needs secret-tool"*"libsecret-tools"* ]]
 }
+
+@test "AWS profile: credential_process names an executable even when flux is not on PATH" {
+  _legacy_project
+  # No flux on PATH (a git checkout run by path): the profile must name this file.
+  [ ! -e /usr/bin/flux ] || skip "a flux is installed in /usr/bin"
+  PATH="$MOCK_BIN:/usr/bin:/bin" run _flux_fn '_flux_apply_dvc_profile '"$MOCK_BIN/dvc"
+  [ "$status" -eq 0 ]
+  line=$(grep '^credential_process = ' "$HOME/.aws/config")
+  [ "$line" = "credential_process = $REPO_ROOT/flux _credential-helper test-bucket" ]
+}

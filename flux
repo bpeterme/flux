@@ -429,7 +429,9 @@ _flux_setup_aws_credential_process() {
   local _profile="$1" _bucket="$2" _endpoint="$3"
   local _cfg_file; _cfg_file=$(_flux_aws_config_file)
   local _flux_bin
-  _flux_bin=$(command -v flux 2>/dev/null || true)
+  # type -P: an executable on PATH only. `command -v` would name this script's
+  # own flux() function, and DVC could then not run the helper at all.
+  _flux_bin=$(type -P flux 2>/dev/null || true)
   [[ -z "$_flux_bin" ]] \
     && _flux_bin="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
   local _want
