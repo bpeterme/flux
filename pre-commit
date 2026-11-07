@@ -170,6 +170,9 @@ sync_dvcignore() {
     dir=$(dirname "$gitignore_path")
     dvcignore_path="${dir}/.dvcignore"
 
+    # Listed by Git but gone from disk (deleted, not yet staged): nothing to sync
+    [[ -f "$gitignore_path" ]] || continue
+
     # Strip comment lines and blank lines; an empty result is still valid
     grep -v '^\s*#' "$gitignore_path" | grep -v '^\s*$' > "$dvcignore_path" || true
 
@@ -262,7 +265,11 @@ cleanup_orphaned_dvc_pointers() {
       grep -vxF "/$target_name" "$gitignore_path" > "$_tmp" || true
       mv "$_tmp" "$gitignore_path"
       if [[ ! -s "$gitignore_path" ]]; then
-        rm -f "$gitignore_path"
+        # Stage the removal too: a plain rm left the old .gitignore (with the
+        # stale entry) in the commit and an unstaged deletion behind. Its
+        # generated sibling .dvcignore goes with it.
+        git rm -q --cached --ignore-unmatch -- "$gitignore_path" "${dvc_dir}/.dvcignore" >/dev/null 2>&1 || true
+        rm -f "$gitignore_path" "${dvc_dir}/.dvcignore"
       else
         git add "$gitignore_path"
       fi

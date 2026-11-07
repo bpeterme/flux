@@ -329,6 +329,31 @@ EOF
   ! grep -qF '/clip.mp4' .gitignore
 }
 
+@test "a .gitignore emptied by orphan cleanup is removed in the same commit" {
+  cat > clip.mp4.dvc << 'EOF'
+outs:
+- md5: cafebabe
+  path: clip.mp4
+EOF
+  printf '/clip.mp4\n' > .gitignore
+  git add clip.mp4.dvc .gitignore
+  git commit -m "dvc-tracked clip" --no-verify -q
+  seed_dvc_cache cafebabe
+
+  echo "trigger" > trigger.txt
+  git add trigger.txt
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"No such file"* ]]
+
+  # Deletion is staged, not left behind as an unstaged change
+  run git diff --cached --no-renames --name-status
+  [[ "$output" == *"D"*".gitignore"* ]]
+  run git diff --name-only -- .gitignore .dvcignore
+  [ -z "$output" ]
+}
+
 @test "healthy DVC pointer whose target exists is left untouched" {
   make_binary_file asset.bin
   cat > asset.bin.dvc << 'EOF'
