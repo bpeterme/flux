@@ -3442,7 +3442,7 @@ flux() {
   shift || true
 
   case "$cmd" in
-    _api-version|_credential-helper|version|help|--help|-h) ;;
+    _api-version|_credential-helper|_complete|version|help|--help|-h) ;;
     *) _flux_protect_git ;;
   esac
 
@@ -3470,6 +3470,7 @@ flux() {
       ;;
     _push)             _flux_require_dvc_repo; _flux_push_internal ;;
     _doctor)           _flux_doctor_inline ;;
+    _complete)         _flux_complete "$@" ;;
     pull)              _flux_pull "$@" ;;
     dry-run)           _flux_dry_run ;;
     cap)               _flux_cap "$@" ;;
@@ -3507,47 +3508,43 @@ flux() {
 # shell completion
 # ---------------------------------------------------------------------------
 
+# `flux _complete WORD...`: the candidates for the word after `flux WORD...`,
+# one per line. Every completion script (completions/_flux for Homebrew, and
+# the zsh and bash ones below for a sourced flux) asks this, so none can drift
+# from the commands.
+_flux_complete() {
+  local IFS=' '  # "$*" below joins with spaces, also when called with a newline IFS
+  case "$*" in
+    "")           printf '%s\n' add clone list remove sync pull dry-run cap pin config doctor version help ;;
+    remove)       printf '%s\n' git dvc ;;
+    "remove dvc") echo --force ;;
+    pin)          printf '%s\n' list dvc git reset ;;
+    "pin reset")  echo --all ;;
+    cap)          echo --reset ;;
+  esac
+  return 0
+}
+
 if [[ -n "${ZSH_VERSION:-}" ]]; then
+  # zsh code: $words and $CURRENT are set by the completion system; the
+  # unquoted $(…) splits at newlines (IFS) and drops empty lines; compadd -a
+  # reads the array by name.
+  # shellcheck disable=SC2034,SC2154,SC2207
   _flux_zsh_complete() {
-    case $CURRENT in
-      2)
-        compadd add clone list remove pull dry-run cap pin config doctor version help
-        ;;
-      3)
-        case "${words[2]}" in
-          remove) compadd git dvc ;;
-          pin)    compadd dvc git reset ;;
-          cap)    compadd --reset ;;
-        esac
-        ;;
-      4)
-        if [[ "${words[2]}" == "pin" && "${words[3]}" == "reset" ]]; then
-          compadd --all
-        fi
-        ;;
-    esac
+    local IFS=$'\n'
+    local -a candidates
+    candidates=($(flux _complete "${words[@]:1:$((CURRENT - 2))}" 2>/dev/null))
+    compadd -a candidates
   }
   (( ${+functions[compdef]} )) && compdef _flux_zsh_complete flux
 elif [[ -n "${BASH_VERSION:-}" ]]; then
+  # COMPREPLY=( $(compgen …) ) is bash's completion idiom (macOS's bash 3.2 has
+  # no mapfile); IFS splits the candidates at newlines only.
+  # shellcheck disable=SC2207
   _flux_bash_complete() {
-    local cur="${COMP_WORDS[COMP_CWORD]}"
-    local prev="${COMP_WORDS[COMP_CWORD-1]}"
-    local pprev="${COMP_WORDS[COMP_CWORD-2]:-}"
-    COMPREPLY=()
-
-    if [[ $COMP_CWORD -eq 1 ]]; then
-      COMPREPLY=( $(compgen -W \
-        "add clone list remove pull dry-run cap pin config doctor version help" \
-        -- "$cur") )
-    elif [[ $COMP_CWORD -eq 2 ]]; then
-      case "$prev" in
-        remove) COMPREPLY=( $(compgen -W "git dvc"       -- "$cur") ) ;;
-        pin)    COMPREPLY=( $(compgen -W "dvc git reset" -- "$cur") ) ;;
-        cap)    COMPREPLY=( $(compgen -W "--reset"       -- "$cur") ) ;;
-      esac
-    elif [[ $COMP_CWORD -eq 3 && "$pprev" == "pin" && "$prev" == "reset" ]]; then
-      COMPREPLY=( $(compgen -W "--all" -- "$cur") )
-    fi
+    local IFS=$'\n'
+    COMPREPLY=( $(compgen -W "$(flux _complete "${COMP_WORDS[@]:1:COMP_CWORD-1}" 2>/dev/null)" \
+      -- "${COMP_WORDS[COMP_CWORD]}") )
   }
   complete -F _flux_bash_complete flux
 fi
