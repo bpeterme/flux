@@ -303,13 +303,19 @@ and hands it off to DVC. The old small version remains in Git history — run
 At the start of every commit the hook reads the full list of DVC-tracked files
 from `git ls-files '*.dvc'`. For each, it checks the current on-disk size and
 binary status. If a file is now text and below the threshold it is automatically
-migrated back to Git in the same commit. `dvc gc --cloud --all-branches` runs
-automatically after migration to purge the now-unreferenced R2 data.
+migrated back to Git in the same commit. The old copy stays on R2: flux never
+deletes R2 data from a hook (see the cleanup note below).
 
 **File deleted**
 The hook scans all tracked `.dvc` pointers at the start of every commit, detects
 missing targets, and stages the pointer for deletion automatically. The stale
 entry in `.gitignore` is also cleaned up.
+
+A missing file only counts as deleted if it was on this machine before (its data
+is in the local DVC cache). A file that was never downloaded here — for example
+after a plain `git checkout` or `git merge` without `flux pull` — is kept, and the
+commit lists it with a hint to run `flux pull`. To delete such a file on purpose,
+run `git rm <file>.dvc`.
 
 **File renamed**
 Same mechanism as deletion — the old pointer's target is gone so the hook removes
@@ -380,9 +386,10 @@ dvc push
 dvc status      # local vs cache
 dvc status -c   # local vs R2
 
-# Clean up unreferenced R2 data (runs automatically after migration)
-dvc gc --cloud --all-branches
-dvc gc
+# Clean up unreferenced R2 data (never automatic). Careful: dvc gc keeps only
+# data that local branches/commits reference. Run it on a machine that has every
+# branch checked out locally, or data of other branches is deleted from R2.
+dvc gc --cloud --all-branches --all-commits
 ```
 
 ## Running tests

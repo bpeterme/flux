@@ -3,6 +3,7 @@
 # Simulates the DVC behaviour that the pre-commit hook depends on:
 #   add  — creates <file>.dvc, appends /<basename> to sibling .gitignore
 #   remove — removes <file>.dvc, deletes the .gitignore entry
+#   cache dir — prints the repo's .dvc/cache path
 #   gc, init, remote, status, push, pull — no-ops (exit 0)
 #
 # Every invocation is appended to $MOCK_DVC_LOG for assertions.
@@ -99,6 +100,11 @@ EOF
       echo "mock_dvc: simulated push failure" >&2
       exit 1
     fi
+    exit 0
+    ;;
+
+  cache)
+    [[ "${2:-}" == "dir" ]] && echo "$PWD/.dvc/cache"
     exit 0
     ;;
 

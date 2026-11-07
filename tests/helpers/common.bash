@@ -87,6 +87,16 @@ make_binary_file() {
   printf '\x00\x01\x02\x03\xff\xfe' > "$file"
 }
 
+# seed_dvc_cache MD5
+# Puts an object into the local DVC cache (DVC 3 layout), as if this machine
+# had once added or pulled the file. Orphan cleanup only deletes pointers
+# whose data was present here, so deletion tests need a seeded cache.
+seed_dvc_cache() {
+  local md5="$1"
+  mkdir -p ".dvc/cache/files/md5/${md5:0:2}"
+  printf 'cached' > ".dvc/cache/files/md5/${md5:0:2}/${md5:2}"
+}
+
 # dvc_calls — print the mock DVC call log
 dvc_calls() {
   cat "$MOCK_DVC_LOG" 2>/dev/null || true
