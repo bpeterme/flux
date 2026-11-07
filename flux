@@ -748,13 +748,13 @@ _flux_config() {
 
   _cfg_dvc_str() {
     local _s=""
-    for _e in "${FLUX_DVC_REMOTES[@]}"; do _s+="${_e}"$'\n'; done
+    for _e in ${FLUX_DVC_REMOTES[@]+"${FLUX_DVC_REMOTES[@]}"}; do _s+="${_e}"$'\n'; done
     echo "$_s"
   }
 
   _cfg_git_str() {
     local _s=""
-    for _e in "${FLUX_GIT_ACCOUNTS[@]}"; do _s+="${_e}"$'\n'; done
+    for _e in ${FLUX_GIT_ACCOUNTS[@]+"${FLUX_GIT_ACCOUNTS[@]}"}; do _s+="${_e}"$'\n'; done
     echo "$_s"
   }
 
@@ -772,7 +772,7 @@ _flux_config() {
       echo "    (none)"
     else
       local _i=1
-      for _e in "${FLUX_DVC_REMOTES[@]}"; do
+      for _e in ${FLUX_DVC_REMOTES[@]+"${FLUX_DVC_REMOTES[@]}"}; do
         local _b="${_e%%:*}" _cred_badge _primary_mark=""
         local _ak _sk
         _ak=$(_kc_get_dvc "$_b" "access-key-id")
@@ -800,7 +800,7 @@ _flux_config() {
       echo "    (none)"
     else
       local _i=1
-      for _e in "${FLUX_GIT_ACCOUNTS[@]}"; do
+      for _e in ${FLUX_GIT_ACCOUNTS[@]+"${FLUX_GIT_ACCOUNTS[@]}"}; do
         local _proto="${_e%%:*}" _rest="${_e#*:}"
         local _host="${_rest%%:*}" _account="${_rest#*:}"
         local _badge
@@ -884,7 +884,7 @@ _flux_config() {
 
     # Stash existing entries before resetting; they are preserved below and
     # never silently discarded — only missing credentials are prompted for.
-    local _preset_dvc=("${FLUX_DVC_REMOTES[@]}") _preset_git=("${FLUX_GIT_ACCOUNTS[@]}")
+    local _preset_dvc=(${FLUX_DVC_REMOTES[@]+"${FLUX_DVC_REMOTES[@]}"}) _preset_git=(${FLUX_GIT_ACCOUNTS[@]+"${FLUX_GIT_ACCOUNTS[@]}"})
     FLUX_DVC_REMOTES=()
     FLUX_GIT_ACCOUNTS=()
 
@@ -893,10 +893,10 @@ _flux_config() {
 
     if [[ "${#_preset_dvc[@]}" -gt 0 ]]; then
       # Preserve all existing entries; only prompt for missing credentials or new entries.
-      FLUX_DVC_REMOTES=("${_preset_dvc[@]}")
+      FLUX_DVC_REMOTES=(${_preset_dvc[@]+"${_preset_dvc[@]}"})
       echo "  Existing DVC remotes:"
       local _pi=0
-      for _pe in "${_preset_dvc[@]}"; do
+      for _pe in ${_preset_dvc[@]+"${_preset_dvc[@]}"}; do
         local _pb="${_pe%%:*}" _pa="${_pe#*:}"
         local _cst; [[ -n "$(_kc_get_dvc "$_pb" 'access-key-id')" ]] && _cst="credentials OK" || _cst="credentials MISSING"
         printf "    %d. %-28s account: %s  (%s)\n" "$(( _pi + 1 ))" "$_pb" "$_pa" "$_cst"
@@ -904,7 +904,7 @@ _flux_config() {
       done
       echo ""
       _pi=0
-      for _pe in "${_preset_dvc[@]}"; do
+      for _pe in ${_preset_dvc[@]+"${_preset_dvc[@]}"}; do
         local _pb="${_pe%%:*}"
         if [[ -z "$(_kc_get_dvc "$_pb" 'access-key-id')" ]]; then
           local _fix; read -rp "  Entry $(( _pi + 1 )) ('$_pb') is missing credentials. Enter them now? [Y/n]: " _fix || true
@@ -986,10 +986,10 @@ _flux_config() {
 
     if [[ "${#_preset_git[@]}" -gt 0 ]]; then
       # Preserve all existing entries; offer to add new ones.
-      FLUX_GIT_ACCOUNTS=("${_preset_git[@]}")
+      FLUX_GIT_ACCOUNTS=(${_preset_git[@]+"${_preset_git[@]}"})
       echo "  Existing git accounts (all preserved):"
       local _gi=1
-      for _ge in "${_preset_git[@]}"; do
+      for _ge in ${_preset_git[@]+"${_preset_git[@]}"}; do
         printf "    %d. %s\n" "$_gi" "$_ge"
         (( _gi++ ))
       done
@@ -1206,7 +1206,7 @@ _flux_config() {
           local _confirm
           read -rp "  Remove all flux config and credentials? [y/N]: " _confirm || true
           if [[ "${_confirm:-}" =~ ^[Yy]$ ]]; then
-            for _entry in "${FLUX_DVC_REMOTES[@]}"; do
+            for _entry in ${FLUX_DVC_REMOTES[@]+"${FLUX_DVC_REMOTES[@]}"}; do
               _bucket="${_entry%%:*}"
               _kc_del_dvc "$_bucket" "access-key-id"
               _kc_del_dvc "$_bucket" "secret-key"
@@ -1243,16 +1243,16 @@ _flux_scan_subrepos() {
 
   # Keep only paths not nested inside another found sub-repo
   local result=()
-  for path in "${all[@]+"${all[@]}"}"; do
+  for path in "${all[@]+${all[@]+"${all[@]}"}}"; do
     local nested=false
-    for other in "${all[@]+"${all[@]}"}"; do
+    for other in "${all[@]+${all[@]+"${all[@]}"}}"; do
       [[ "$path" == "$other" ]] && continue
       [[ "$path" == "$other/"* ]] && nested=true && break
     done
     [[ "$nested" == "false" ]] && result+=("${path#${root_dir}/}")
   done
 
-  (( ${#result[@]} > 0 )) && printf '%s\n' "${result[@]}"
+  (( ${#result[@]} > 0 )) && printf '%s\n' ${result[@]+"${result[@]}"}
   return 0
 }
 
@@ -1273,22 +1273,22 @@ _flux_subrepo_sync() {
     < <(_flux_registry_read subrepo_exclusion)
 
   local appeared=()
-  for p in "${current[@]+"${current[@]}"}"; do
+  for p in "${current[@]+${current[@]+"${current[@]}"}}"; do
     local found=false
-    for q in "${previous[@]+"${previous[@]}"}"; do [[ "$p" == "$q" ]] && found=true && break; done
+    for q in "${previous[@]+${previous[@]+"${previous[@]}"}}"; do [[ "$p" == "$q" ]] && found=true && break; done
     [[ "$found" == "false" ]] && appeared+=("$p")
   done
 
   local disappeared=()
-  for p in "${previous[@]+"${previous[@]}"}"; do
+  for p in "${previous[@]+${previous[@]+"${previous[@]}"}}"; do
     local found=false
-    for q in "${current[@]+"${current[@]}"}"; do [[ "$p" == "$q" ]] && found=true && break; done
+    for q in "${current[@]+${current[@]+"${current[@]}"}}"; do [[ "$p" == "$q" ]] && found=true && break; done
     [[ "$found" == "false" ]] && disappeared+=("$p")
   done
 
   local gitignore="${root_dir}/.gitignore"
 
-  for path in "${appeared[@]+"${appeared[@]}"}"; do
+  for path in "${appeared[@]+${appeared[@]+"${appeared[@]}"}}"; do
     local tracked
     tracked=$(git ls-files -- "$path" 2>/dev/null || true)
     if [[ -n "$tracked" ]]; then
@@ -1302,7 +1302,7 @@ _flux_subrepo_sync() {
     FLUX_SUBREPO_CHANGED=true
   done
 
-  for path in "${disappeared[@]+"${disappeared[@]}"}"; do
+  for path in "${disappeared[@]+${disappeared[@]+"${disappeared[@]}"}}"; do
     if [[ -f "$gitignore" ]] && grep -qxF "${path}/" "$gitignore" 2>/dev/null; then
       local tmp; tmp=$(mktemp)
       grep -vxF "${path}/" "$gitignore" > "$tmp" || true
@@ -1463,7 +1463,7 @@ _flux_add() {
   else
     echo "  Available DVC remotes:"
     local _i=1
-    for _e in "${FLUX_DVC_REMOTES[@]}"; do
+    for _e in ${FLUX_DVC_REMOTES[@]+"${FLUX_DVC_REMOTES[@]}"}; do
       printf "    %d. %s\n" "$_i" "${_e%%:*}"
       (( _i++ ))
     done
@@ -1634,7 +1634,7 @@ _flux_add() {
   _flux_registry_write hook pre-commit
   _flux_install_hooks "$HOOKS_DIR"
   local _entry
-  for _entry in "${_FLUX_EXTRA_HOOKS[@]}"; do _flux_registry_write hook "${_entry%%:*}"; done
+  for _entry in ${_FLUX_EXTRA_HOOKS[@]+"${_FLUX_EXTRA_HOOKS[@]}"}; do _flux_registry_write hook "${_entry%%:*}"; done
 
   # Git remote setup
   local _existing_remote
@@ -1666,7 +1666,7 @@ _flux_add() {
     else
       echo "  Proposed git remotes:"
       local _i=1
-      for _e in "${FLUX_GIT_ACCOUNTS[@]}"; do
+      for _e in ${FLUX_GIT_ACCOUNTS[@]+"${FLUX_GIT_ACCOUNTS[@]}"}; do
         local _proto="${_e%%:*}" _rest="${_e#*:}"
         local _host="${_rest%%:*}" _account="${_rest#*:}" _url
         if [[ "$_proto" == "ssh" ]]; then
@@ -1742,7 +1742,7 @@ _flux_remove_git() {
     warn "No pre-commit hook found."
   fi
   local _entry _name
-  for _entry in "${_FLUX_EXTRA_HOOKS[@]}"; do
+  for _entry in ${_FLUX_EXTRA_HOOKS[@]+"${_FLUX_EXTRA_HOOKS[@]}"}; do
     _name="${_entry%%:*}"
     if [[ -f "${HOOKS_DIR}/${_name}" ]] && grep -q 'flux' "${HOOKS_DIR}/${_name}" 2>/dev/null; then
       rm "${HOOKS_DIR}/${_name}"
@@ -1763,7 +1763,7 @@ _flux_remove_git() {
           dvc-router.force-dvc dvc-router.force-git)
   fi
   local removed=0
-  for key in "${keys[@]}"; do
+  for key in ${keys[@]+"${keys[@]}"}; do
     if [[ "$key" == dvc-router.force-dvc || "$key" == dvc-router.force-git ]]; then
       if git config --unset-all "$key" 2>/dev/null; then
         _flux_registry_delete git_config "$key"
@@ -1796,7 +1796,7 @@ _flux_remove_git() {
   while IFS= read -r p; do [[ -n "$p" ]] && excl_paths+=("$p"); done \
     < <(_flux_registry_read subrepo_exclusion)
   local removed_excl=0
-  for path in "${excl_paths[@]+"${excl_paths[@]}"}"; do
+  for path in "${excl_paths[@]+${excl_paths[@]+"${excl_paths[@]}"}}"; do
     if [[ -f ".gitignore" ]] && grep -qxF "${path}/" .gitignore 2>/dev/null; then
       local tmp; tmp=$(mktemp)
       grep -vxF "${path}/" .gitignore > "$tmp" || true
@@ -1854,7 +1854,7 @@ _flux_remove_dvc() {
   if (( ${#missing_data[@]} > 0 )); then
     warn "The following DVC-tracked files are not present on disk."
     warn "Run 'dvc pull' first, or their data will only exist on R2:"
-    for f in "${missing_data[@]}"; do printf "    %s\n" "$f"; done
+    for f in ${missing_data[@]+"${missing_data[@]}"}; do printf "    %s\n" "$f"; done
     echo ""
     local confirm
     read -rp "  Continue anyway? [y/N]: " confirm || true
@@ -1882,7 +1882,7 @@ _flux_remove_dvc() {
   while IFS= read -r line; do [[ -n "$line" ]] && ptrs+=("$line"); done \
     < <(git ls-files | grep '\.dvc$')
   if (( ${#ptrs[@]} > 0 )); then
-    for ptr in "${ptrs[@]}"; do
+    for ptr in ${ptrs[@]+"${ptrs[@]}"}; do
       local _target_rel _ptr_dir _target_name _gi_entry _tmp
       _target_rel=$(grep '^\s*path:' "$ptr" 2>/dev/null \
         | head -1 | sed 's/.*path:[[:space:]]*//' | tr -d '"' | tr -d "'" || true)
@@ -1901,8 +1901,8 @@ _flux_remove_dvc() {
         mv "$_tmp" .gitignore
       fi
     done
-    git rm --cached -q "${ptrs[@]}" 2>/dev/null || true
-    rm -f "${ptrs[@]}"
+    git rm --cached -q ${ptrs[@]+"${ptrs[@]}"} 2>/dev/null || true
+    rm -f ${ptrs[@]+"${ptrs[@]}"}
     ok "Removed ${#ptrs[@]} .dvc pointer file(s)."
   fi
 
@@ -1911,8 +1911,8 @@ _flux_remove_dvc() {
   while IFS= read -r line; do [[ -n "$line" ]] && dvcignores+=("$line"); done \
     < <(find . -type f -name ".dvcignore" -not -path "./.git/*" -not -path "./.dvc/*" 2>/dev/null)
   if (( ${#dvcignores[@]} > 0 )); then
-    git rm --cached -q "${dvcignores[@]}" 2>/dev/null || true
-    rm -f "${dvcignores[@]}"
+    git rm --cached -q ${dvcignores[@]+"${dvcignores[@]}"} 2>/dev/null || true
+    rm -f ${dvcignores[@]+"${dvcignores[@]}"}
     ok "Removed ${#dvcignores[@]} .dvcignore file(s)."
   fi
 
@@ -1928,7 +1928,7 @@ _flux_remove_dvc() {
       < <(_flux_registry_read gitignore)
     local removed_gi=0
     if (( ${#entries[@]} > 0 )); then
-      for entry in "${entries[@]}"; do
+      for entry in ${entries[@]+"${entries[@]}"}; do
         if grep -qxF "$entry" .gitignore 2>/dev/null; then
           local tmp; tmp=$(mktemp)
           grep -vxF "$entry" .gitignore > "$tmp" || true
@@ -2042,7 +2042,7 @@ _flux_install_hooks() {
   local _entry _name _dst _src
   # Read-only inside a claudebox container; the Mac side keeps them current.
   [[ -w "$1" ]] || return 0
-  for _entry in "${_FLUX_EXTRA_HOOKS[@]}"; do
+  for _entry in ${_FLUX_EXTRA_HOOKS[@]+"${_FLUX_EXTRA_HOOKS[@]}"}; do
     _name="${_entry%%:*}" _dst="$1/${_entry%%:*}"
     _src=$(_flux_hook_source "${_entry#*:}") || continue
     if [[ -f "$_dst" ]] && ! grep -q 'flux' "$_dst" 2>/dev/null; then
@@ -2070,7 +2070,7 @@ _flux_protect_git() {
   _flux_on_macos || return 0
   local _dir="${XDG_DATA_HOME:-$HOME/.local/share}/flux/hooks" _h _src
   mkdir -p "$_dir"
-  for _h in pre-commit:pre-commit "${_FLUX_EXTRA_HOOKS[@]}"; do
+  for _h in pre-commit:pre-commit ${_FLUX_EXTRA_HOOKS[@]+"${_FLUX_EXTRA_HOOKS[@]}"}; do
     _src=$(_flux_hook_source "${_h#*:}") || continue
     _h="${_h%%:*}"
     cmp -s "$_src" "${_dir}/${_h}" || { cp "$_src" "${_dir}/${_h}"; chmod +x "${_dir}/${_h}"; }
@@ -2163,7 +2163,7 @@ _flux_repair_dvcignore() {
     [[ -z "$_dvcignore" || ! -f "$_dvcignore" ]] && continue
     local _before _after
     _before=$(cat "$_dvcignore")
-    for _pat in "${_patterns[@]}"; do
+    for _pat in ${_patterns[@]+"${_patterns[@]}"}; do
       local _tmp; _tmp=$(mktemp)
       grep -vxF "$_pat" "$_dvcignore" > "$_tmp" || true
       mv "$_tmp" "$_dvcignore"
@@ -2261,7 +2261,7 @@ _flux_stage_and_commit_if_dirty() {
   fi
   if (( ${#_dvc_modified[@]} > 0 )); then
     _flux_spin_stop
-    for _dvc_f in "${_dvc_modified[@]}"; do
+    for _dvc_f in ${_dvc_modified[@]+"${_dvc_modified[@]}"}; do
       ok "Staging local change: $_dvc_f"
       "$DVC" add "$_dvc_f" 2>/dev/null || warn "Could not stage: $_dvc_f"
     done
@@ -2459,7 +2459,7 @@ _flux_render_histogram() {
   local boundaries=(0) cap_added=false t last_idx
 
   if (( cap_bytes > 0 )); then
-    for t in "${fixed_thresholds[@]}"; do
+    for t in ${fixed_thresholds[@]+"${fixed_thresholds[@]}"}; do
       if [[ "$cap_added" == "false" ]] && (( cap_bytes <= t )); then
         last_idx=$(( ${#boundaries[@]} - 1 ))
         (( cap_bytes > boundaries[last_idx] )) && boundaries+=("$cap_bytes")
@@ -2473,7 +2473,7 @@ _flux_render_histogram() {
       (( cap_bytes > boundaries[last_idx] )) && boundaries+=("$cap_bytes")
     fi
   else
-    for t in "${fixed_thresholds[@]}"; do
+    for t in ${fixed_thresholds[@]+"${fixed_thresholds[@]}"}; do
       last_idx=$(( ${#boundaries[@]} - 1 ))
       (( t != boundaries[last_idx] )) && boundaries+=("$t")
     done
@@ -2485,7 +2485,7 @@ _flux_render_histogram() {
   for (( i=0; i<nbrackets; i++ )); do counts+=( 0 ); sizes+=( 0 ); git_in+=( 0 ); dvc_in+=( 0 ); done
 
   local sz lo hi
-  for sz in "${_H_GIT[@]+"${_H_GIT[@]}"}"; do
+  for sz in "${_H_GIT[@]+${_H_GIT[@]+"${_H_GIT[@]}"}}"; do
     for (( i=0; i<nbrackets; i++ )); do
       lo="${boundaries[$i]}"; hi="${boundaries[$((i+1))]}"
       if (( sz >= lo )) && (( hi == 0 || sz < hi )); then
@@ -2494,7 +2494,7 @@ _flux_render_histogram() {
       fi
     done
   done
-  for sz in "${_H_DVC[@]+"${_H_DVC[@]}"}"; do
+  for sz in "${_H_DVC[@]+${_H_DVC[@]+"${_H_DVC[@]}"}}"; do
     for (( i=0; i<nbrackets; i++ )); do
       lo="${boundaries[$i]}"; hi="${boundaries[$((i+1))]}"
       if (( sz >= lo )) && (( hi == 0 || sz < hi )); then
@@ -2680,7 +2680,7 @@ _flux_dry_run() {
     local file_size
     file_size=$(wc -c < "$file" | tr -d ' ')
 
-    if _flux_in_dir_override "$file" "${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}"; then
+    if _flux_in_dir_override "$file" "${FORCE_DVC_DIRS[@]+${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}}"; then
       dvc_files+=("$file")
       dvc_notes+=("[pinned]")
       dvc_file_sizes+=("$file_size")
@@ -2689,7 +2689,7 @@ _flux_dry_run() {
       if git ls-files --error-unmatch "$file" &>/dev/null 2>&1; then
         dvc_migrating+=("$file")
       fi
-    elif _flux_in_dir_override "$file" "${FORCE_GIT_DIRS[@]+"${FORCE_GIT_DIRS[@]}"}"; then
+    elif _flux_in_dir_override "$file" "${FORCE_GIT_DIRS[@]+${FORCE_GIT_DIRS[@]+"${FORCE_GIT_DIRS[@]}"}}"; then
       git_files+=("$file")
       git_notes+=("[pinned]")
       git_file_sizes+=("$file_size")
@@ -2715,7 +2715,7 @@ _flux_dry_run() {
   # These are shown in the DVC section instead of the pointer files themselves.
   local dvc_managed_paths=() dvc_managed_sizes=() dvc_managed_notes=() dvc_managed_total=0
   local _pm _pp _ps _pd _line
-  for _pm in "${dvc_ptr_files[@]+"${dvc_ptr_files[@]}"}"; do
+  for _pm in "${dvc_ptr_files[@]+${dvc_ptr_files[@]+"${dvc_ptr_files[@]}"}}"; do
     _pp=""; _ps=0
     while IFS= read -r _line; do
       if [[ -z "$_pp" ]] && [[ "$_line" =~ ^[[:space:]]*path:[[:space:]]+(.+)$ ]]; then
@@ -2731,7 +2731,7 @@ _flux_dry_run() {
     dvc_managed_paths+=("$_pp")
     dvc_managed_sizes+=("$_ps")
     dvc_managed_total=$(( dvc_managed_total + _ps ))
-    if _flux_in_dir_override "$_pm" "${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}"; then
+    if _flux_in_dir_override "$_pm" "${FORCE_DVC_DIRS[@]+${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}}"; then
       dvc_managed_notes+=("[pinned]")
     else
       dvc_managed_notes+=("")
@@ -2758,14 +2758,14 @@ _flux_dry_run() {
   local _H_TEXT_GIT=() _H_TEXT_DVC=() _H_BIN=() _H_PIN_GIT=() _H_PIN_DVC=()
 
   local _hi=0
-  for _hsz in "${git_file_sizes[@]+"${git_file_sizes[@]}"}"; do
+  for _hsz in "${git_file_sizes[@]+${git_file_sizes[@]+"${git_file_sizes[@]}"}}"; do
     if [[ "${git_notes[$_hi]:-}" == "[pinned]" ]]; then _H_PIN_GIT+=("$_hsz")
     else                                                  _H_TEXT_GIT+=("$_hsz"); fi
     (( _hi++ )) || true
   done
 
   local _hj=0
-  for _hsz in "${dvc_file_sizes[@]+"${dvc_file_sizes[@]}"}"; do
+  for _hsz in "${dvc_file_sizes[@]+${dvc_file_sizes[@]+"${dvc_file_sizes[@]}"}}"; do
     if   [[ "${dvc_notes[$_hj]:-}" == "[pinned]" ]];    then _H_PIN_DVC+=("$_hsz")
     elif [[ "${dvc_file_is_binary[$_hj]:-0}" == "1" ]]; then _H_BIN+=("$_hsz")
     else                                                      _H_TEXT_DVC+=("$_hsz"); fi
@@ -2775,7 +2775,7 @@ _flux_dry_run() {
   # Already-DVC-managed files (from pointer extraction) — pinned go to _H_PIN_DVC,
   # others to _H_BIN.
   local _dm=0
-  for _dmp in "${dvc_managed_paths[@]+"${dvc_managed_paths[@]}"}"; do
+  for _dmp in "${dvc_managed_paths[@]+${dvc_managed_paths[@]+"${dvc_managed_paths[@]}"}}"; do
     local _dmsz="${dvc_managed_sizes[$_dm]:-0}"
     if [[ "${dvc_managed_notes[$_dm]:-}" == "[pinned]" ]]; then
       (( _dmsz > 0 )) && _H_PIN_DVC+=("$_dmsz")
@@ -2787,9 +2787,9 @@ _flux_dry_run() {
 
   local _pin_git_n=${#_H_PIN_GIT[@]} _pin_dvc_n=${#_H_PIN_DVC[@]} _bin_n=${#_H_BIN[@]}
   local _pin_git_bytes=0 _pin_dvc_bytes=0 _bin_bytes=0 _sz
-  for _sz in "${_H_PIN_GIT[@]+"${_H_PIN_GIT[@]}"}"; do _pin_git_bytes=$(( _pin_git_bytes + _sz )); done
-  for _sz in "${_H_PIN_DVC[@]+"${_H_PIN_DVC[@]}"}"; do _pin_dvc_bytes=$(( _pin_dvc_bytes + _sz )); done
-  for _sz in "${_H_BIN[@]+"${_H_BIN[@]}"}"; do          _bin_bytes=$(( _bin_bytes + _sz )); done
+  for _sz in "${_H_PIN_GIT[@]+${_H_PIN_GIT[@]+"${_H_PIN_GIT[@]}"}}"; do _pin_git_bytes=$(( _pin_git_bytes + _sz )); done
+  for _sz in "${_H_PIN_DVC[@]+${_H_PIN_DVC[@]+"${_H_PIN_DVC[@]}"}}"; do _pin_dvc_bytes=$(( _pin_dvc_bytes + _sz )); done
+  for _sz in "${_H_BIN[@]+${_H_BIN[@]+"${_H_BIN[@]}"}}"; do          _bin_bytes=$(( _bin_bytes + _sz )); done
 
   # Shared bar scale: seed with max summary count; text histogram raises it if needed
   local _FLUX_BAR_MAX _FLUX_HIST_LABEL_WIDTH=10
@@ -2800,7 +2800,7 @@ _flux_dry_run() {
   (( _bin_n > _sum_max_n )) && _sum_max_n=$_bin_n
   local _sum_count_w=${#_sum_max_n}; (( _sum_count_w < 1 )) && _sum_count_w=1
 
-  _H_GIT=("${_H_TEXT_GIT[@]+"${_H_TEXT_GIT[@]}"}"); _H_DVC=("${_H_TEXT_DVC[@]+"${_H_TEXT_DVC[@]}"}")
+  _H_GIT=("${_H_TEXT_GIT[@]+${_H_TEXT_GIT[@]+"${_H_TEXT_GIT[@]}"}}"); _H_DVC=("${_H_TEXT_DVC[@]+${_H_TEXT_DVC[@]+"${_H_TEXT_DVC[@]}"}}")
   _flux_render_histogram "Text files" "$SIZE_CAP_BYTES"
   echo ""
   _flux_render_summary_row "Pinned Git" "░" "$_pin_git_n" "$_pin_git_bytes" "$_sum_count_w"
@@ -2816,10 +2816,10 @@ _flux_dry_run() {
   if (( ${#FORCE_DVC_DIRS[@]} > 0 || ${#FORCE_GIT_DIRS[@]} > 0 )); then
     echo ""
     printf "  Pinned directories:\n"
-    for _pd in "${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}"; do
+    for _pd in "${FORCE_DVC_DIRS[@]+${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}}"; do
       printf "    ✦  %-24s → DVC\n" "$_pd"
     done
-    for _pd in "${FORCE_GIT_DIRS[@]+"${FORCE_GIT_DIRS[@]}"}"; do
+    for _pd in "${FORCE_GIT_DIRS[@]+${FORCE_GIT_DIRS[@]+"${FORCE_GIT_DIRS[@]}"}}"; do
       printf "    ·  %-24s → Git\n" "$_pd"
     done
   fi
@@ -2837,7 +2837,7 @@ _flux_dry_run() {
       echo ""
       printf "  Git files:\n"
       local _i=0
-      for f in "${git_files[@]}"; do
+      for f in ${git_files[@]+"${git_files[@]}"}; do
         local sz; sz=$(wc -c < "$f" | tr -d ' ')
         local _fn="${git_notes[_i]:-}"
         local _fn_str; _fn_str="${_fn:+   ${_fn}}"
@@ -2850,7 +2850,7 @@ _flux_dry_run() {
       echo ""
       printf "  DVC files:\n"
       local _j=0
-      for f in "${dvc_files[@]+"${dvc_files[@]}"}"; do
+      for f in "${dvc_files[@]+${dvc_files[@]+"${dvc_files[@]}"}}"; do
         local sz; sz=$(wc -c < "$f" | tr -d ' ')
         local note="${dvc_notes[_j]:-}"
         local _note_str; _note_str="${note:+   ${note}}"
@@ -2858,7 +2858,7 @@ _flux_dry_run() {
         (( _j++ )) || true
       done
       local _dm=0
-      for _dmp in "${dvc_managed_paths[@]+"${dvc_managed_paths[@]}"}"; do
+      for _dmp in "${dvc_managed_paths[@]+${dvc_managed_paths[@]+"${dvc_managed_paths[@]}"}}"; do
         local _dmsz="${dvc_managed_sizes[$_dm]:-0}"
         local _dmsz_str
         if (( _dmsz > 0 )); then
@@ -2976,7 +2976,7 @@ _flux_pin_config_remove() {
     < <(git config --get-all "$legacy_key" 2>/dev/null || true)
   if (( ${#legacy[@]} > 0 )); then
     git config --unset-all "$legacy_key" 2>/dev/null || true
-    for v in "${legacy[@]}"; do
+    for v in ${legacy[@]+"${legacy[@]}"}; do
       [[ "$v" == "$target" ]] && continue
       git config --add "$legacy_key" "$v"
     done
@@ -3007,8 +3007,8 @@ _flux_pin() {
       if (( ${#dvc_dirs[@]} > 0 || ${#git_dirs[@]} > 0 )); then
         echo ""
         printf "  Pinned:\n"
-        for d in "${dvc_dirs[@]}"; do printf "    ✦  %-24s → DVC\n" "$d"; done
-        for d in "${git_dirs[@]}"; do printf "    ·  %-24s → Git\n" "$d"; done
+        for d in ${dvc_dirs[@]+"${dvc_dirs[@]}"}; do printf "    ✦  %-24s → DVC\n" "$d"; done
+        for d in ${git_dirs[@]+"${git_dirs[@]}"}; do printf "    ·  %-24s → Git\n" "$d"; done
       fi
     fi
     echo ""
@@ -3063,7 +3063,7 @@ _flux_pin() {
     while IFS= read -r line; do [[ -n "$line" ]] && existing+=("$line"); done \
       < <(_flux_dvc_config_read_all flux.pin-dvc "$dvc_flux" 2>/dev/null || true)
     local already=false
-    for e in "${existing[@]+"${existing[@]}"}"; do [[ "$e" == "$rel_path" ]] && already=true && break; done
+    for e in "${existing[@]+${existing[@]+"${existing[@]}"}}"; do [[ "$e" == "$rel_path" ]] && already=true && break; done
     if [[ "$already" == "false" ]]; then
       _flux_dvc_config_add flux.pin-dvc "$rel_path" "$dvc_flux"
       git add "$dvc_flux" 2>/dev/null || true
@@ -3075,7 +3075,7 @@ _flux_pin() {
     while IFS= read -r line; do [[ -n "$line" ]] && existing+=("$line"); done \
       < <(_flux_dvc_config_read_all flux.pin-git "$dvc_flux" 2>/dev/null || true)
     local already=false
-    for e in "${existing[@]+"${existing[@]}"}"; do [[ "$e" == "$rel_path" ]] && already=true && break; done
+    for e in "${existing[@]+${existing[@]+"${existing[@]}"}}"; do [[ "$e" == "$rel_path" ]] && already=true && break; done
     if [[ "$already" == "false" ]]; then
       _flux_dvc_config_add flux.pin-git "$rel_path" "$dvc_flux"
       git add "$dvc_flux" 2>/dev/null || true
@@ -3093,7 +3093,7 @@ _flux_doctor_inline() {
   FLUX_DVC_REMOTES=()
   if _flux_is_configured 2>/dev/null; then
     local _buckets="" _e
-    for _e in "${FLUX_DVC_REMOTES[@]}"; do _buckets+="${_e%%:*} "; done
+    for _e in ${FLUX_DVC_REMOTES[@]+"${FLUX_DVC_REMOTES[@]}"}; do _buckets+="${_e%%:*} "; done
     echo "✔ flux configured (DVC: ${_buckets% })"
   else
     echo "✘ flux not configured — run: flux config"
@@ -3123,7 +3123,7 @@ _flux_doctor() {
     source "$FLUX_CONFIG" 2>/dev/null || true
     if [[ "${#FLUX_DVC_REMOTES[@]}" -gt 0 ]]; then
       local _di=1 _de _db _da _ak _sk
-      for _de in "${FLUX_DVC_REMOTES[@]}"; do
+      for _de in ${FLUX_DVC_REMOTES[@]+"${FLUX_DVC_REMOTES[@]}"}; do
         _db="${_de%%:*}"; _da="${_de#*:}"
         _ak=$(_kc_get_dvc "$_db" "access-key-id")
         _sk=$(_kc_get_dvc "$_db" "secret-key")
@@ -3141,7 +3141,7 @@ _flux_doctor() {
     fi
     if [[ "${#FLUX_GIT_ACCOUNTS[@]}" -gt 0 ]]; then
       local _gi=1 _ge
-      for _ge in "${FLUX_GIT_ACCOUNTS[@]}"; do
+      for _ge in ${FLUX_GIT_ACCOUNTS[@]+"${FLUX_GIT_ACCOUNTS[@]}"}; do
         ok "Git account ${_gi}: ${_ge}"
         (( _gi++ ))
       done
@@ -3313,8 +3313,8 @@ _flux_list() {
     if (( ${#dvc_pins[@]} > 0 || ${#git_pins[@]} > 0 )); then
       echo ""
       printf "  Pinned:\n"
-      for d in "${dvc_pins[@]+"${dvc_pins[@]}"}"; do printf "    ✦  %-24s → DVC\n" "$d"; done
-      for d in "${git_pins[@]+"${git_pins[@]}"}"; do printf "    ·  %-24s → Git\n" "$d"; done
+      for d in "${dvc_pins[@]+${dvc_pins[@]+"${dvc_pins[@]}"}}"; do printf "    ✦  %-24s → DVC\n" "$d"; done
+      for d in "${git_pins[@]+${git_pins[@]+"${git_pins[@]}"}}"; do printf "    ·  %-24s → Git\n" "$d"; done
     fi
   fi
 }
@@ -3423,7 +3423,7 @@ _flux_clone() {
     echo "git_config:flux.dvc-remote-bucket"
     echo "hook:pre-commit"
     local _entry
-    for _entry in "${_FLUX_EXTRA_HOOKS[@]}"; do echo "hook:${_entry%%:*}"; done
+    for _entry in ${_FLUX_EXTRA_HOOKS[@]+"${_FLUX_EXTRA_HOOKS[@]}"}; do echo "hook:${_entry%%:*}"; done
   } > "$target_dir/.git/flux-registry"
 
   ok "Repository configured."

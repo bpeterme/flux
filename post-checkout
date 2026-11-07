@@ -74,7 +74,7 @@ find_dvc() {
     "${HOME}/.homebrew/bin/dvc"  # user-local Homebrew (common)
     "${HOME}/homebrew/bin/dvc"   # user-local Homebrew (alternative)
   )
-  for candidate in "${candidates[@]}"; do
+  for candidate in ${candidates[@]+"${candidates[@]}"}; do
     [[ -x "$candidate" ]] && { echo "$candidate"; return 0; }
   done
   command -v dvc 2>/dev/null
@@ -114,28 +114,28 @@ _file_md5() {
 # Added / changed pointers → restore from the local cache
 # ---------------------------------------------------------------------------
 restore=() missing=()
-for p in ${changed[@]+"${changed[@]}"}; do
+for p in ${changed[@]+${changed[@]+"${changed[@]}"}}; do
   [[ -f "$p" ]] || continue
   if _in_cache "$(_pointer_md5 "$p")"; then restore+=("$p"); else missing+=("${p%.dvc}"); fi
 done
 
-if (( ${#restore[@]} > 0 )) && ! "$dvc" checkout "${restore[@]}" </dev/null >/dev/null 2>&1; then
+if (( ${#restore[@]} > 0 )) && ! "$dvc" checkout ${restore[@]+"${restore[@]}"} </dev/null >/dev/null 2>&1; then
   # dvc checkout is all-or-nothing: one file with unsaved edits stops the
   # rest. Retry one by one so every other file still gets updated.
   refused=()
-  for p in "${restore[@]}"; do
+  for p in ${restore[@]+"${restore[@]}"}; do
     "$dvc" checkout "$p" </dev/null >/dev/null 2>&1 || refused+=("${p%.dvc}")
   done
   if (( ${#refused[@]} > 0 )); then
     say "${#refused[@]} DVC-tracked file(s) have unsaved edits — your local changes were kept:"
-    for f in "${refused[@]}"; do say "  ✦ $f"; done
+    for f in ${refused[@]+"${refused[@]}"}; do say "  ✦ $f"; done
     say "  Save them with a commit, or discard them with: dvc checkout --force <file>.dvc"
   fi
 fi
 
 if (( ${#missing[@]} > 0 )); then
   say "${#missing[@]} file(s) of this branch are not downloaded on this machine yet:"
-  for f in "${missing[@]}"; do say "  ✦ $f"; done
+  for f in ${missing[@]+"${missing[@]}"}; do say "  ✦ $f"; done
   say "  Get them with: flux pull"
 fi
 
@@ -143,7 +143,7 @@ fi
 # Removed pointers → remove the file if it is unmodified and in the cache
 # ---------------------------------------------------------------------------
 kept=()
-for p in ${removed[@]+"${removed[@]}"}; do
+for p in ${removed[@]+${removed[@]+"${removed[@]}"}}; do
   target="${p%.dvc}"
   [[ -e "$target" ]] || continue
   git ls-files --error-unmatch -- "$target" >/dev/null 2>&1 && continue   # now tracked by Git
@@ -157,7 +157,7 @@ done
 
 if (( ${#kept[@]} > 0 )); then
   say "${#kept[@]} file(s) are not part of this branch but were left on disk (changed, or not in the cache):"
-  for f in "${kept[@]}"; do say "  ✦ $f"; done
+  for f in ${kept[@]+"${kept[@]}"}; do say "  ✦ $f"; done
   say "  Move them away before 'git add -A', or they are committed to this branch."
 fi
 

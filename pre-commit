@@ -37,7 +37,7 @@ find_dvc() {
     "${HOME}/homebrew/bin/dvc"   # user-local Homebrew (alternative)
   )
 
-  for candidate in "${candidates[@]}"; do
+  for candidate in ${candidates[@]+"${candidates[@]}"}; do
     if [[ -x "$candidate" ]]; then
       echo "$candidate"
       return 0
@@ -177,7 +177,7 @@ sync_dvcignore() {
     grep -v '^\s*#' "$gitignore_path" | grep -v '^\s*$' > "$dvcignore_path" || true
 
     # Remove every pattern that belongs to a DVC-tracked file.
-    for _pat in "${_dvc_patterns[@]}"; do
+    for _pat in ${_dvc_patterns[@]+"${_dvc_patterns[@]}"}; do
       local _tmp; _tmp=$(mktemp)
       grep -vxF "$_pat" "$dvcignore_path" > "$_tmp" || true
       mv "$_tmp" "$dvcignore_path"
@@ -288,14 +288,14 @@ cleanup_orphaned_dvc_pointers() {
 
   if (( ${#cleaned[@]} > 0 )); then
     info "Cleaned up orphaned DVC pointers (${#cleaned[@]}):"
-    for f in "${cleaned[@]}"; do
+    for f in ${cleaned[@]+"${cleaned[@]}"}; do
       info "  ✦ $f (target deleted or renamed)"
     done
   fi
 
   if (( ${#not_downloaded[@]} > 0 )); then
     info "Kept ${#not_downloaded[@]} file(s) that are not downloaded on this machine:"
-    for f in "${not_downloaded[@]}"; do
+    for f in ${not_downloaded[@]+"${not_downloaded[@]}"}; do
       info "  ✦ $f"
     done
     info "  Get them with: flux pull   (to delete one on purpose: git rm <file>.dvc)"
@@ -346,7 +346,7 @@ cleanup_git_dvc_duplicates() {
 
   if (( ${#cleaned[@]} > 0 )); then
     info "Fixed git/DVC duplicate tracking (${#cleaned[@]} file(s) removed from git index):"
-    for f in "${cleaned[@]}"; do
+    for f in ${cleaned[@]+"${cleaned[@]}"}; do
       info "  ✦ $f"
     done
   fi
@@ -385,7 +385,7 @@ migrate_dvc_to_git() {
     [[ ! -f "$target_abs" ]] && continue
 
     # Skip files in DVC-pinned directories — pins override size/binary logic
-    if _in_dir_override "$target_abs" "${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}"; then
+    if _in_dir_override "$target_abs" "${FORCE_DVC_DIRS[@]+${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}}"; then
       log "Pinned to DVC, skipping migration: $target_abs"
       continue
     fi
@@ -446,7 +446,7 @@ migrate_dvc_to_git() {
 
   if (( ${#migrated[@]} > 0 )); then
     info "Migrated DVC → Git (${#migrated[@]} file(s)):"
-    for f in "${migrated[@]}"; do
+    for f in ${migrated[@]+"${migrated[@]}"}; do
       info "  ✦ $f"
     done
   fi
@@ -595,11 +595,11 @@ while IFS= read -r file; do
   # ------------------------------------------------------------------
   # Routing decision — directory pins take priority over size/binary
   # ------------------------------------------------------------------
-  if _in_dir_override "$file" "${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}"; then
+  if _in_dir_override "$file" "${FORCE_DVC_DIRS[@]+${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}}"; then
     log "Pinned → DVC: $file"
     route="dvc"
     pin_overridden=$(( pin_overridden + 1 ))
-  elif _in_dir_override "$file" "${FORCE_GIT_DIRS[@]+"${FORCE_GIT_DIRS[@]}"}"; then
+  elif _in_dir_override "$file" "${FORCE_GIT_DIRS[@]+${FORCE_GIT_DIRS[@]+"${FORCE_GIT_DIRS[@]}"}}"; then
     log "Pinned → Git: $file"
     route="git"
     pin_overridden=$(( pin_overridden + 1 ))
@@ -682,14 +682,14 @@ refuse_mass_deletion
 # ---------------------------------------------------------------------------
 if (( ${#dvc_routed[@]} > 0 )); then
   log "Routed to DVC / Cloudflare R2 (${#dvc_routed[@]} file(s)):"
-  for f in "${dvc_routed[@]}"; do
+  for f in ${dvc_routed[@]+"${dvc_routed[@]}"}; do
     log "  ✦ $f"
   done
 fi
 
 if (( ${#git_kept[@]} > 0 )); then
   log "Kept in Git (${#git_kept[@]} file(s)):"
-  for f in "${git_kept[@]}"; do
+  for f in ${git_kept[@]+"${git_kept[@]}"}; do
     log "  · $f"
   done
 fi
