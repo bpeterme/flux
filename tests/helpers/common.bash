@@ -11,6 +11,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
       GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
 
+# Run inside claudebox, these mark the session as a container; tests start on
+# the host and set them where they test container behaviour.
+unset CBOX_CONTAINER WARDEN_URL
+
 # flux prompts with `read` and the tests rely on end-of-input to take each
 # default. bats passes its own stdin through, so an open but silent stdin (an
 # IDE, an agent harness, a pipe) made prompting tests wait forever. Tests that

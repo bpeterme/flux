@@ -43,7 +43,7 @@ contains null bytes it's binary. This catches `.mp4`, `.psd`, `.db`, `.zip`,
 - **Zero routing decisions** — binary files and large text files go to R2 automatically
 - **Directory pinning** — force entire directory trees to Git or DVC, overriding automatic routing
 - **Any Git remote** — works with GitHub, GitLab, Forgejo, or any self-hosted remote
-- **Credentials in Keychain** — nothing secret ever touches a file on disk (macOS only)
+- **Credentials in your keychain** — the macOS Keychain, or the keyring on Linux; nothing secret ever touches a file on disk
 - **`.dvcignore` stays in sync** — regenerated from `.gitignore` on every commit; never edit it manually
 - **Automatic migration** — files that grow past or shrink below the threshold are re-routed in place
 - **Orphan cleanup** — deleted or renamed DVC-tracked files are detected and cleaned up automatically
@@ -60,8 +60,30 @@ pip install "dvc[s3]"
 # or: uv tool install "dvc[s3]"
 ```
 
-Prerequisites: macOS with Homebrew, a Cloudflare R2 bucket with an API token,
-and a Git remote configured on each repo you want to manage.
+Prerequisites: macOS or Linux (including WSL2), a Cloudflare R2 bucket with an
+API token, and a Git remote configured on each repo you want to manage. On Linux,
+see [Linux and WSL](#linux-and-wsl) for the keyring flux needs.
+
+### Linux and WSL
+
+flux keeps credentials in the desktop keyring (Secret Service: GNOME Keyring,
+KWallet, KeePassXC) through `secret-tool`:
+
+```bash
+sudo apt install libsecret-tools        # Fedora: sudo dnf install libsecret
+```
+
+A Linux desktop runs a keyring already. WSL2 and servers usually don't; start one
+per session before using flux:
+
+```bash
+sudo apt install gnome-keyring dbus-x11
+[ -n "$DBUS_SESSION_BUS_ADDRESS" ] || eval "$(dbus-launch --sh-syntax)"
+gnome-keyring-daemon --unlock --components=secrets   # type a keyring password, then Ctrl-D
+```
+
+If flux cannot write to the keyring, it stops and says so; it never falls back
+to a file.
 
 ## Configuration
 
@@ -82,7 +104,7 @@ Walks through three sections:
 
 Non-sensitive values are saved to `flux.env` as bash arrays: `~/.config/flux/flux.env`,
 or `$XDG_CONFIG_HOME/flux/flux.env` if that is set. `flux doctor` shows the file in use.
-Credentials go directly into macOS Keychain, keyed per bucket.
+Credentials go directly into the macOS Keychain (on Linux: the keyring), keyed per bucket.
 
 On subsequent runs `flux config` shows a live summary and opens sub-menus to add,
 edit, or remove individual DVC remotes and git accounts.
@@ -125,7 +147,7 @@ Config is split by sensitivity:
 |---|---|
 | DVC remotes (bucket, account ID) | `flux.env` |
 | Git accounts | `flux.env` |
-| DVC credentials (access key, secret) | macOS Keychain (per bucket) |
+| DVC credentials (access key, secret) | macOS Keychain / Linux keyring (per bucket) |
 | R2 folder, DVC remote bucket, size cap, verbose | per-repo `git config` |
 
 > [!WARNING]
@@ -261,12 +283,12 @@ flux clone <remote-url>   # clones, wires up DVC, and pulls large files
 cd <repo>
 ```
 
-`flux clone` reads the bucket from the committed `.dvc/config` and the storage endpoint from `.dvc/flux`, looks up credentials in macOS Keychain, and prompts for them once if they are not found. After that, the repo is fully configured with no additional steps.
+`flux clone` reads the bucket from the committed `.dvc/config` and the storage endpoint from `.dvc/flux`, looks up credentials in the Keychain (Linux: keyring), and prompts for them once if they are not found. After that, the repo is fully configured with no additional steps.
 
 If you prefer to set up credentials globally first (so `flux clone` never prompts):
 
 ```bash
-flux config   # stores credentials in macOS Keychain
+flux config   # stores credentials in the Keychain (Linux: keyring)
 flux clone <remote-url>
 cd <repo>
 ```
@@ -387,7 +409,7 @@ uv tool install --reinstall "dvc[s3]"   # or: pip install --force-reinstall "dvc
 # DVC push/pull failing
 dvc remote list   # verify remote
 flux doctor       # reports missing storage credentials
-flux config       # re-enter them (kept in the Keychain, never in .dvc/config)
+flux config       # re-enter them (kept in the Keychain or keyring, never in .dvc/config)
 
 # "this commit deletes N of M tracked files — stopped"
 git status                                   # check the deletions are intended
