@@ -79,7 +79,8 @@ per session before using flux:
 ```bash
 sudo apt install gnome-keyring dbus-x11
 [ -n "$DBUS_SESSION_BUS_ADDRESS" ] || eval "$(dbus-launch --sh-syntax)"
-gnome-keyring-daemon --unlock --components=secrets   # type a keyring password, then Ctrl-D
+read -rsp "Keyring password: " pw; echo   # the first unlock creates the keyring with it
+printf '%s' "$pw" | gnome-keyring-daemon --unlock --components=secrets >/dev/null; unset pw
 ```
 
 If flux cannot write to the keyring, it stops and says so; it never falls back
