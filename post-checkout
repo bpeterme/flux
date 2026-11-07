@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# =============================================================================
+# post-checkout / post-merge / post-rewrite hook (flux): keep DVC data in step
+# with Git after a branch switch, merge, pull or rebase.
+#
+# DVC-tracked files are .gitignore'd, so Git only moves their .dvc pointers.
+# Without this hook a plain `git checkout`, `git merge` or `git rebase` leaves
+# the data of the previous state on disk. This hook, for every pointer that
+# changed between the old and the new commit:
+#
+#   Added or changed pointer → restored from the local DVC cache
+#                              (`dvc checkout`, no network). Data that never
+#                              reached this machine is listed: run flux pull.
+#   Removed pointer          → its file is removed from disk, but only if it
+#                              is unmodified and safe in the local cache —
+#                              exactly what Git does with tracked files.
+#                              Anything else is left in place and listed.
+#
+# Local edits are never overwritten: `dvc checkout` refuses without --force.
+# The same file is installed under all three hook names. It never fails the
+# Git command. flux pull / flux sync set FLUX_DVC_PULLING=1 because they run
+# `dvc pull` themselves right after.
+#
+# Not covered (Git has no hook for them): git reset --hard, git stash,
+# git restore, git cherry-pick. Run `flux pull` (or `dvc checkout`) after.
+# =============================================================================
+
+set -uo pipefail
+
+[[ "${FLUX_DVC_PULLING:-}" == "1" ]] && exit 0
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+[[ -d "$root/.dvc" ]] || exit 0
+cd "$root" || exit 0
+
+say() { echo "flux: $*" >&2; }
+
+zero=0000000000000000000000000000000000000000
+hook=$(basename "$0")
+case "$hook" in
+  post-checkout)
+    old="${1:-}" new="${2:-}"
+    [[ "${3:-0}" == "1" ]] || exit 0            # file checkout, not a branch move
+    # A rebase checks out commits one by one; post-rewrite handles the end.
+    [[ -d "$(git rev-parse --git-path rebase-merge)" || -d "$(git rev-parse --git-path rebase-apply)" ]] && exit 0
+    ;;
+  post-merge)
+    old=$(git rev-parse -q --verify ORIG_HEAD 2>/dev/null) || exit 0
+    new=$(git rev-parse HEAD)
+    ;;
+  post-rewrite)
+    [[ "${1:-}" == "rebase" ]] || exit 0         # amend changes nothing on disk
+    old=$(git rev-parse -q --verify ORIG_HEAD 2>/dev/null) || exit 0
+    new=$(git rev-parse HEAD)
+    ;;
+  *) exit 0 ;;
+esac
+[[ -z "$old" || "$old" == "$zero" || "$old" == "$new" ]] && exit 0
+
+changed=() removed=()
+while IFS= read -r f; do [[ -n "$f" ]] && changed+=("$f"); done < <(
+  git -c core.quotepath=false diff --name-only --no-renames --diff-filter=AM "$old" "$new" -- '*.dvc' 2>/dev/null)
+while IFS= read -r f; do [[ -n "$f" ]] && removed+=("$f"); done < <(
+  git -c core.quotepath=false diff --name-only --no-renames --diff-filter=D "$old" "$new" -- '*.dvc' 2>/dev/null)
+(( ${#changed[@]} + ${#removed[@]} > 0 )) || exit 0
+
+# ---------------------------------------------------------------------------
+# Locate DVC — checks all common Homebrew install locations before PATH
+# ---------------------------------------------------------------------------
+find_dvc() {
+  local candidates=(
+    "/opt/homebrew/bin/dvc"      # system Homebrew, Apple Silicon
+    "/usr/local/bin/dvc"         # system Homebrew, Intel
+    "${HOME}/.homebrew/bin/dvc"  # user-local Homebrew (common)
+    "${HOME}/homebrew/bin/dvc"   # user-local Homebrew (alternative)
+  )
+  for candidate in "${candidates[@]}"; do
+    [[ -x "$candidate" ]] && { echo "$candidate"; return 0; }
+  done
+  command -v dvc 2>/dev/null
+}
+
+if ! dvc=$(find_dvc); then
+  say "dvc not found — DVC-tracked files were not updated. Run flux pull once dvc is installed."
+  exit 0
+fi
+
+# md5 recorded in a pointer (file on disk, or "<rev>:<path>" read from Git)
+_pointer_md5() {
+  local content
+  if [[ "$1" == *:* && ! -f "$1" ]]; then content=$(git show "$1" 2>/dev/null)
+  else content=$(cat "$1" 2>/dev/null); fi
+  printf '%s\n' "$content" | sed -n 's/^[-[:space:]]*md5:[[:space:]]*//p' | head -1 | tr -d "\"'\r"
+}
+
+# Same check as the pre-commit hook: is this md5 in the local DVC cache?
+_cache_dir=""
+_in_cache() {
+  local md5="$1"
+  [[ ${#md5} -gt 2 ]] || return 1
+  if [[ -z "$_cache_dir" ]]; then
+    _cache_dir=$("$dvc" cache dir 2>/dev/null | tail -1) || true
+    [[ -d "$_cache_dir" ]] || _cache_dir=".dvc/cache"
+  fi
+  [[ -e "${_cache_dir}/files/md5/${md5:0:2}/${md5:2}" || -e "${_cache_dir}/${md5:0:2}/${md5:2}" ]]
+}
+
+_file_md5() {
+  if command -v md5sum >/dev/null 2>&1; then md5sum "$1" | cut -d' ' -f1
+  else md5 -q "$1"; fi
+}
+
+# ---------------------------------------------------------------------------
+# Added / changed pointers → restore from the local cache
+# ---------------------------------------------------------------------------
+restore=() missing=()
+for p in ${changed[@]+"${changed[@]}"}; do
+  [[ -f "$p" ]] || continue
+  if _in_cache "$(_pointer_md5 "$p")"; then restore+=("$p"); else missing+=("${p%.dvc}"); fi
+done
+
+if (( ${#restore[@]} > 0 )) && ! "$dvc" checkout "${restore[@]}" </dev/null >/dev/null 2>&1; then
+  # dvc checkout is all-or-nothing: one file with unsaved edits stops the
+  # rest. Retry one by one so every other file still gets updated.
+  refused=()
+  for p in "${restore[@]}"; do
+    "$dvc" checkout "$p" </dev/null >/dev/null 2>&1 || refused+=("${p%.dvc}")
+  done
+  if (( ${#refused[@]} > 0 )); then
+    say "${#refused[@]} DVC-tracked file(s) have unsaved edits — your local changes were kept:"
+    for f in "${refused[@]}"; do say "  ✦ $f"; done
+    say "  Save them with a commit, or discard them with: dvc checkout --force <file>.dvc"
+  fi
+fi
+
+if (( ${#missing[@]} > 0 )); then
+  say "${#missing[@]} file(s) of this branch are not downloaded on this machine yet:"
+  for f in "${missing[@]}"; do say "  ✦ $f"; done
+  say "  Get them with: flux pull"
+fi
+
+# ---------------------------------------------------------------------------
+# Removed pointers → remove the file if it is unmodified and in the cache
+# ---------------------------------------------------------------------------
+kept=()
+for p in ${removed[@]+"${removed[@]}"}; do
+  target="${p%.dvc}"
+  [[ -e "$target" ]] || continue
+  git ls-files --error-unmatch -- "$target" >/dev/null 2>&1 && continue   # now tracked by Git
+  md5=$(_pointer_md5 "${old}:${p}")
+  if [[ -f "$target" ]] && _in_cache "$md5" && [[ "$(_file_md5 "$target")" == "$md5" ]]; then
+    rm -f -- "$target"
+  else
+    kept+=("$target")
+  fi
+done
+
+if (( ${#kept[@]} > 0 )); then
+  say "${#kept[@]} file(s) are not part of this branch but were left on disk (changed, or not in the cache):"
+  for f in "${kept[@]}"; do say "  ✦ $f"; done
+  say "  Move them away before 'git add -A', or they are committed to this branch."
+fi
+
+exit 0

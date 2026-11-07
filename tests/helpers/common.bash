@@ -97,6 +97,31 @@ seed_dvc_cache() {
   printf 'cached' > ".dvc/cache/files/md5/${md5:0:2}/${md5:2}"
 }
 
+# dvc_track FILE
+# Tracks FILE the way 'dvc add' does, with a real md5: writes FILE.dvc, puts
+# the content into .dvc/cache (DVC 3 layout) and ignores FILE in .gitignore.
+# Stages the pointer and .gitignore (not the cache).
+dvc_track() {
+  local file="$1" md5
+  md5=$(md5sum "$file" 2>/dev/null | cut -d' ' -f1) || md5=$(md5 -q "$file")
+  mkdir -p ".dvc/cache/files/md5/${md5:0:2}"
+  cp "$file" ".dvc/cache/files/md5/${md5:0:2}/${md5:2}"
+  printf 'outs:\n- md5: %s\n  size: %s\n  hash: md5\n  path: %s\n' \
+    "$md5" "$(wc -c < "$file" | tr -d ' ')" "$(basename "$file")" > "${file}.dvc"
+  grep -qxF "/$file" .gitignore 2>/dev/null || echo "/$file" >> .gitignore
+  git add "${file}.dvc" .gitignore
+}
+
+# install_sync_hooks — the post-checkout file under all three hook names
+install_sync_hooks() {
+  local h
+  for h in post-checkout post-merge post-rewrite; do
+    cp "$REPO_ROOT/post-checkout" ".git/hooks/$h"
+    chmod +x ".git/hooks/$h"
+  done
+  printf '.dvc/cache\n' > .git/info/exclude
+}
+
 # dvc_calls — print the mock DVC call log
 dvc_calls() {
   cat "$MOCK_DVC_LOG" 2>/dev/null || true

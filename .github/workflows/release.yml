@@ -42,7 +42,7 @@ jobs:
       - name: Run tests
         if: steps.guard.outputs.skip != 'true'
         run: |
-          bats tests/unit.bats
+          bats tests/unit.bats tests/post_checkout.bats
           bats tests/integration.bats
 
       - name: Generate CalVer tag

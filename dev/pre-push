@@ -16,7 +16,7 @@ if ! command -v bats &>/dev/null; then
 fi
 
 echo "pre-push: running test suite..."
-if TERM=dumb bats "$REPO_ROOT/tests/unit.bats" "$REPO_ROOT/tests/integration.bats"; then
+if TERM=dumb bats "$REPO_ROOT/tests/unit.bats" "$REPO_ROOT/tests/post_checkout.bats" "$REPO_ROOT/tests/integration.bats"; then
   echo "pre-push: all tests passed."
 else
   echo ""
