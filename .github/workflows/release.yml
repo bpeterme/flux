@@ -1,10 +1,15 @@
 name: Release
 
 on:
-  push:
+  # Only after the Tests workflow passed on a push to main — a failing
+  # main never reaches a tag or the Homebrew tap. (workflow_run always uses
+  # this file as it is on main.)
+  workflow_run:
+    workflows: [Tests]
+    types: [completed]
     branches: [main]
 
-# GitHub occasionally delivers a push event twice. Runs queue up instead of
+# GitHub occasionally delivers an event twice, and a test run can be re-run. Runs queue up instead of
 # racing, and a run whose commit already has a release tag stops early.
 concurrency:
   group: release
@@ -13,12 +18,17 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.actor.login != 'github-actions[bot]'
     permissions:
       contents: write
 
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ github.event.workflow_run.head_sha }}  # the commit that was tested
           fetch-depth: 0
 
       - name: Skip when this commit is already released
@@ -32,18 +42,6 @@ jobs:
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Install bats-core
-        if: steps.guard.outputs.skip != 'true'
-        run: |
-          git clone --depth 1 https://github.com/bats-core/bats-core.git /tmp/bats-core
-          sudo /tmp/bats-core/install.sh /usr/local
-
-      - name: Run tests
-        if: steps.guard.outputs.skip != 'true'
-        run: |
-          bats tests/unit.bats tests/post_checkout.bats
-          bats tests/integration.bats
 
       - name: Generate CalVer tag
         if: steps.guard.outputs.skip != 'true'
