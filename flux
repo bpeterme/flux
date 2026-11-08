@@ -2179,12 +2179,13 @@ _flux_pull() {
     || fail "Not configured. Run 'flux config' to set up."
   local DVC; _flux_require_dvc
   clear 2>/dev/null || true
+  _flux_spin_start "flux pulling..."
 
   _flux_subrepo_sync
   if [[ "${FLUX_SUBREPO_CHANGED}" == "true" ]]; then
     git add -A 2>/dev/null || true
     if ! git diff --cached --quiet 2>/dev/null; then
-      git commit --quiet -m "chore: sync sub-repo exclusions"
+      git commit --quiet -m "chore: sync sub-repo exclusions" 2>&1 | _flux_relay
     fi
   fi
 
@@ -2192,8 +2193,13 @@ _flux_pull() {
   _flux_apply_dvc_profile "$DVC"
   _flux_storage_hint
   # dvc pull follows right away, so the post-merge hook stays out of it.
-  ok "Pulling from Git remote..."; FLUX_DVC_PULLING=1 git pull "$@"
-  ok "Pulling DVC data from R2..."; "$DVC" pull
+  _flux_spin_start "pulling from Git..."
+  FLUX_DVC_PULLING=1 git pull "$@" 2>&1 | _flux_relay
+  ok "Pulled from Git remote."
+  _flux_spin_start "pulling DVC data..."
+  "$DVC" pull 2>&1 | _flux_relay
+  ok "Pulled DVC data from R2."
+  _flux_spin_stop
 }
 
 # ---------------------------------------------------------------------------
@@ -2706,12 +2712,14 @@ _flux_dry_run() {
   while IFS= read -r line; do [[ -n "$line" ]] && FORCE_GIT_DIRS+=("$line"); done \
     < <(_flux_pins_read flux.pin-git dvc-router.force-git)
 
+  _flux_spin_start "scanning files..."
   local staged_files scan_mode="all files"
   staged_files=$(
     { git ls-files 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | sort -u
   )
 
   if [[ -z "$staged_files" ]]; then
+    _flux_spin_stop
     echo ""
     echo "  No files to preview."
     echo ""
@@ -2805,6 +2813,7 @@ _flux_dry_run() {
   local _pin_note=""
   (( _pin_count > 0 )) && _pin_note=", ${_pin_count} pin(s) active"
 
+  _flux_spin_stop
   echo ""
   echo "  flux dry-run — routing preview (cap: ${SIZE_CAP_MB} MB${_pin_note})"
   echo ""
@@ -3286,6 +3295,7 @@ _flux_list() {
   local found=0
 
   local -a _paths _dvc_remotes _git_remotes _caps _repo_dirs
+  _flux_spin_start "searching for flux projects..."
 
   while IFS= read -r git_dir; do
     local repo_dir; repo_dir="$(cd "$(dirname "$git_dir")" 2>/dev/null && pwd)" || continue
@@ -3321,6 +3331,7 @@ _flux_list() {
     _repo_dirs+=("$repo_dir")
     (( found++ )) || true
   done < <(find . -type d -name ".git" -prune -print 2>/dev/null | sort)
+  _flux_spin_stop
 
   local w1=4 w2=10 w3=10  # minimum = header label lengths
   for i in "${!_paths[@]}"; do
