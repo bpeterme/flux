@@ -10,17 +10,39 @@ set -euo pipefail
 VERSION="dev"
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
-ok()   { echo -e "${GREEN}✔${NC} $*"; }
-warn() { echo -e "${YELLOW}⚠${NC}  $*"; }
-fail() { _flux_spin_stop 2>/dev/null; echo -e "${RED}✘${NC} $*"; exit 1; }
-
+# One spinner per command: _flux_spin_start starts it (or, if it already
+# runs, only changes its label); it keeps spinning until _flux_spin_stop.
+# It owns the bottom line of the terminal: everything printed meanwhile goes
+# through ok/warn/_flux_relay, which clear that line in the same write, so
+# output lands at column 0 and the spinner redraws below it. The frame sits
+# in column 0, where ✔/⚠ appear. The cursor is hidden while it spins.
 _FLUX_SPINNER_PID=""
+_FLUX_SPINNER_MSG=""
+ok()   { local c=''; [[ -n "${_FLUX_SPINNER_PID:-}" && -t 1 ]] && c='\r\033[K'; echo -e "${c}${GREEN}✔${NC} $*"; }
+warn() { local c=''; [[ -n "${_FLUX_SPINNER_PID:-}" && -t 1 ]] && c='\r\033[K'; echo -e "${c}${YELLOW}⚠${NC}  $*"; }
+fail() { _flux_spin_stop 2>/dev/null; echo -e "${RED}✘${NC} $*"; exit 1; }
+# Pipe a child's output through this while the spinner runs: each line
+# clears the spinner line first. Without a spinner it passes lines through.
+_flux_relay() {
+  local c='' l; [[ -n "${_FLUX_SPINNER_PID:-}" && -t 1 ]] && c=$'\r\033[K'
+  while IFS= read -r l || [[ -n "$l" ]]; do printf '%s%s\n' "$c" "$l"; done
+}
+
 _flux_spin_start() {
   [[ -t 1 ]] || return 0
   local msg="${1:-flux syncing...}"
-  ( local f=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏) i=0
+  if [[ -n "${_FLUX_SPINNER_PID:-}" ]]; then
+    printf '%s\n' "$msg" > "$_FLUX_SPINNER_MSG"
+    return 0
+  fi
+  _FLUX_SPINNER_MSG=$(mktemp)
+  printf '%s\n' "$msg" > "$_FLUX_SPINNER_MSG"
+  printf '\033[?25l'
+  trap '_flux_spin_stop' EXIT
+  ( local f=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏) i=0 m="$msg"
     while true; do
-      printf "\r  %s %s" "${f[$i]}" "$msg"
+      IFS= read -r m < "$_FLUX_SPINNER_MSG" 2>/dev/null || true
+      printf '\r\033[K%s %s' "${f[$i]}" "$m"
       i=$(( (i+1) % 10 ))
       sleep 0.1
     done ) &
@@ -30,8 +52,9 @@ _flux_spin_stop() {
   [[ -n "${_FLUX_SPINNER_PID:-}" ]] || return 0
   kill "$_FLUX_SPINNER_PID" 2>/dev/null || true
   wait "$_FLUX_SPINNER_PID" 2>/dev/null || true
-  printf "\r\033[K"
-  _FLUX_SPINNER_PID=""
+  printf '\r\033[K\033[?25h'
+  rm -f "$_FLUX_SPINNER_MSG"
+  _FLUX_SPINNER_PID=""; _FLUX_SPINNER_MSG=""
 }
 
 FLUX_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/flux/flux.env"
@@ -2261,7 +2284,7 @@ _flux_git_pull_smart() {
     git rebase --abort 2>/dev/null || true
     rm -f "$_err"
     warn "Git pull failed — these files have conflicts that need manual resolution:"
-    [[ -n "$_conflicted" ]] && printf '%s\n' "$_conflicted" | sed 's/^/    /' >&2
+    [[ -n "$_conflicted" ]] && printf '%s\n' "$_conflicted" | sed 's/^/    /' | _flux_relay >&2
     return 1
   fi
 
@@ -2270,7 +2293,7 @@ _flux_git_pull_smart() {
   _msg=$(cat "$_err")
   rm -f "$_err"
   warn "Git pull failed — check remote."
-  [[ -n "$_msg" ]] && printf '%s\n' "$_msg" | sed 's/^/    /' >&2
+  [[ -n "$_msg" ]] && printf '%s\n' "$_msg" | sed 's/^/    /' | _flux_relay >&2
   return 1
 }
 
@@ -2299,23 +2322,22 @@ _flux_stage_and_commit_if_dirty() {
       | sed 's/.*modified:[[:space:]]*//' | sed 's/[[:space:]]*$//')
   fi
   if (( ${#_dvc_modified[@]} > 0 )); then
-    _flux_spin_stop
     for _dvc_f in ${_dvc_modified[@]+"${_dvc_modified[@]}"}; do
       ok "Staging local change: $_dvc_f"
-      "$DVC" add "$_dvc_f" 2>/dev/null || warn "Could not stage: $_dvc_f"
+      "$DVC" add "$_dvc_f" 2>/dev/null | _flux_relay || warn "Could not stage: $_dvc_f"
     done
   fi
 
   if [[ -n "$(git status --porcelain 2>/dev/null | head -1)" ]]; then
     git add -A
-    _flux_spin_stop  # stop before commit so hook output appears cleanly
+    # Only relabel a running spinner — the cbox session-close path has none.
+    [[ -z "${_FLUX_SPINNER_PID:-}" ]] || _flux_spin_start "committing..."
     local _commit_msg="sync: $(date '+%Y-%m-%d %H:%M')"
     if [[ -n "$_description" ]]; then
       _commit_msg+=$'\n\n'"$_description"
     fi
-    git commit --quiet -m "$_commit_msg"
-  else
-    _flux_spin_stop
+    # Hook output is relayed so it prints above a running spinner.
+    git commit --quiet -m "$_commit_msg" 2>&1 | _flux_relay
   fi
 }
 
@@ -2363,10 +2385,10 @@ _flux_sync() {
 
   _flux_stage_and_commit_if_dirty "$_description"
 
+  _flux_spin_start "scanning repository..."
   _flux_sync_summary
 
   _flux_spin_start "pulling from Git..."
-  _flux_spin_stop
   _flux_git_pull_smart || true
 
   _flux_on_host && [[ -n "${FLUX_AWS_CONFIG_FILE:-}" ]] && export AWS_CONFIG_FILE="$FLUX_AWS_CONFIG_FILE"
@@ -2382,22 +2404,21 @@ _flux_sync() {
   # --quiet suppresses error output in some DVC versions, so omit it and rely
   # on &> redirect to keep terminal clean while still capturing all output.
   if "$DVC" pull &>"$_dvc_out"; then
-    _flux_spin_stop; ok "Pulled DVC data from R2."
+    ok "Pulled DVC data from R2."
   elif grep -qiE 'AccessDenied|Access Denied' "$_dvc_out" 2>/dev/null; then
-    _flux_spin_stop; warn "DVC pull failed — access denied. Check R2 API token permissions (Admin Read & Write required)."
+    warn "DVC pull failed — access denied. Check R2 API token permissions (Admin Read & Write required)."
   elif grep -qiE 'Checkout failed|missing-files|do not exist neither' "$_dvc_out" 2>/dev/null; then
-    _flux_spin_stop; warn "DVC pull failed — some files missing from remote. Run 'dvc pull' for details."
+    warn "DVC pull failed — some files missing from remote. Run 'dvc pull' for details."
   elif grep -qiE "unsaved files|Can't remove|exists locally|not empty|already exists" "$_dvc_out" 2>/dev/null; then
-    _flux_spin_stop
     warn "DVC pull skipped locally modified file(s) — your local versions are preserved."
-    grep -oE '[^ ]+\.pdf|[^ ]+\.dvc' "$_dvc_out" 2>/dev/null | sort -u | sed 's/^/    /' >&2 || true
+    grep -oE '[^ ]+\.pdf|[^ ]+\.dvc' "$_dvc_out" 2>/dev/null | sort -u | sed 's/^/    /' | _flux_relay >&2 || true
     warn "  • To keep your local version and push it:  dvc add <file> then flux sync"
     warn "  • To accept the remote version:            dvc pull --force <file>.dvc"
   elif grep -q . "$_dvc_out" 2>/dev/null; then
-    _flux_spin_stop; warn "DVC pull failed — run 'dvc pull' for details:"
-    sed 's/^/    /' "$_dvc_out" >&2
+    warn "DVC pull failed — run 'dvc pull' for details:"
+    sed 's/^/    /' "$_dvc_out" | _flux_relay >&2
   else
-    _flux_spin_stop; warn "DVC pull failed — run 'dvc pull' to diagnose."
+    warn "DVC pull failed — run 'dvc pull' to diagnose."
   fi
   rm -f "$_dvc_out"
 
@@ -2407,25 +2428,26 @@ _flux_sync() {
   local _dvc_pushed=false
   _flux_spin_start "pushing DVC data..."
   _dvc_err=$(mktemp)
-  if "$DVC" push --quiet 2>"$_dvc_err"; then
-    _flux_spin_stop; ok "Pushed DVC data to R2."; _dvc_pushed=true
+  if "$DVC" push --quiet 2>"$_dvc_err" | _flux_relay; then
+    ok "Pushed DVC data to R2."; _dvc_pushed=true
   elif grep -qiE 'AccessDenied|Access Denied' "$_dvc_err" 2>/dev/null; then
-    _flux_spin_stop; warn "DVC push failed — access denied. Check R2 API token permissions (Admin Read & Write required)."
+    warn "DVC push failed — access denied. Check R2 API token permissions (Admin Read & Write required)."
   else
-    _flux_spin_stop; warn "DVC push failed — run 'dvc push' to see the full error."
+    warn "DVC push failed — run 'dvc push' to see the full error."
   fi
   rm -f "$_dvc_err"
 
   if [[ "$_dvc_pushed" == true ]]; then
     _flux_spin_start "pushing to Git..."
-    if FLUX_DVC_PUSHED=1 git push --quiet 2>/dev/null; then
-      _flux_spin_stop; ok "Pushed to Git remote."
+    if FLUX_DVC_PUSHED=1 git push --quiet 2>/dev/null | _flux_relay; then
+      ok "Pushed to Git remote."
     else
-      _flux_spin_stop; warn "Git push failed — check remote."
+      warn "Git push failed — check remote."
     fi
   else
     warn "Git push skipped: it would publish pointers to data that is not uploaded."
   fi
+  _flux_spin_stop
 }
 
 _flux_sync_summary() {
@@ -2456,6 +2478,7 @@ _flux_sync_summary() {
 
   skip_count=$(git ls-files --others --ignored --exclude-standard --directory 2>/dev/null | wc -l | tr -d ' ')
 
+  {
   echo ""
   echo "  flux sync — repository contents"
   echo ""
@@ -2469,6 +2492,7 @@ _flux_sync_summary() {
   printf "  DVC   %*d file(s)   %s\n"       "$count_digits" "$dvc_count"  "$(_flux_size_unit "$dvc_bytes")"
   printf "  Skip  %*d file(s)   gitignored\n" "$count_digits" "$skip_count"
   echo ""
+  } | _flux_relay
 }
 
 # ---------------------------------------------------------------------------
