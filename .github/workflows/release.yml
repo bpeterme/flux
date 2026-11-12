@@ -67,11 +67,13 @@ jobs:
 
       - name: Create GitHub release
         if: steps.guard.outputs.skip != 'true'
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ steps.calver.outputs.tag }}
-          name: ${{ steps.calver.outputs.tag }}
-          generate_release_notes: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.calver.outputs.tag }}" \
+            --title "${{ steps.calver.outputs.tag }}" \
+            --generate-notes \
+            --latest
 
       - name: Compute tarball SHA256
         if: steps.guard.outputs.skip != 'true'
