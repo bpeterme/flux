@@ -378,6 +378,13 @@ DVC cache — no network involved:
 Git has no hook for `git reset --hard`, `git stash`, `git restore` and
 `git cherry-pick`. After those, run `flux pull` (or `dvc checkout`).
 
+**New branches**
+A branch that does not track a branch on origin yet is set up by flux: if
+origin already has it, `flux` and `flux pull` link the two; if not, `flux`
+publishes it (`flux pull` never pushes). Inside a claudebox container git
+settings are read-only, so a branch created there gets linked on the next
+`flux` run on the host.
+
 ### Handle manually if needed
 
 **Pre-existing large/binary files**

@@ -1508,6 +1508,72 @@ _flux_project_with_remote() {
   rm -rf "$(dirname "$BARE")"
 }
 
+# ---------------------------------------------------------------------------
+# upstream — a branch without one (created inside claudebox, where .git/config
+# is read-only) is linked or published by flux instead of blocking every sync
+# ---------------------------------------------------------------------------
+
+@test "upstream: flux sync links a branch that is on origin but has no upstream" {
+  _flux_project_with_remote
+  git switch -q -c dev
+  git push -q origin dev          # pushed without -u, as inside claudebox
+  run bash "$REPO_ROOT/flux" sync
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Branch linked: dev → origin/dev"* ]]
+  [ "$(git rev-parse --abbrev-ref '@{u}')" = "origin/dev" ]
+  rm -rf "$(dirname "$BARE")"
+}
+
+@test "upstream: flux sync publishes a branch that origin does not have yet" {
+  _flux_project_with_remote
+  git switch -q -c dev
+  echo "note" > note.txt
+  run bash "$REPO_ROOT/flux" sync
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Branch published: dev → origin/dev"* ]]
+  [ "$(git rev-parse --abbrev-ref '@{u}')" = "origin/dev" ]
+  [ "$(git -C "$BARE" rev-parse dev)" = "$(git rev-parse HEAD)" ]
+  rm -rf "$(dirname "$BARE")"
+}
+
+@test "upstream: flux pull links an existing branch but never publishes one" {
+  _flux_project_with_remote
+  git switch -q -c dev
+  run bash "$REPO_ROOT/flux" pull
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Branch 'dev' is not on origin yet"* ]]
+  ! git -C "$BARE" rev-parse -q --verify dev
+  git push -q origin dev
+  run bash "$REPO_ROOT/flux" pull
+  [[ "$output" == *"Branch linked: dev → origin/dev"* ]]
+  [ "$(git rev-parse --abbrev-ref '@{u}')" = "origin/dev" ]
+  rm -rf "$(dirname "$BARE")"
+}
+
+@test "upstream: with read-only git settings (claudebox) flux points to the host" {
+  _flux_project_with_remote
+  git switch -q -c dev
+  git push -q origin dev
+  chmod a-w .git/config
+  run bash "$REPO_ROOT/flux" sync
+  chmod u+w .git/config
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Run flux once on the host"* ]]
+  ! git rev-parse -q --verify '@{u}' >/dev/null 2>&1
+  rm -rf "$(dirname "$BARE")"
+}
+
+@test "dispatcher: an unknown option fails and does not sync" {
+  _flux_project_with_remote
+  echo "change" > file.txt
+  local before; before=$(git rev-parse HEAD)
+  run bash "$REPO_ROOT/flux" --version
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Unknown option: --version"* ]]
+  [ "$(git rev-parse HEAD)" = "$before" ]
+  rm -rf "$(dirname "$BARE")"
+}
+
 @test "sync hooks: flux add installs post-checkout, post-merge and post-rewrite" {
   _flux_project_with_remote
   for h in post-checkout post-merge post-rewrite; do

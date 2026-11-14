@@ -738,11 +738,38 @@ _flux_is_configured() {
   [[ -n "$(_kc_get_dvc "$_bucket" 'secret-key')" ]]    || return 1
 }
 
+# Makes sure the current branch tracks a branch on origin, and sets that up
+# when it is missing. A branch created inside a claudebox container never has
+# one: there .git/config is read-only. On the host flux links the branch to
+# origin/<branch>, or — with "publish" (sync) — pushes it there first.
 _flux_require_git_remote() {
+  local _mode="${1:-}"
   git remote get-url origin &>/dev/null \
     || fail "No git remote configured. Run: git remote add origin <url>"
-  git rev-parse --abbrev-ref --symbolic-full-name '@{u}' &>/dev/null \
-    || fail "No upstream branch set. Run: git push -u origin $(git branch --show-current 2>/dev/null || echo '<branch>')"
+  git rev-parse --abbrev-ref --symbolic-full-name '@{u}' &>/dev/null && return 0
+
+  local _branch
+  _branch=$(git branch --show-current 2>/dev/null)
+  [[ -n "$_branch" ]] \
+    || fail "No branch checked out. Run: git switch <branch>"
+  # In claudebox .git/config is a read-only mount (CBOX_PROTECT_GIT).
+  [[ -w "$(git rev-parse --git-path config)" ]] \
+    || fail "Branch '${_branch}' is not linked to origin yet, and git settings are read-only here (claudebox). Run flux once on the host; it links the branch."
+
+  git fetch --quiet origin "$_branch" 2>/dev/null || true
+  if git show-ref --verify --quiet "refs/remotes/origin/${_branch}"; then
+    git branch --quiet --set-upstream-to="origin/${_branch}" "$_branch" \
+      || fail "Could not link '${_branch}' to origin/${_branch}. Run: git branch -u origin/${_branch}"
+    ok "Branch linked: ${_branch} → origin/${_branch}"
+    return 0
+  fi
+
+  [[ "$_mode" == "publish" ]] \
+    || fail "Branch '${_branch}' is not on origin yet. Run: flux (a sync publishes it)"
+  local _err
+  _err=$(git push --quiet -u origin "$_branch" 2>&1) \
+    || fail "Could not publish '${_branch}' to origin: ${_err}"
+  ok "Branch published: ${_branch} → origin/${_branch}"
 }
 
 # ---------------------------------------------------------------------------
@@ -2377,10 +2404,12 @@ _flux_sync() {
   clear 2>/dev/null || true
   _flux_spin_start "flux syncing..."
   _flux_require_dvc_repo
-  _flux_require_git_remote
+  git remote get-url origin &>/dev/null \
+    || fail "No git remote configured. Run: git remote add origin <url>"
   _flux_is_configured \
     || fail "Not configured. Run 'flux config' to set up."
   local DVC; _flux_require_dvc
+  _flux_require_git_remote publish
 
   _flux_hook_update
   _flux_subrepo_sync
@@ -3594,6 +3623,10 @@ flux() {
         echo "Install: brew tap bpeterme/claudedot && brew install bpeterme/claudedot/claudedot"
         return 1
       fi
+      ;;
+    -*)
+      # A mistyped option (flux --version) must not start a sync.
+      fail "Unknown option: ${cmd}. Run: flux help"
       ;;
     *)
       # Treat any unrecognised argument as a sync description: flux "my note"
