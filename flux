@@ -644,9 +644,9 @@ _flux_write_config() {
     echo "FLUX_VERBOSE=${verbose}        # verbose hook output (true/false)"
     echo ""
     echo "# ── DVC credential process ────────────────────────────────────────────────────"
-    echo "# AWS config file that holds the [profile flux-dvc] credential_process entry."
-    echo "# Leave commented to use the default \$HOME/.aws/config; uncomment and set a custom"
-    echo "# path to keep flux credentials isolated from your personal AWS setup."
+    echo "# AWS config file that holds one [profile flux-dvc-<bucket>] per bucket: the R2"
+    echo "# endpoint and the credential_process. Leave commented to use \$HOME/.aws/config;"
+    echo "# set a path of its own to keep flux apart from your personal AWS setup."
     if [[ -n "$aws_cfg" ]]; then
       echo "FLUX_AWS_CONFIG_FILE=${aws_cfg}"
     else
@@ -663,16 +663,6 @@ _flux_write_config() {
       done <<< "$git_str"
     fi
     echo ")"
-    echo ""
-    echo "# ─── companion tools ──────────────────────────────────────────────────────────"
-    echo ""
-    echo "# claudebox — Claude Code container runtime"
-    echo "# Install: brew tap bpeterme/claudebox && brew install bpeterme/claudebox/claudebox"
-    echo "# Set up:  cbox build"
-    echo ""
-    echo "# claudedot — cross-machine config + history sync via git"
-    echo "# Install: brew tap bpeterme/claudedot && brew install bpeterme/claudedot/claudedot"
-    echo "# Set up:  cdot config"
   } > "$tmp"
   chmod 600 "$tmp"
   # cp follows symlinks — writes to the real file, preserving any symlink at $FLUX_CONFIG
