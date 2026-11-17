@@ -540,16 +540,20 @@ _flux_apply_dvc_profile() {
 
 # claudebox (optional): let its containers reach this project's DVC storage
 # through warden, the host-side broker — containers never hold the R2 keys.
-# Writes the tracked .warden (approved on the host at the next cbox session)
-# and registers the bucket as a warden resource the first time.
+# Writes a [warden "<resource>"] section into the tracked .cbox (approved on
+# the host at the next cbox session) and registers the bucket as a warden
+# resource the first time. .cbox is in git's config format: git config writes it.
 _flux_warden_setup() {
   local _bucket="$1" _folder="$2" _profile="$3" _endpoint="$4"
   command -v cbox >/dev/null 2>&1 || return 0
   [[ -n "$_folder" ]] || return 0
   local _name; _name=$(_flux_warden_name "$_bucket")
-  [[ "$(_flux_dvc_config_read "${_name}.prefix" .warden 2>/dev/null || true)" == "$_folder" ]] && return 0
-  _flux_dvc_config_write "${_name}.prefix" "$_folder" .warden
-  ok "claudebox: .warden lets this project's containers use bucket '${_bucket}' (prefix ${_folder})."
+  [[ "$(git config -f .cbox --get "warden.${_name}.prefix" 2>/dev/null || true)" == "$_folder" ]] && return 0
+  if ! git config -f .cbox "warden.${_name}.prefix" "$_folder" 2>/dev/null; then
+    warn "claudebox: could not add storage access to .cbox (older layout?) — start cbox once in this project, then run flux again."
+    return 0
+  fi
+  ok "claudebox: .cbox lets this project's containers use bucket '${_bucket}' (prefix ${_folder})."
   local _out _spec
   _spec=$(printf '%s\n' \
     "type         = http" \
@@ -569,29 +573,25 @@ _flux_warden_setup() {
   return 0
 }
 
-# Undoes _flux_warden_setup in the project: drops flux's section from .warden,
-# and .warden itself once nothing else is left in it. Other sections (the
-# user's own resources) stay. The warden resource on the host stays too —
-# other projects in the same bucket use it.
+# Undoes _flux_warden_setup in the project: drops flux's section from .cbox,
+# and .cbox itself once nothing else is left in it. Other sections (container
+# settings, the user's own resources) stay. The warden resource on the host
+# stays too — other projects in the same bucket use it.
 _flux_warden_remove() {
-  [[ -f .warden ]] || return 0
+  [[ -f .cbox ]] || return 0
   local _url _bucket
   _url=$(sed -n 's/^[[:space:]]*url[[:space:]]*=[[:space:]]*s3:\/\///p' .dvc/config 2>/dev/null | head -1 | tr -d ' ')
   _bucket=$(git config --get flux.dvc-remote-bucket 2>/dev/null || true)
   [[ -n "$_bucket" ]] || _bucket="${_url%%/*}"
   [[ -n "$_bucket" ]] || return 0
   local _name; _name=$(_flux_warden_name "$_bucket")
-  grep -qxF "[${_name}]" .warden || return 0
-  local _tmp; _tmp=$(mktemp)
-  awk -v s="[${_name}]" '$0==s{f=1;next} /^\[/{f=0} !f' .warden > "$_tmp"
-  if grep -q '[^[:space:]]' "$_tmp"; then
-    mv "$_tmp" .warden
-    ok "claudebox: removed this project's storage access from .warden."
+  git config -f .cbox --remove-section "warden.${_name}" 2>/dev/null || return 0
+  if sed -e 's/[#;].*//' .cbox | grep -q '[^[:space:]]'; then
+    ok "claudebox: removed this project's storage access from .cbox."
   else
-    rm -f "$_tmp"
-    git rm --cached -q .warden 2>/dev/null || true
-    rm -f .warden
-    ok "claudebox: .warden removed (it held only this project's storage access)."
+    git rm --cached -q -f .cbox 2>/dev/null || true
+    rm -f .cbox
+    ok "claudebox: .cbox removed (it held only this project's storage access)."
   fi
 }
 
@@ -1662,7 +1662,7 @@ _flux_add() {
   ok ".gitignore updated."
 
   git add .dvc/config .gitignore 2>/dev/null || true
-  [[ -f .warden ]] && git add .warden 2>/dev/null || true
+  [[ -f .cbox ]] && git add .cbox 2>/dev/null || true
 
   if ! git diff --cached --quiet 2>/dev/null; then
     # Check for files the user staged themselves (not DVC/flux-created files)
@@ -1943,7 +1943,7 @@ _flux_remove_dvc() {
     [[ "${confirm:-N}" =~ ^[Yy]$ ]] || return 1
   fi
 
-  # Before .dvc/config goes: it names the bucket of flux's .warden section
+  # Before .dvc/config goes: it names the bucket of flux's .cbox section
   _flux_warden_remove
 
   # Remove DVC remote and local config
@@ -2413,7 +2413,7 @@ _flux_sync() {
 
   _flux_hook_update
   _flux_subrepo_sync
-  # Repo-side setup changes (endpoint moved out of .dvc/config, .warden) go
+  # Repo-side setup changes (endpoint moved out of .dvc/config, .cbox) go
   # into this sync's commit instead of staying behind uncommitted.
   _flux_on_host && [[ -n "${FLUX_AWS_CONFIG_FILE:-}" ]] && export AWS_CONFIG_FILE="$FLUX_AWS_CONFIG_FILE"
   _flux_apply_dvc_profile "$DVC"
