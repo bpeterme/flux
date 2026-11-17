@@ -1362,13 +1362,14 @@ EOF
   [ -z "$output" ]
 }
 
-@test "storage endpoint: with claudebox, .warden and the warden resource are set up once" {
+@test "storage endpoint: with claudebox, .cbox and the warden resource are set up once" {
   _mock_cbox
   _legacy_project
   run _flux_fn _flux_apply_dvc_profile "$MOCK_BIN/dvc"
   [ "$status" -eq 0 ]
   [[ "$output" == *"added warden resource 'dvc-test-bucket'"* ]]
-  [ "$(_flux_fn _flux_dvc_config_read dvc-test-bucket.prefix .warden)" = "test-project" ]
+  [ "$(git config -f .cbox --get warden.dvc-test-bucket.prefix)" = "test-project" ]
+  grep -qxF '[warden "dvc-test-bucket"]' .cbox
   calls=$(cat "$MOCK_HOME/cbox_calls.log")
   [[ "$calls" == *"warden _ensure dvc-test-bucket"* ]]
   [[ "$calls" == *"upstream     = https://acct.eu.r2.cloudflarestorage.com"* ]]
@@ -1388,37 +1389,37 @@ EOF
   grep -q endpointurl .dvc/config
 }
 
-@test "flux remove dvc drops flux's .warden section and keeps the user's own" {
+@test "flux remove dvc drops flux's .cbox section and keeps the rest" {
   bash "$REPO_ROOT/flux" add
   name=$(_flux_fn _flux_warden_name "$(git config --get flux.dvc-remote-bucket)")
-  printf '[build.server]\n    allow = yes\n\n[%s]\n    prefix = p\n' "$name" > .warden
-  git add .warden
+  printf '[container]\n\tports = 3000\n[warden "build.server"]\n\n[warden "%s"]\n\tprefix = p\n' "$name" > .cbox
+  git add .cbox
   run bash "$REPO_ROOT/flux" remove dvc
   [ "$status" -eq 0 ]
-  [[ "$output" == *"removed this project's storage access from .warden"* ]]
-  ! grep -qF "[$name]" .warden || false
-  grep -qxF "[build.server]" .warden
-  grep -q "allow = yes" .warden
+  [[ "$output" == *"removed this project's storage access from .cbox"* ]]
+  ! grep -qF "\"$name\"" .cbox || false
+  grep -qxF '[warden "build.server"]' .cbox
+  grep -q "ports = 3000" .cbox
 }
 
-@test "flux remove dvc removes .warden when only flux's section was in it" {
+@test "flux remove dvc removes .cbox when only flux's section was in it" {
   _legacy_project
-  printf '\n[dvc-test-bucket]\n    prefix = test-project\n' > .warden
-  git add .warden
+  printf '\n[warden "dvc-test-bucket"]\n\tprefix = test-project\n' > .cbox
+  git add .cbox
   run _flux_fn _flux_warden_remove
   [ "$status" -eq 0 ]
-  [ ! -f .warden ]
-  ! git ls-files --error-unmatch .warden 2>/dev/null || false
+  [ ! -f .cbox ]
+  ! git ls-files --error-unmatch .cbox 2>/dev/null || false
 }
 
-@test "flux remove dvc leaves a .warden without flux's section alone" {
+@test "flux remove dvc leaves a .cbox without flux's section alone" {
   _legacy_project
-  printf '[dvc-other]\n    prefix = x\n' > .warden
-  before=$(cat .warden)
+  printf '[warden "dvc-other"]\n\tprefix = x\n' > .cbox
+  before=$(cat .cbox)
   run _flux_fn _flux_warden_remove
   [ "$status" -eq 0 ]
   [ -z "$output" ]
-  [ "$(cat .warden)" = "$before" ]
+  [ "$(cat .cbox)" = "$before" ]
 }
 
 @test "storage endpoint: bucket names become valid warden resource names" {
@@ -1638,7 +1639,7 @@ _flux_project_with_remote() {
   committed=$(git -C "$BARE" show --stat --format= HEAD)
   [[ "$committed" == *".dvc/config"* ]]
   grep -q '^ *endpoint = https://' .dvc/flux
-  [[ "$committed" == *".warden"* ]]
+  [[ "$committed" == *".cbox"* ]]
   rm -rf "$(dirname "$BARE")"
 }
 

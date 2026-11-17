@@ -269,7 +269,7 @@ for those steps.
 | `flux add` | Initialise flux in the current project |
 | `flux list` | List flux-managed projects; shows pins when inside a single project |
 | `flux clone <git-url>` | Clone a flux-managed repo and wire up DVC + credentials |
-| `flux remove [git\|dvc]` | Remove all flux traces, or only git config, or only DVC (DVC removal also drops flux's section from `.warden`) |
+| `flux remove [git\|dvc]` | Remove all flux traces, or only git config, or only DVC (DVC removal also drops flux's section from `.cbox`) |
 | `flux pull` | Download the latest (`git pull` + `dvc pull`) |
 | `flux` | Sync both ways (pull then push) |
 | `flux dry-run` | Preview routing without making changes |
@@ -317,7 +317,7 @@ my-project/
 │   ├── config          ← committed (bucket and folder — no secrets)
 │   ├── flux            ← committed (size cap, R2 endpoint record for flux clone)
 │   └── config.local    ← git-ignored (names the AWS profile; no secrets)
-├── .warden             ← committed, only with claudebox (lets its containers reach this bucket folder)
+├── .cbox               ← committed, only with claudebox (its [warden "…"] section lets containers reach this bucket folder)
 ├── .gitignore          ← you maintain this; source of truth for ignores
 ├── .dvcignore          ← auto-generated from .gitignore, never edit manually
 ├── src/                ← tracked by Git → GitLab / GitHub
@@ -494,7 +494,7 @@ In a flux-managed repo, "commit and push" is plain `git commit` + `git push` —
 - In flux repos, branch work (checkout, merge, pull, rebase) is plain git too: flux's post-checkout/-merge/-rewrite hooks update the DVC data. Read their `flux:` output — files listed as "not downloaded", "unsaved edits" or "left on disk" need attention before the next commit. After `git reset --hard`, `git stash`, `git restore` or `git cherry-pick` (no hooks), run `flux pull`.
 ```
 
-This works the same with or without claudebox. Inside a claudebox container, storage access comes from warden; if a push fails there because `$AWS_CONFIG_FILE` is not set, run `flux` once in the project on the host and approve the `.warden` prompt at the next `cbox` start.
+This works the same with or without claudebox. Inside a claudebox container, storage access comes from warden; if a push fails there because `$AWS_CONFIG_FILE` is not set, run `flux` once in the project on the host and approve the warden prompt at the next `cbox` start.
 
 ### [claudedot](https://github.com/bpeterme/claudedot)
 
