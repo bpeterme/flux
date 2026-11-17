@@ -13,11 +13,10 @@ class Flux < Formula
   def install
     version_str = build.head? ? "HEAD-#{`git rev-parse --short HEAD`.chomp}" : version.to_s
     inreplace "flux", 'VERSION="dev"', "VERSION=\"#{version_str}\""
-    # Hooks and example config live in share/flux/ so flux add can find them.
+    # Hooks live in share/flux/ so flux add can find them.
     (share/"flux").install "pre-commit"
     (share/"flux").install "pre-push"
     (share/"flux").install "post-checkout"
-    (share/"flux").install "flux.env.example"
     bin.install "flux"
     zsh_completion.install "completions/_flux"
   end
@@ -27,7 +26,8 @@ class Flux < Formula
       flux requires dvc — install it if you haven't already:
         pip install "dvc[s3]"
 
-      Configure flux once per machine (stores credentials in macOS Keychain):
+      Configure flux once per machine (credentials go to the macOS Keychain,
+      on Linux to the desktop keyring):
         flux config
 
       Then add flux to each Git repo you want to manage:
