@@ -1621,6 +1621,8 @@ _flux_project_with_remote() {
 
 @test "host hooks: inside a container git keeps the repo's hooks" {
   export CBOX_CONTAINER=wbox
+  # Not inherited: a claudebox session itself sets GIT_CONFIG_COUNT (git identity).
+  unset GIT_CONFIG_COUNT
   run bash -c "source '$REPO_ROOT/flux'; _flux_protect_git; echo \"count=\${GIT_CONFIG_COUNT:-none}\""
   [[ "$output" == *"count=none"* ]]
 }
