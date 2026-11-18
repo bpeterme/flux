@@ -348,6 +348,18 @@ _flux_in_dir_override() {
   return 1
 }
 
+# Files Git, DVC and flux need in Git; never routed to DVC, even under a
+# root pin. Same list as _is_bookkeeping_file in the pre-commit hook.
+_flux_is_bookkeeping_file() {
+  case "$1" in
+    .dvc/*|.github/*|.cbox|.warden) return 0 ;;
+  esac
+  case "${1##*/}" in
+    .gitignore|.dvcignore|.gitattributes|.gitmodules) return 0 ;;
+  esac
+  return 1
+}
+
 # ---------------------------------------------------------------------------
 # Credential store: the macOS Keychain, or on Linux the desktop keyring
 # (Secret Service: GNOME Keyring, KWallet, KeePassXC) through secret-tool.
@@ -2770,7 +2782,12 @@ _flux_dry_run() {
     local file_size
     file_size=$(wc -c < "$file" | tr -d ' ')
 
-    if _flux_in_dir_override "$file" "${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}"; then
+    if _flux_is_bookkeeping_file "$file"; then
+      git_files+=("$file")
+      git_notes+=("")
+      git_file_sizes+=("$file_size")
+      git_bytes=$(( git_bytes + file_size ))
+    elif _flux_in_dir_override "$file" "${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}"; then
       dvc_files+=("$file")
       dvc_notes+=("[pinned]")
       dvc_file_sizes+=("$file_size")
@@ -2822,12 +2839,19 @@ _flux_dry_run() {
     fi
   done
 
-  # Files that belong in DVC but are committed to Git and not staged: the
-  # hook only routes staged files, so these stay in Git until re-added (e.g.
-  # moved into a pinned folder by an older flux, or pinned after committing).
-  local _stuck=() _sf
+  # Files that belong in DVC but are committed to Git and not staged. The
+  # hook moves those inside a pin-dvc folder on the next commit; any others
+  # (binary or oversized, committed with --no-verify) stay until re-added.
+  local _stuck=() _pending=() _sf
   if (( ${#dvc_files[@]} > 0 )) && git rev-parse --verify -q HEAD >/dev/null; then
-    while IFS= read -r _sf; do [[ -n "$_sf" ]] && _stuck+=("$_sf"); done < <(
+    while IFS= read -r _sf; do
+      [[ -z "$_sf" ]] && continue
+      if _flux_in_dir_override "$_sf" "${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}"; then
+        _pending+=("$_sf")
+      else
+        _stuck+=("$_sf")
+      fi
+    done < <(
       LC_ALL=C comm -12 \
         <(printf '%s\n' "${dvc_files[@]+"${dvc_files[@]}"}" | LC_ALL=C sort) \
         <(LC_ALL=C comm -23 \
@@ -2921,6 +2945,11 @@ _flux_dry_run() {
     for _pd in "${FORCE_GIT_DIRS[@]+"${FORCE_GIT_DIRS[@]}"}"; do
       printf "    ·  %-24s → Git\n" "$_pd"
     done
+  fi
+
+  if (( ${#_pending[@]} > 0 )); then
+    echo ""
+    printf "  ✦ %d file(s) in pinned folders move from Git to DVC on the next commit.\n" "${#_pending[@]}"
   fi
 
   if (( ${#_stuck[@]} > 0 )); then

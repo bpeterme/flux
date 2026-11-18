@@ -593,7 +593,7 @@ EOF
   [[ "$output" != *"migrating from Git"* ]]
 }
 
-@test "flux dry-run warns about committed Git files inside a pin-dvc folder" {
+@test "flux dry-run says Git files inside a pin-dvc folder move on the next commit" {
   mkdir -p archive .dvc
   echo "old note" > archive/a.md
   printf '[flux]\n    pin-dvc = archive\n' > .dvc/flux
@@ -602,8 +602,32 @@ EOF
 
   run bash "$REPO_ROOT/flux" dry-run
   [ "$status" -eq 0 ]
+  [[ "$output" == *"1 file(s) in pinned folders move from Git to DVC on the next commit"* ]]
+  [[ "$output" != *"still stored in Git"* ]]
+}
+
+@test "flux dry-run warns about a binary committed to Git past the hook" {
+  printf '\x00\x01\x02' > asset.bin
+  git add asset.bin
+  git commit -m "binary committed with --no-verify" --no-verify -q
+
+  run bash "$REPO_ROOT/flux" dry-run
+  [ "$status" -eq 0 ]
   [[ "$output" == *"1 file(s) belong in DVC but are still stored in Git"* ]]
-  [[ "$output" == *"archive/a.md"* ]]
+  [[ "$output" == *"asset.bin"* ]]
+}
+
+@test "flux dry-run keeps bookkeeping files in Git under a root pin" {
+  mkdir -p .dvc
+  echo "*.log" > .gitignore
+  printf '[flux]\n    pin-dvc = .\n' > .dvc/flux
+  git add .gitignore .dvc/flux
+  git commit -m "root pin" --no-verify -q
+
+  run bash "$REPO_ROOT/flux" dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"→ Git     2 file(s)"* ]]
+  [[ "$output" != *"move from Git to DVC"* ]]
 }
 
 @test "flux dry-run does not warn about a staged file the hook will route" {
