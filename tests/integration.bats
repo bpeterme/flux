@@ -593,6 +593,33 @@ EOF
   [[ "$output" != *"migrating from Git"* ]]
 }
 
+@test "flux dry-run warns about committed Git files inside a pin-dvc folder" {
+  mkdir -p archive .dvc
+  echo "old note" > archive/a.md
+  printf '[flux]\n    pin-dvc = archive\n' > .dvc/flux
+  git add archive/a.md .dvc/flux
+  git commit -m "file committed to git inside pinned folder" --no-verify -q
+
+  run bash "$REPO_ROOT/flux" dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"1 file(s) belong in DVC but are still stored in Git"* ]]
+  [[ "$output" == *"archive/a.md"* ]]
+}
+
+@test "flux dry-run does not warn about a staged file the hook will route" {
+  # A committed file whose new version is staged is routed at commit time,
+  # so it is not stuck in Git.
+  echo "small" > growing.txt
+  git add growing.txt
+  git commit -m "small file" --no-verify -q
+  printf '\x00\x01\x02' > growing.txt
+  git add growing.txt
+
+  run bash "$REPO_ROOT/flux" dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"still stored in Git"* ]]
+}
+
 @test "flux dry-run includes untracked files when nothing is staged" {
   echo "untracked content" > untracked.txt
 

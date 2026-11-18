@@ -980,6 +980,25 @@ EOF
   [ -f "archive/notes.md.dvc" ]
 }
 
+@test "file moved into a pin-dvc dir with git mv is routed to DVC" {
+  # Regression: staged files were selected with --diff-filter=ACM, and git
+  # reports a move as a rename (R), so files moved into a pinned folder
+  # stayed in git.
+  mkdir -p notes .dvc
+  echo "small text" > notes/a.md
+  printf '[flux]\n    pin-dvc = archive\n' > .dvc/flux
+  git add notes/a.md .dvc/flux
+  git commit -m "add note" --no-verify -q
+
+  mkdir -p archive
+  git mv notes/a.md archive/a.md
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+
+  assert_dvc_called "add archive/a.md"
+}
+
 @test ".dvc pointer file staged inside a force-dvc dir is kept in Git, not re-wrapped" {
   # Regression: a .dvc pointer file inside a DVC-pinned directory would be
   # mistakenly routed to DVC storage, creating a broken .dvc.dvc chain and

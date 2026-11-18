@@ -500,8 +500,11 @@ refuse_mass_deletion() {
 # run — both may stage their own bookkeeping files (.gitignore edits, pointer
 # deletions, migrated data files) which must not be re-processed by the
 # routing loop below.
+# --no-renames: git reports a move as a rename (R), which ACM would skip, so
+# a file moved into a pin-dvc folder would stay in git. Without rename
+# detection the new path shows up as added (A) and is routed like any other.
 # ---------------------------------------------------------------------------
-staged_files=$(git -c core.quotepath=false diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)
+staged_files=$(git -c core.quotepath=false diff --cached --name-only --no-renames --diff-filter=ACM 2>/dev/null || true)
 
 # ---------------------------------------------------------------------------
 # Cleanup orphaned .dvc pointers (deleted / renamed DVC-tracked files)
