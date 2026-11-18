@@ -12,6 +12,7 @@
 #   - File shrinks below cap: detected from .dvc list, migrated back to Git
 #   - File deleted: orphaned .dvc pointer staged for removal
 #   - File renamed: old .dvc pointer cleaned up; new name routed fresh
+#   - File in Git inside a pin-dvc folder: moved to DVC on the next commit
 #
 # .dvcignore is kept in sync with every .gitignore in the repo automatically.
 # Mental model: anything in .gitignore is invisible to both Git and DVC.
@@ -123,6 +124,19 @@ _in_dir_override() {
     local prefix="${dir%/}/"
     [[ "$file" == "$prefix"* || "$file" == "${dir%/}" ]] && return 0
   done
+  return 1
+}
+
+# Files Git, DVC and flux need in Git to work. They always stay in Git, even
+# inside a pin-dvc folder: a root pin (".") would otherwise move .gitignore
+# or .dvc/config out of Git.
+_is_bookkeeping_file() {
+  case "$1" in
+    .dvc/*|.github/*|.cbox|.warden) return 0 ;;
+  esac
+  case "${1##*/}" in
+    .gitignore|.dvcignore|.gitattributes|.gitmodules) return 0 ;;
+  esac
   return 1
 }
 
@@ -473,18 +487,51 @@ DVC=$(find_dvc) || {
 log "Using DVC at: $DVC"
 
 # ---------------------------------------------------------------------------
+# Git-tracked files inside a pin-dvc folder
+#
+# The routing loop only sees staged files. Files that were already in Git
+# when their folder was pinned, or that an older flux let through on a move,
+# would stay in Git for good. This lists them so the loop routes them to DVC.
+# Skipped: pointers, files that already have one (cleanup_git_dvc_duplicates
+# handles those), bookkeeping files, symlinks, files missing on disk, and
+# gitignored files (the loop would drop those from Git instead of routing).
+# ---------------------------------------------------------------------------
+pinned_git_files() {
+  (( ${#FORCE_DVC_DIRS[@]} > 0 )) || return 0
+  local _dir _file _specs=() _found=()
+  for _dir in "${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}"; do
+    _specs+=(":(literal)${_dir%/}")
+  done
+  while IFS= read -r _file; do
+    [[ -z "$_file" || "$_file" == *.dvc ]] && continue
+    [[ -f "$_file" && ! -L "$_file" ]] || continue
+    [[ -f "${_file}.dvc" ]] && continue
+    _is_bookkeeping_file "$_file" && continue
+    _found+=("$_file")
+  done < <(git -c core.quotepath=false ls-files -- "${_specs[@]+"${_specs[@]}"}" 2>/dev/null || true)
+  (( ${#_found[@]} > 0 )) || return 0
+  LC_ALL=C comm -23 \
+    <(printf '%s\n' "${_found[@]+"${_found[@]}"}" | LC_ALL=C sort) \
+    <(printf '%s\n' "${_found[@]+"${_found[@]}"}" | git check-ignore --no-index --stdin 2>/dev/null | LC_ALL=C sort)
+}
+
+# ---------------------------------------------------------------------------
 # Safety net: refuse a commit that deletes most tracked files
 #
 # A commit made where the working tree looked empty or unreadable (a broken
 # mount, a half-synced folder) once recorded every file as deleted; pushing
 # it would have wiped the remote. Real mass deletions are rare and deliberate:
-# allow them with FLUX_ALLOW_MASS_DELETE=1.
+# allow them with FLUX_ALLOW_MASS_DELETE=1. A file moved to DVC (its
+# <file>.dvc pointer is in the index) is not a deletion.
 # ---------------------------------------------------------------------------
 refuse_mass_deletion() {
   local _tracked _deleted
   if [[ "${FLUX_ALLOW_MASS_DELETE:-}" != "1" ]] && git rev-parse --verify -q HEAD >/dev/null; then
     _tracked=$(git ls-tree -r --name-only HEAD | wc -l | tr -d ' ')
-    _deleted=$(git diff --cached --name-only --diff-filter=D | wc -l | tr -d ' ')
+    _deleted=$(LC_ALL=C comm -23 \
+      <(git -c core.quotepath=false diff --cached --name-only --diff-filter=D | LC_ALL=C sort) \
+      <(git -c core.quotepath=false ls-files -- '*.dvc' | sed 's/\.dvc$//' | LC_ALL=C sort) \
+      | wc -l | tr -d ' ')
     if (( _deleted >= 10 && _deleted * 2 > _tracked )); then
       echo "✘ flux: this commit deletes ${_deleted} of ${_tracked} tracked files — stopped." >&2
       echo "  If the files still exist on disk, the working tree is not visible correctly here" >&2
@@ -500,8 +547,11 @@ refuse_mass_deletion() {
 # run — both may stage their own bookkeeping files (.gitignore edits, pointer
 # deletions, migrated data files) which must not be re-processed by the
 # routing loop below.
+# --no-renames: git reports a move as a rename (R), which ACM would skip, so
+# a file moved into a pin-dvc folder would stay in git. Without rename
+# detection the new path shows up as added (A) and is routed like any other.
 # ---------------------------------------------------------------------------
-staged_files=$(git -c core.quotepath=false diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)
+staged_files=$(git -c core.quotepath=false diff --cached --name-only --no-renames --diff-filter=ACM 2>/dev/null || true)
 
 # ---------------------------------------------------------------------------
 # Cleanup orphaned .dvc pointers (deleted / renamed DVC-tracked files)
@@ -528,6 +578,15 @@ migrate_dvc_to_git
 # were never removed from the git index when DVC took them over.
 # ---------------------------------------------------------------------------
 cleanup_git_dvc_duplicates
+
+# ---------------------------------------------------------------------------
+# Add Git-tracked files inside pin-dvc folders to the routing set
+# Runs after duplicate cleanup, so files it took out of Git are not listed.
+# ---------------------------------------------------------------------------
+_pinned_in_git=$(pinned_git_files)
+if [[ -n "$_pinned_in_git" ]]; then
+  staged_files=$(printf '%s\n%s\n' "$staged_files" "$_pinned_in_git" | sed '/^$/d' | LC_ALL=C sort -u)
+fi
 
 refuse_mass_deletion
 
@@ -565,6 +624,12 @@ while IFS= read -r file; do
   # and remove the pointer from git entirely.
   if [[ "$file" == *.dvc ]]; then
     log "DVC pointer file → Git (always): $file"
+    git_kept+=("$file")
+    continue
+  fi
+
+  if _is_bookkeeping_file "$file"; then
+    log "Bookkeeping file → Git (always): $file"
     git_kept+=("$file")
     continue
   fi

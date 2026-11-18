@@ -980,6 +980,97 @@ EOF
   [ -f "archive/notes.md.dvc" ]
 }
 
+@test "file moved into a pin-dvc dir with git mv is routed to DVC" {
+  # Regression: staged files were selected with --diff-filter=ACM, and git
+  # reports a move as a rename (R), so files moved into a pinned folder
+  # stayed in git.
+  mkdir -p notes .dvc
+  echo "small text" > notes/a.md
+  printf '[flux]\n    pin-dvc = archive\n' > .dvc/flux
+  git add notes/a.md .dvc/flux
+  git commit -m "add note" --no-verify -q
+
+  mkdir -p archive
+  git mv notes/a.md archive/a.md
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+
+  assert_dvc_called "add archive/a.md"
+}
+
+@test "file already in Git inside a pin-dvc dir moves to DVC on the next commit" {
+  # Covers folders pinned after their files were committed: the file is not
+  # staged, an unrelated commit still moves it.
+  mkdir -p archive
+  echo "old note" > archive/a.md
+  git add archive/a.md
+  git commit -m "note in git" --no-verify -q
+  mkdir -p .dvc
+  printf '[flux]\n    pin-dvc = archive\n' > .dvc/flux
+
+  echo "trigger" > trigger.txt
+  git add trigger.txt .dvc/flux
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+  assert_dvc_called "add archive/a.md"
+  [ -f "archive/a.md.dvc" ]
+  run git ls-files --error-unmatch archive/a.md
+  [ "$status" -ne 0 ]
+  git ls-files --error-unmatch archive/a.md.dvc
+}
+
+@test "root pin keeps bookkeeping files in Git" {
+  # A root pin (.) matches every path; .gitignore, .dvc/ and .cbox must still
+  # stay in Git, staged or not.
+  mkdir -p .dvc
+  echo "*.log" > .gitignore
+  echo "[container]" > .cbox
+  echo "readme" > README.md
+  git add .gitignore .cbox README.md
+  git commit -m "setup" --no-verify -q
+  printf '[flux]\n    pin-dvc = .\n' > .dvc/flux
+  git add .dvc/flux
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+  assert_dvc_called "add README.md"
+  assert_dvc_not_called "add .gitignore"
+  assert_dvc_not_called "add .cbox"
+  assert_dvc_not_called "add .dvc/flux"
+  git ls-files --error-unmatch .gitignore .cbox .dvc/flux
+}
+
+@test "gitignored file tracked in Git inside a pin-dvc dir is left alone" {
+  mkdir -p archive .dvc
+  echo "kept" > archive/keep.log
+  git add archive/keep.log
+  git commit -m "tracked log" --no-verify -q
+  echo "*.log" > .gitignore
+  printf '[flux]\n    pin-dvc = archive\n' > .dvc/flux
+  git add .gitignore .dvc/flux
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+  assert_dvc_not_called "add archive/keep.log"
+  git ls-files --error-unmatch archive/keep.log
+}
+
+@test "moving most files into DVC via a pin is not stopped as a mass deletion" {
+  mkdir -p archive .dvc
+  for i in $(seq 1 12); do echo "note $i" > "archive/n$i.md"; done
+  git add archive
+  git commit -m "notes" --no-verify -q
+  printf '[flux]\n    pin-dvc = archive\n' > .dvc/flux
+  git add .dvc/flux
+
+  run bash .git/hooks/pre-commit 2>&1
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"stopped"* ]]
+  assert_dvc_called "add archive/n12.md"
+}
+
 @test ".dvc pointer file staged inside a force-dvc dir is kept in Git, not re-wrapped" {
   # Regression: a .dvc pointer file inside a DVC-pinned directory would be
   # mistakenly routed to DVC storage, creating a broken .dvc.dvc chain and

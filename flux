@@ -348,6 +348,18 @@ _flux_in_dir_override() {
   return 1
 }
 
+# Files Git, DVC and flux need in Git; never routed to DVC, even under a
+# root pin. Same list as _is_bookkeeping_file in the pre-commit hook.
+_flux_is_bookkeeping_file() {
+  case "$1" in
+    .dvc/*|.github/*|.cbox|.warden) return 0 ;;
+  esac
+  case "${1##*/}" in
+    .gitignore|.dvcignore|.gitattributes|.gitmodules) return 0 ;;
+  esac
+  return 1
+}
+
 # ---------------------------------------------------------------------------
 # Credential store: the macOS Keychain, or on Linux the desktop keyring
 # (Secret Service: GNOME Keyring, KWallet, KeePassXC) through secret-tool.
@@ -2746,7 +2758,7 @@ _flux_dry_run() {
   fi
 
   local git_files=() git_bytes=0 git_notes=() git_file_sizes=()
-  local dvc_files=() dvc_bytes=0 dvc_migrating=() dvc_notes=() dvc_file_sizes=() dvc_file_is_binary=()
+  local dvc_files=() dvc_bytes=0 dvc_notes=() dvc_file_sizes=() dvc_file_is_binary=()
   local skip_files=()
   local dvc_ptr_files=()
 
@@ -2770,15 +2782,17 @@ _flux_dry_run() {
     local file_size
     file_size=$(wc -c < "$file" | tr -d ' ')
 
-    if _flux_in_dir_override "$file" "${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}"; then
+    if _flux_is_bookkeeping_file "$file"; then
+      git_files+=("$file")
+      git_notes+=("")
+      git_file_sizes+=("$file_size")
+      git_bytes=$(( git_bytes + file_size ))
+    elif _flux_in_dir_override "$file" "${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}"; then
       dvc_files+=("$file")
       dvc_notes+=("[pinned]")
       dvc_file_sizes+=("$file_size")
       dvc_file_is_binary+=(0)
       dvc_bytes=$(( dvc_bytes + file_size ))
-      if git ls-files --error-unmatch "$file" &>/dev/null 2>&1; then
-        dvc_migrating+=("$file")
-      fi
     elif _flux_in_dir_override "$file" "${FORCE_GIT_DIRS[@]+"${FORCE_GIT_DIRS[@]}"}"; then
       git_files+=("$file")
       git_notes+=("[pinned]")
@@ -2790,9 +2804,6 @@ _flux_dry_run() {
       dvc_file_sizes+=("$file_size")
       dvc_file_is_binary+=("$( [[ "$is_binary" == "true" ]] && echo 1 || echo 0 )")
       dvc_bytes=$(( dvc_bytes + file_size ))
-      if git ls-files --error-unmatch "$file" &>/dev/null 2>&1; then
-        dvc_migrating+=("$file")
-      fi
     else
       git_files+=("$file")
       git_notes+=("")
@@ -2827,6 +2838,27 @@ _flux_dry_run() {
       dvc_managed_notes+=("")
     fi
   done
+
+  # Files that belong in DVC but are committed to Git and not staged. The
+  # hook moves those inside a pin-dvc folder on the next commit; any others
+  # (binary or oversized, committed with --no-verify) stay until re-added.
+  local _stuck=() _pending=() _sf
+  if (( ${#dvc_files[@]} > 0 )) && git rev-parse --verify -q HEAD >/dev/null; then
+    while IFS= read -r _sf; do
+      [[ -z "$_sf" ]] && continue
+      if _flux_in_dir_override "$_sf" "${FORCE_DVC_DIRS[@]+"${FORCE_DVC_DIRS[@]}"}"; then
+        _pending+=("$_sf")
+      else
+        _stuck+=("$_sf")
+      fi
+    done < <(
+      LC_ALL=C comm -12 \
+        <(printf '%s\n' "${dvc_files[@]+"${dvc_files[@]}"}" | LC_ALL=C sort) \
+        <(LC_ALL=C comm -23 \
+            <(git -c core.quotepath=false ls-tree -r --name-only HEAD | LC_ALL=C sort) \
+            <(git -c core.quotepath=false diff --cached --name-only --no-renames | LC_ALL=C sort))
+    )
+  fi
 
   local _pin_count=$(( ${#FORCE_DVC_DIRS[@]} + ${#FORCE_GIT_DIRS[@]} ))
   local _pin_note=""
@@ -2913,6 +2945,24 @@ _flux_dry_run() {
     for _pd in "${FORCE_GIT_DIRS[@]+"${FORCE_GIT_DIRS[@]}"}"; do
       printf "    ·  %-24s → Git\n" "$_pd"
     done
+  fi
+
+  if (( ${#_pending[@]} > 0 )); then
+    echo ""
+    printf "  ✦ %d file(s) in pinned folders move from Git to DVC on the next commit.\n" "${#_pending[@]}"
+  fi
+
+  if (( ${#_stuck[@]} > 0 )); then
+    echo ""
+    printf "  ⚠ %d file(s) belong in DVC but are still stored in Git:\n" "${#_stuck[@]}"
+    local _k
+    for (( _k = 0; _k < ${#_stuck[@]} && _k < 5; _k++ )); do
+      printf "      %s\n" "${_stuck[$_k]}"
+    done
+    (( ${#_stuck[@]} > 5 )) && printf "      …and %d more\n" $(( ${#_stuck[@]} - 5 ))
+    printf "    To move them (two commits; the files stay on disk):\n"
+    printf "      1. git rm -r --cached -q -- <paths> && git commit -m \"Untrack DVC files\"\n"
+    printf "      2. git add -- <paths> && git commit -m \"Route files to DVC\"\n"
   fi
 
   local show_details=false

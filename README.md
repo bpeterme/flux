@@ -227,8 +227,12 @@ flux pin reset --all  # clear all pins in this project
 flux pin              # show usage and current pins for this repo
 ```
 
-Pins are stored in the repo's local `.git/config` (never committed) and take
-effect on the next `git commit`. Run `flux list` from inside the project to see
+Pins are stored in `.dvc/flux` (committed, so every machine routes the same
+way) and take effect on the next `git commit`. Files that were already in Git
+when you pinned their folder to DVC move to DVC with that commit too; the
+files stay on disk. Files Git, DVC and flux need (`.gitignore`, `.dvcignore`,
+`.gitattributes`, `.gitmodules`, `.dvc/`, `.github/`, `.cbox`) always stay in
+Git, even under a pin. Run `flux list` from inside the project to see
 active pins alongside the project summary:
 
 ```
