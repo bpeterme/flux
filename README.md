@@ -68,6 +68,16 @@ mkdir -p ~/.local/bin && ln -s ~/.local/share/flux-src/flux ~/.local/bin/flux
 # update later: git -C ~/.local/share/flux-src pull
 ```
 
+If your shell says `flux: command not found`, add
+`export PATH="$HOME/.local/bin:$PATH"` to your `~/.zshrc` or `~/.bashrc`.
+
+For tab completion in zsh, add to your `~/.zshrc`, before `compinit` runs (with
+Oh My Zsh: before it is sourced):
+
+```bash
+fpath=(~/.local/share/flux-src/completions $fpath)
+```
+
 **DVC**, on both:
 
 ```bash
