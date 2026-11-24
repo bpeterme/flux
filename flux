@@ -364,27 +364,70 @@ _flux_is_bookkeeping_file() {
 # Credential store: the macOS Keychain, or on Linux the desktop keyring
 # (Secret Service: GNOME Keyring, KWallet, KeePassXC) through secret-tool.
 # Items are named flux.<name> for the account $USER on both.
+# On macOS, FLUX_KEYCHAIN (flux.env) picks the keychain flux writes to; reads
+# try it first, then the keychain search list, so older items are still found.
 # ---------------------------------------------------------------------------
 
+# FLUX_KEYCHAIN as set, read from flux.env when the caller has not loaded it
+# (e.g. the credential helper boto3 runs).
+_flux_keychain_setting() {
+  if [[ -n "${FLUX_KEYCHAIN+x}" || ! -f "$FLUX_CONFIG" ]]; then
+    printf '%s' "${FLUX_KEYCHAIN:-}"
+  else
+    # shellcheck source=/dev/null
+    ( source "$FLUX_CONFIG" >/dev/null 2>&1; printf '%s' "${FLUX_KEYCHAIN:-}" )
+  fi
+}
+
+# The keychain to use, with a leading ~ expanded (empty: the default keychain).
+_flux_keychain() { local _k; _k=$(_flux_keychain_setting); echo "${_k/#\~/$HOME}"; }
+
 # What the store is called in messages.
-_flux_store_name() { _flux_on_macos && echo "Keychain" || echo "keyring"; }
+_flux_store_name() {
+  local _k
+  if ! _flux_on_macos; then echo "keyring"; return; fi
+  _k=$(_flux_keychain_setting)
+  if [[ -n "$_k" ]]; then echo "keychain $_k"; else echo "Keychain"; fi
+}
+
+# Quotes a word for the command line of `security -i`: in double quotes, with
+# backslash and double quote escaped.
+_flux_security_quote() {
+  local _s="${1//\\/\\\\}"
+  printf '"%s"' "${_s//\"/\\\"}"
+}
 
 _flux_secret_get() {
   local _acct="${USER:-$(id -un)}"
   if _flux_on_macos; then
-    security find-generic-password -a "$_acct" -s "$1" -w 2>/dev/null || true
+    local _kc _v=""
+    _kc=$(_flux_keychain)
+    if [[ -n "$_kc" ]]; then
+      _v=$(security find-generic-password -a "$_acct" -s "$1" -w "$_kc" 2>/dev/null) || true
+    fi
+    [[ -n "$_v" ]] || _v=$(security find-generic-password -a "$_acct" -s "$1" -w 2>/dev/null) || true
+    printf '%s\n' "$_v"
   else
     secret-tool lookup service "$1" account "$_acct" 2>/dev/null || true
   fi
 }
 
-# $1 item, $2 value, $3 label. secret-tool reads the value from stdin, so it
-# never appears in the process list.
+# $1 item, $2 value, $3 label. The value never goes on a command line, where
+# the process list would show it: secret-tool reads it from stdin, and on macOS
+# `security -i` reads the whole command from stdin. `security -i` need not
+# report a failed command, so the value is read back.
 _flux_secret_set() {
   local _acct="${USER:-$(id -un)}"
   if _flux_on_macos; then
-    security add-generic-password -U -a "$_acct" -s "$1" -w "$2" -l "$3" 2>/dev/null \
-      || fail "Failed to write '$1' to the Keychain."
+    local _kc _line
+    _kc=$(_flux_keychain)
+    [[ "$2" != *$'\n'* ]] || fail "'$1' contains a line break — the $(_flux_store_name) cannot take it from flux."
+    _line="add-generic-password -U -a $(_flux_security_quote "$_acct") -s $(_flux_security_quote "$1")"
+    _line+=" -l $(_flux_security_quote "$3") -w $(_flux_security_quote "$2")"
+    if [[ -n "$_kc" ]]; then _line+=" $(_flux_security_quote "$_kc")"; fi
+    printf '%s\n' "$_line" | security -i >/dev/null 2>&1
+    [[ "$(security find-generic-password -a "$_acct" -s "$1" -w ${_kc:+"$_kc"} 2>/dev/null)" == "$2" ]] \
+      || fail "Failed to write '$1' to the $(_flux_store_name).${_kc:+ Check FLUX_KEYCHAIN in $FLUX_CONFIG and that the keychain is unlocked.}"
   else
     command -v secret-tool >/dev/null 2>&1 \
       || fail "secret-tool not found: sudo apt install libsecret-tools (Fedora: libsecret)."
@@ -393,10 +436,20 @@ _flux_secret_set() {
   fi
 }
 
+# Removes the item from every keychain in the search list (and FLUX_KEYCHAIN):
+# an item may have been stored before FLUX_KEYCHAIN was set.
 _flux_secret_del() {
   local _acct="${USER:-$(id -un)}"
   if _flux_on_macos; then
-    security delete-generic-password -a "$_acct" -s "$1" 2>/dev/null || true
+    local _kc _i
+    _kc=$(_flux_keychain)
+    if [[ -n "$_kc" ]]; then
+      security delete-generic-password -a "$_acct" -s "$1" "$_kc" >/dev/null 2>&1 || true
+    fi
+    for _i in 1 2 3 4 5; do
+      security delete-generic-password -a "$_acct" -s "$1" >/dev/null 2>&1 || break
+    done
+    return 0
   else
     secret-tool clear service "$1" account "$_acct" 2>/dev/null || true
   fi
@@ -628,9 +681,12 @@ _flux_write_config() {
   # $4: newline-separated "proto:host:account" git account entries
   # $5: primary DVC remote bucket name
   # $6: FLUX_AWS_CONFIG_FILE value (empty = leave commented out)
+  # FLUX_KEYCHAIN comes from the loaded flux.env (unset = leave commented out)
   local dvc_str="$1" cap="$2" verbose="$3" git_str="$4" primary_dvc="${5:-}" aws_cfg="${6:-}"
   # Normalize aws_cfg to $HOME-relative so flux.env stays machine-independent
   [[ -n "$aws_cfg" ]] && aws_cfg="\$HOME${aws_cfg#"$HOME"}"
+  local _kc_cfg="${FLUX_KEYCHAIN:-}"
+  if [[ "$_kc_cfg" == "$HOME"/* ]]; then _kc_cfg="\$HOME${_kc_cfg#"$HOME"}"; fi
   mkdir -p "$(dirname "$FLUX_CONFIG")"
   local tmp; tmp=$(mktemp)
   {
@@ -663,6 +719,16 @@ _flux_write_config() {
       echo "FLUX_AWS_CONFIG_FILE=${aws_cfg}"
     else
       echo "# FLUX_AWS_CONFIG_FILE=${FLUX_CONFIG%/*}/aws.conf"
+    fi
+    echo ""
+    echo "# ── credential store (macOS) ──────────────────────────────────────────────────"
+    echo "# Keychain for flux's credentials: a name in ~/Library/Keychains or a path."
+    echo "# Leave commented to use your default keychain (usually login). flux looks in"
+    echo "# this keychain first, then in the keychain search list."
+    if [[ -n "${FLUX_KEYCHAIN:-}" ]]; then
+      echo "FLUX_KEYCHAIN=\"${_kc_cfg}\""
+    else
+      echo "# FLUX_KEYCHAIN=\"\$HOME/Library/Keychains/shared.keychain-db\""
     fi
     echo ""
     echo "# ── git accounts ──────────────────────────────────────────────────────────────"

@@ -1723,6 +1723,51 @@ _linux_host() {
   [[ "$output" == *"not inside a claudebox container"* ]]
 }
 
+@test "macos: credentials go to FLUX_KEYCHAIN over stdin, never onto a command line" {
+  export FLUX_KEYCHAIN='~/Library/Keychains/shared.keychain-db'
+  run _flux_fn '_kc_set_dvc b1 secret-key "S3c\"r3t \\value"; _kc_get_dvc b1 secret-key; _flux_store_name'
+  [ "$status" -eq 0 ]
+  [ "$output" = $'S3c"r3t \\value\nkeychain ~/Library/Keychains/shared.keychain-db' ]
+  [ "$(cat "$MOCK_KEYCHAIN_DIR/shared.keychain-db/flux_dvc_b1_secret-key")" = 'S3c"r3t \value' ]
+  [ ! -e "$MOCK_KEYCHAIN_DIR/flux_dvc_b1_secret-key" ]
+  ! grep -q 'r3t' "$MOCK_KEYCHAIN_DIR/.args"
+}
+
+@test "macos: with FLUX_KEYCHAIN set, older items are still found, and delete removes every copy" {
+  "$MOCK_BIN/security" add-generic-password -s flux.dvc.b1.secret-key -w old-login-value
+  export FLUX_KEYCHAIN="$HOME/kc/shared.keychain-db"
+  run _flux_fn '_kc_get_dvc b1 secret-key'
+  [ "$output" = "old-login-value" ]
+  run _flux_fn '_kc_set_dvc b1 secret-key new-value; _kc_get_dvc b1 secret-key'
+  [ "$output" = "new-value" ]
+  run _flux_fn '_kc_del_dvc b1 secret-key; _kc_get_dvc b1 secret-key'
+  [ -z "$output" ]
+  [ ! -e "$MOCK_KEYCHAIN_DIR/flux_dvc_b1_secret-key" ]
+  [ ! -e "$MOCK_KEYCHAIN_DIR/shared.keychain-db/flux_dvc_b1_secret-key" ]
+}
+
+@test "macos: the DVC credential helper reads FLUX_KEYCHAIN from flux.env" {
+  "$MOCK_BIN/security" add-generic-password -s flux.dvc.test-bucket.access-key-id -w LOGIN
+  "$MOCK_BIN/security" add-generic-password -s flux.dvc.test-bucket.secret-key -w LOGIN
+  "$MOCK_BIN/security" add-generic-password -s flux.dvc.test-bucket.access-key-id -w AKID x/shared.keychain-db
+  "$MOCK_BIN/security" add-generic-password -s flux.dvc.test-bucket.secret-key -w SK x/shared.keychain-db
+  cfg=$(_flux_fn 'echo "$FLUX_CONFIG"')
+  mkdir -p "$(dirname "$cfg")"
+  echo 'FLUX_KEYCHAIN="$HOME/Library/Keychains/shared.keychain-db"' >> "$cfg"
+  run bash "$REPO_ROOT/flux" _credential-helper test-bucket
+  [ "$status" -eq 0 ]
+  [ "$output" = '{"Version":1,"AccessKeyId":"AKID","SecretAccessKey":"SK"}' ]
+}
+
+@test "macos: flux.env keeps FLUX_KEYCHAIN, relative to \$HOME" {
+  cfg=$(_flux_fn 'echo "$FLUX_CONFIG"')
+  run _flux_fn '_flux_write_config "b:acct" 5 false "" b ""'
+  grep -q '^# FLUX_KEYCHAIN=' "$cfg"
+  export FLUX_KEYCHAIN="$HOME/Library/Keychains/shared.keychain-db"
+  run _flux_fn '_flux_write_config "b:acct" 5 false "" b ""'
+  grep -qx 'FLUX_KEYCHAIN="$HOME/Library/Keychains/shared.keychain-db"' "$cfg"
+}
+
 @test "linux host: credentials go to the keyring, never onto a command line" {
   _linux_host
   run _flux_fn '_kc_set_dvc b1 secret-key S3cr3t-value; _kc_get_dvc b1 secret-key; echo; _flux_store_name'

@@ -1,43 +1,71 @@
 #!/usr/bin/env bash
 # Mock for macOS 'security' CLI.
-# Simulates Keychain get/set/delete using files in MOCK_KEYCHAIN_DIR.
+# Simulates Keychain get/set/delete using files in MOCK_KEYCHAIN_DIR: items of
+# the default keychain at the top, items of a named keychain (the last,
+# positional argument) in a folder named after its basename. Without a
+# keychain argument, find and delete search the whole "search list": the
+# default keychain first, then the folders. Every command line is logged to
+# MOCK_KEYCHAIN_DIR/.args, so tests can check no secret is passed as one.
 
 KC_DIR="${MOCK_KEYCHAIN_DIR:-${HOME}/.mock-keychain}"
 mkdir -p "$KC_DIR"
+[[ -n "${_MOCK_SECURITY_INNER:-}" ]] || echo "$*" >> "$KC_DIR/.args"
 
 subcmd="${1:-}"; shift
 
+# `security -i`: one command per stdin line, words quoted as security does.
+if [[ "$subcmd" == "-i" ]]; then
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    eval "set -- $line"
+    _MOCK_SECURITY_INNER=1 "$0" "$@" >/dev/null || true   # like security -i: no failure status
+  done
+  exit 0
+fi
+
 # Sanitise a service name to a safe filename (replace dots with underscores).
-kc_file() { echo "${KC_DIR}/${1//./_}"; }
+kc_name() { echo "${1//./_}"; }
+
+# Parses -s, -w (value only for add) and the keychain argument.
+service="" value="" keychain=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -s) service="$2"; shift 2 ;;
+    -a|-l) shift 2 ;;
+    -w) if [[ "$subcmd" == "add-generic-password" ]]; then value="$2"; shift 2; else shift; fi ;;
+    -U) shift ;;
+    *)  keychain="${1##*/}"; shift ;;
+  esac
+done
+
+# Files holding the item, in search order.
+matches() {
+  local f
+  if [[ -n "$keychain" ]]; then
+    f="$KC_DIR/$keychain/$(kc_name "$service")"; [[ -f "$f" ]] && echo "$f"
+    return 0
+  fi
+  f="$KC_DIR/$(kc_name "$service")"; [[ -f "$f" ]] && echo "$f"
+  for f in "$KC_DIR"/*/"$(kc_name "$service")"; do [[ -f "$f" ]] && echo "$f"; done
+  return 0
+}
 
 case "$subcmd" in
   find-generic-password)
-    service=""
-    while [[ $# -gt 0 ]]; do
-      case "$1" in -s) service="$2"; shift 2 ;; *) shift ;; esac
-    done
-    f=$(kc_file "$service")
-    [[ -f "$f" ]] && cat "$f" && exit 0
-    exit 1
+    f=$(matches | head -1)
+    [[ -n "$f" ]] && cat "$f" && exit 0
+    exit 44
     ;;
   add-generic-password)
-    service="" value=""
-    while [[ $# -gt 0 ]]; do
-      case "$1" in
-        -s) service="$2"; shift 2 ;;
-        -w) value="$2";   shift 2 ;;
-        *)  shift ;;
-      esac
-    done
-    printf '%s' "$value" > "$(kc_file "$service")"
+    dir="$KC_DIR"; [[ -n "$keychain" ]] && dir="$KC_DIR/$keychain"
+    mkdir -p "$dir"
+    printf '%s' "$value" > "$dir/$(kc_name "$service")"
     exit 0
     ;;
   delete-generic-password)
-    service=""
-    while [[ $# -gt 0 ]]; do
-      case "$1" in -s) service="$2"; shift 2 ;; *) shift ;; esac
-    done
-    rm -f "$(kc_file "$service")"
+    f=$(matches | head -1)
+    [[ -n "$f" ]] || exit 44
+    rm -f "$f"
     exit 0
     ;;
   *)
