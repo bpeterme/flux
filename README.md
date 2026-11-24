@@ -151,6 +151,17 @@ FLUX_GIT_ACCOUNTS=(
 )
 ```
 
+To keep the credentials in a keychain other than your default one (e.g. one
+shared across apps), add it to `flux.env` before running `flux config`:
+
+```bash
+FLUX_KEYCHAIN="$HOME/Library/Keychains/shared.keychain-db"  # or just its name
+```
+
+flux then writes credentials there and looks there first, then in the keychain
+search list, so credentials stored before still work. macOS only; Linux uses
+the keyring.
+
 ### One-time per repo
 
 ```bash
